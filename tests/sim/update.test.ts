@@ -4,7 +4,7 @@ import { createInitialState, TeamId, type GameState, type PlayerState } from '..
 import { simulate } from '../../src/sim/update';
 import { Direction8, emptyButtonState, LogicalButton, type ButtonState } from '../../src/input/types';
 import { FULL_MATCH_DURATION_FRAMES, HALF_DURATION_FRAMES } from '../../src/sim/matchClock';
-import { PITCH_HEIGHT } from '../../src/config/pitch';
+import { PITCH_HEIGHT, PITCH_WIDTH } from '../../src/config/pitch';
 
 function inputs(direction: Direction8) {
   return { direction, buttons: emptyButtonState() };
@@ -522,5 +522,75 @@ describe('simulate — Phase 3: CPU (Team B) attack AI (milestone 6)', () => {
     };
     const next = simulate(state, inputs(Direction8.None));
     expect(next.lastTouchTeam).toBe(TeamId.A);
+  });
+});
+
+describe('simulate — Phase 3: full-match smoke test (milestone 9, determinism/perf hardening)', () => {
+  // 前後半切替(HALF_DURATION_FRAMES境界)を1回跨ぐぶんの長さを、様々な方向/ボタンの組み合わせを
+  // 周期的に繰り返す入力列で回す。ゴール・境界越え・オフサイド・CPU攻撃AIのどれかが自然に
+  // 発生してもおかしくない状況を作り、個々のマイルストーンのテストでは踏まない「複数の
+  // マイルストーンが同一tickで絡み合う」パターンを実際に踏んで確認する狙い。
+  const CYCLE: Array<{ direction: Direction8; held: Partial<Record<LogicalButton, boolean>> }> = [
+    { direction: Direction8.Up, held: {} },
+    { direction: Direction8.UpRight, held: { L: true } },
+    { direction: Direction8.Right, held: {} },
+    { direction: Direction8.None, held: { B: true } },
+    { direction: Direction8.None, held: { B: true } },
+    { direction: Direction8.DownRight, held: {} },
+    { direction: Direction8.Down, held: { Y: true } },
+    { direction: Direction8.DownLeft, held: {} },
+    { direction: Direction8.Left, held: { L: true } },
+    { direction: Direction8.UpLeft, held: {} },
+    { direction: Direction8.None, held: {} },
+    { direction: Direction8.Up, held: { B: true } },
+  ];
+  const TICKS = HALF_DURATION_FRAMES + 500; // 前後半切替を1回確実に跨ぐ
+
+  function runMatch(seed: number): GameState {
+    let state = createInitialState(seed, { difficulty: 'easy', offsideEnabled: true });
+    for (let i = 0; i < TICKS; i++) {
+      const step = CYCLE[i % CYCLE.length];
+      if (!step) continue;
+      state = simulate(state, inputsWithButtons(step.direction, step.held));
+    }
+    return state;
+  }
+
+  it('never throws and keeps all invariants over a match spanning a half-swap', () => {
+    let state = createInitialState(1, { difficulty: 'easy', offsideEnabled: true });
+    for (let i = 0; i < TICKS; i++) {
+      const step = CYCLE[i % CYCLE.length];
+      if (!step) continue;
+      state = simulate(state, inputsWithButtons(step.direction, step.held));
+
+      expect(state.players).toHaveLength(22);
+      expect(state.controlledPlayerIndex).toBeGreaterThanOrEqual(0);
+      expect(state.controlledPlayerIndex).toBeLessThan(11); // 常にTeam A
+      expect(state.score[0]).toBeGreaterThanOrEqual(0);
+      expect(state.score[1]).toBeGreaterThanOrEqual(0);
+      expect(toFloat(state.ball.pos.x)).toBeGreaterThanOrEqual(0);
+      expect(toFloat(state.ball.pos.x)).toBeLessThanOrEqual(PITCH_WIDTH);
+      expect(toFloat(state.ball.pos.y)).toBeGreaterThanOrEqual(0);
+      expect(toFloat(state.ball.pos.y)).toBeLessThanOrEqual(PITCH_HEIGHT);
+      for (const player of state.players) {
+        expect(toFloat(player.pos.x)).toBeGreaterThanOrEqual(0);
+        expect(toFloat(player.pos.y)).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
+  it('is fully deterministic end-to-end across a match spanning a half-swap (same seed -> identical final state)', () => {
+    const stateA = runMatch(2026);
+    const stateB = runMatch(2026);
+    expect(stateA).toEqual(stateB);
+  });
+
+  it('completes within a reasonable time budget (perf sanity, not a strict benchmark)', () => {
+    const startedAt = performance.now();
+    runMatch(1);
+    const elapsedMs = performance.now() - startedAt;
+    // simulate()は整数演算のみの軽量な純関数のはず。1万tick強が数百msを大幅に超えるようなら
+    // どこかに意図しない重い処理(配列の毎tick再生成の多重化等)が紛れ込んだ可能性が高い。
+    expect(elapsedMs).toBeLessThan(5000);
   });
 });
