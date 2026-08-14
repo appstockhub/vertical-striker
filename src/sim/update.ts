@@ -1,7 +1,7 @@
 import { dotFixed, fixedMul, toFixed, vAdd, vSub, vZero, ZERO_FIXED } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, emptyButtonState, type ButtonState } from '../input/types';
-import type { BallState, GameState, PlayerState } from './state';
+import type { BallState, GameState, GoalKickExclusion, PlayerState } from './state';
 import { PLAYERS_PER_TEAM, TacklePhase, TeamId } from './state';
 import { getHomePosition, opponentOf } from './formations';
 import { PITCH_HEIGHT } from '../config/pitch';
@@ -129,10 +129,11 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       restartGraceTeam: getHalf(nextFrame) === 1 ? TeamId.A : TeamId.B,
       restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
       lastEvent: null,
+      goalKickExclusion: null,
     };
   }
 
-  const touchPriorityIndex = findTouchPriorityPlayer(state.players, state.ball.pos);
+  const touchPriorityIndex = findTouchPriorityPlayer(state.players, state.ball.pos, state.lastTouchPlayerIndex);
   const teamAInPossession = isTeamAInPossession(touchPriorityIndex);
   let lastTouchTeam = state.lastTouchTeam;
 
@@ -217,6 +218,15 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   let restartGraceTeam = restartGraceTicksLeft > 0 ? state.restartGraceTeam : null;
   const suppressedTeam =
     restartGraceTicksLeft > 0 && restartGraceTeam !== null ? opponentOf(restartGraceTeam) : null;
+
+  // ゴールキック退避ゾーンの減衰 (B-5(b))。相手の追跡権を止めるsuppressedTeamと違い、
+  // こちらは人間操作にも効く物理的な位置クランプなので、同じticksLeftの流儀で毎tick
+  // 再適用する (以前は発生tickのみの一発ティーポート押し出しだったため、人間は1tick後に
+  // 自由に寄せて奪えてしまっていた)。
+  let goalKickExclusion: GoalKickExclusion | null =
+    state.goalKickExclusion && state.goalKickExclusion.ticksLeft > 1
+      ? { ...state.goalKickExclusion, ticksLeft: state.goalKickExclusion.ticksLeft - 1 }
+      : null;
 
   // 「団子サッカー」防止: 守備側は最寄り2人(プレス+カバー)、保持側は最寄り1人(受け手)だけが
   // ボール引力をフルに使う (バグ修正、実プレイ+観戦シミュレーターで発覚)。毎tick1回だけ計算する。
@@ -443,10 +453,10 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       restartGraceTeam: opponentOf(boundaryEvent.scoringTeam),
       restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
       lastEvent: null,
+      goalKickExclusion: null,
     };
   }
 
-  let goalKickExclusion: { readonly restartTeam: TeamId; readonly northEnd: boolean } | null = null;
   if (boundaryEvent) {
     // スローイン/ゴールキック/コーナー: 即座にテレポートするのみ (試合停止の演出は無し)。
     // 選手移動処理はこのまま続ける (Team Aはカーソルスナップ、Team Bはボール引力AIが
@@ -458,9 +468,12 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     // 相手側は守備側の追跡権(2人)、再開側は回収役(1人)という自然な役割になる)。
     lastTouchTeam = boundaryEvent.restartTeam;
     if (boundaryEvent.type === 'goalKick') {
+      // 新しいリスタートが最優先: 減衰中の古いゾーンを上書きし、RESTART_GRACE_TICKS(=AIの
+      // 追跡権抑制と同じ長さ)だけ人間操作を含む相手を退避させる。
       goalKickExclusion = {
         restartTeam: boundaryEvent.restartTeam,
         northEnd: (boundaryEvent.pos.y as number) < (toFixed(PITCH_HEIGHT / 2) as number),
+        ticksLeft: RESTART_GRACE_TICKS,
       };
     }
     // リスタート猶予 (Phase 5): この再開チームの相手の追跡権をRESTART_GRACE_TICKSの間ゼロにする
@@ -537,6 +550,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     restartGraceTeam,
     restartGraceTicksLeft,
     lastEvent,
+    goalKickExclusion,
   };
 }
 

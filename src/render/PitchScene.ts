@@ -491,7 +491,11 @@ export class PitchScene extends Phaser.Scene {
    * selectPassTarget) を描画側でも呼び直すことで、GameStateに派生情報を持たせずに済む。
    */
   private renderPassMarker(): void {
-    const touchPriorityIndex = findTouchPriorityPlayer(this.state.players, this.state.ball.pos);
+    const touchPriorityIndex = findTouchPriorityPlayer(
+      this.state.players,
+      this.state.ball.pos,
+      this.state.lastTouchPlayerIndex,
+    );
     if (!isTeamAInPossession(touchPriorityIndex) || touchPriorityIndex === null) {
       this.passMarker.setVisible(false);
       return;

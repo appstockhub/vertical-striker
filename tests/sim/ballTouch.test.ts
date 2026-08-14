@@ -49,4 +49,37 @@ describe('findTouchPriorityPlayer', () => {
     // キックオフ直後は誰もボールに密着していない可能性が高いが、たまたま範囲内でも例外は投げない
     expect(index === null || (index >= 0 && index < 22)).toBe(true);
   });
+
+  describe('touch priority hysteresis (previousTouchIndex, B-5(b)のバタフライ効果で発覚したバグ修正)', () => {
+    it('without a previousTouchIndex (default), the exact same near-tie flips every call (documents the pre-fix bug)', () => {
+      // index0が4px、index1が1pxで、次のtickに二人の相対距離が逆転する典型的な「トレーディング」
+      // 入力を模した2回の呼び出し。previousTouchIndexを渡さなければヒステリシスは働かず、
+      // 素の最短距離だけで判定する (既存の全呼び出しの後方互換性を保証する)。
+      const playersA = [makePlayer(0, 0), makePlayer(0, 4)];
+      const playersB = [makePlayer(0, 0), makePlayer(0, 1)];
+      expect(findTouchPriorityPlayer(playersA, { x: ZERO_FIXED, y: toFixed(4) })).toBe(1);
+      expect(findTouchPriorityPlayer(playersB, { x: ZERO_FIXED, y: toFixed(1) })).toBe(1);
+    });
+
+    it('keeps the previous toucher when the new closest candidate is only marginally closer (near-tie)', () => {
+      // index1(前回の保持者)がボールから5px、index0が2px: 差3pxは margin(8px)以内なので
+      // index1を保持する (味方2人がボールを挟んで際どく入れ替わり続ける「往復」を防ぐ)。
+      const players = [makePlayer(2, 0), makePlayer(0, 0)];
+      const index = findTouchPriorityPlayer(players, { x: toFixed(5), y: ZERO_FIXED }, 1);
+      expect(index).toBe(1);
+    });
+
+    it('switches away from the previous toucher when the new candidate is clearly closer (beyond the margin)', () => {
+      const players = [makePlayer(19, 0), makePlayer(0, 0)];
+      // index1(前回の保持者)がボールから19px、index0が0px: 差19pxはmargin(8px)を大きく超える
+      const index = findTouchPriorityPlayer(players, { x: toFixed(19), y: ZERO_FIXED }, 1);
+      expect(index).toBe(0);
+    });
+
+    it('does not apply hysteresis once the previous toucher leaves the dribble radius entirely', () => {
+      const players = [makePlayer(200, 200), makePlayer(0, 0)];
+      const index = findTouchPriorityPlayer(players, { x: ZERO_FIXED, y: ZERO_FIXED }, 0);
+      expect(index).toBe(1);
+    });
+  });
 });

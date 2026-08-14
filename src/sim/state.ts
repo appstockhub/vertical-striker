@@ -113,6 +113,18 @@ export interface GameState {
    * null = 表示すべき直近イベント無し。
    */
   readonly lastEvent: NotableEvent | null;
+  /**
+   * ゴールキック時の相手退避ゾーン (B-5(b))。restartTeam以外の選手 (人間操作を含む、GK除く) を
+   * northEnd側/南側の GOAL_KICK_EXCLUSION_DEPTH_FIXED ラインまで押し出す。
+   *
+   * 導入経緯: 元は「boundaryEvent発生tickのみ効く一発ティーポート押し出し」だったため、AIは
+   * restartGraceTeam/restartGraceTicksLeftによる追跡権抑制(継続的)で保護される一方、人間は
+   * その抑制の対象外(直接入力のため)で1tick後には自由に寄せて奪えてしまい、「人間がCPUの
+   * ゴールキックを狙って奪う単調な必勝法」が成立していた。restartGraceTicksLeftと同じ
+   * ticksLeftを持たせて毎tick再適用することで、AIと同じ長さだけ人間にも対称に適用する。
+   * null = 退避ゾーン無し。
+   */
+  readonly goalKickExclusion: GoalKickExclusion | null;
 }
 
 /** GameState.lastEvent の種別。goalはscoreの変化で既に検出可能なため対象外。 */
@@ -122,6 +134,16 @@ export interface NotableEvent {
   readonly kind: NotableEventKind;
   readonly team: TeamId;
   readonly atFrame: number;
+}
+
+/** GameState.goalKickExclusion の内容。B-5(b)。 */
+export interface GoalKickExclusion {
+  /** このチーム以外の選手 (人間操作含む) が退避ゾーンの対象。 */
+  readonly restartTeam: TeamId;
+  /** true ならゾーンは北側 (y小さい方) のゴールライン付近。 */
+  readonly northEnd: boolean;
+  /** 残りtick数。0になったら無効。 */
+  readonly ticksLeft: number;
 }
 
 export interface CreateInitialStateOptions {
@@ -161,5 +183,6 @@ export function createInitialState(seed: number, options: CreateInitialStateOpti
     restartGraceTeam: TeamId.A,
     restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
     lastEvent: null,
+    goalKickExclusion: null,
   };
 }
