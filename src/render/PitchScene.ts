@@ -4,7 +4,7 @@ import { createInitialState, type GameState } from '../sim/state';
 import { simulate } from '../sim/update';
 import { InputManager } from '../input/inputManager';
 import { GamepadOverlay } from '../input/overlay';
-import { vecToPx } from './fixedToPixel';
+import { ballLiftPx, vecToPx } from './fixedToPixel';
 import { computeCameraY, type CameraConfig } from './camera';
 import { computeRadarLayout } from './radar';
 import {
@@ -34,6 +34,7 @@ export class PitchScene extends Phaser.Scene {
 
   private playerMain!: Phaser.GameObjects.Arc;
   private ballMain!: Phaser.GameObjects.Arc;
+  private ballShadow!: Phaser.GameObjects.Ellipse;
   private playerRadarDot!: Phaser.GameObjects.Arc;
   private ballRadarDot!: Phaser.GameObjects.Arc;
   private radarCamera!: Phaser.Cameras.Scene2D.Camera;
@@ -77,6 +78,8 @@ export class PitchScene extends Phaser.Scene {
   }
 
   private buildEntities(): void {
+    // 影 (地面位置に描画、疑似3D高さの手がかり)。ボール本体より先に描画して下に敷く。
+    this.ballShadow = this.add.ellipse(0, 0, 14, 7, 0x000000, 0.35);
     this.ballMain = this.add.circle(0, 0, 7, 0xffffff);
     this.playerMain = this.add.circle(0, 0, 12, 0xffcc33);
   }
@@ -113,7 +116,7 @@ export class PitchScene extends Phaser.Scene {
 
     // メインカメラにはレーダー専用オブジェクトを映さない / レーダーカメラにはメイン専用オブジェクトを映さない
     this.cameras.main.ignore([this.ballRadarDot, this.playerRadarDot]);
-    this.radarCamera.ignore([this.ballMain, this.playerMain]);
+    this.radarCamera.ignore([this.ballMain, this.playerMain, this.ballShadow]);
   }
 
   private fixedUpdate(): void {
@@ -132,15 +135,18 @@ export class PitchScene extends Phaser.Scene {
 
   private render(): void {
     const playerPx = vecToPx(this.state.player.pos);
-    const ballPx = vecToPx(this.state.ball.pos);
+    const groundPx = vecToPx(this.state.ball.pos); // ボールの「地面位置」(影・レーダーはこちらを使う)
+    const lift = ballLiftPx(this.state.ball.height);
 
     this.playerMain.setPosition(playerPx.x, playerPx.y);
-    this.ballMain.setPosition(ballPx.x, ballPx.y);
+    this.ballShadow.setPosition(groundPx.x, groundPx.y);
+    this.ballMain.setPosition(groundPx.x, groundPx.y - lift); // 疑似3D: 高さ分だけ見た目を持ち上げる
     this.playerRadarDot.setPosition(playerPx.x, playerPx.y);
-    this.ballRadarDot.setPosition(ballPx.x, ballPx.y);
+    this.ballRadarDot.setPosition(groundPx.x, groundPx.y);
 
-    const targetVelY = this.state.player.vel.y / 256;
-    this.cameraY = computeCameraY(playerPx.y, targetVelY, this.cameraY, CAMERA_CONFIG);
+    // Phase 1: カメラ追従先をプレイヤーからボールに切替 (computeCameraY のシグネチャは不変)
+    const targetVelY = this.state.ball.vel.y / 256;
+    this.cameraY = computeCameraY(groundPx.y, targetVelY, this.cameraY, CAMERA_CONFIG);
     this.cameras.main.scrollY = this.cameraY;
   }
 }

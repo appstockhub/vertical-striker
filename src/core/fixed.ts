@@ -68,3 +68,8 @@ export function vScaleFixed(v: Vec2Fixed, scalar: Fixed): Vec2Fixed {
 export function vZero(): Vec2Fixed {
   return { x: ZERO_FIXED, y: ZERO_FIXED };
 }
+
+/** a から b への線形補間 (a + (b-a)*t)。t は Fixed スケール (0=a, FIXED_ONE=b)。 */
+export function lerpFixed(a: Fixed, b: Fixed, t: Fixed): Fixed {
+  return fixedAdd(a, fixedMul(fixedSub(b, a), t));
+}

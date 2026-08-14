@@ -4,73 +4,58 @@
 
 ## 1. 完了した作業
 
-- **Phase 0 実装完了**（コミット `283318b`、タグ `phase-0` を push 済み）
-  - Vite + TypeScript(strict) + Phaser 3.90 のプロジェクト scaffolding
-  - 固定タイムステップ60fpsループ（アキュムレータ方式、更新/描画分離）: [src/core/loop.ts](src/core/loop.ts)
-  - 固定小数点（1/256px サブピクセル）座標ユーティリティ: [src/core/fixed.ts](src/core/fixed.ts)
-  - 純関数・state受け渡し方式の mulberry32 PRNG: [src/core/rng.ts](src/core/rng.ts)
-  - Gamepad/Keyboard 入力抽象化（SFC論理ボタン B/Y/A/X/L/R + 8方向、接続時オーバーレイ）: [src/input/](src/input/)
-  - 純関数 `simulate(state, inputs) -> state` による決定論的状態遷移: [src/sim/](src/sim/)
-  - 縦スクロールカメラ（先読みオフセット）+ レーダー（Phaserセカンダリカメラ）: [src/render/](src/render/)
-  - 仮選手1体・ボール1個で8方向移動・ピッチ境界クランプ・レーダー連動を実装
-  - 決定論違反（`Math.random`/`sin`/`cos`/`atan2`、`phaser` import）を静的検出する `scripts/checkDeterminism.mjs`
-  - vitest ユニットテスト30件（`sim/update.ts` の決定論回帰テスト含む）
-  - Browser preview（キーボード操作）で完了条件相当の動作を確認済み: `npm run test` / `npm run check:determinism` / `npm run build` すべて成功
-  - CLAUDE.md の「要検証仕様」に「SFC論理ボタンX → Xboxパッドの割り当て」項目を追加（実装時に発生した新たな未確定仕様のため恒久記録）
-  - `git commit` → `git tag phase-0` → `git push origin main` / `git push origin phase-0` まで完了
+- **Phase 1 実装完了**（ドリブル・キック(速度軸+弾道軸)・ロングドリブル(L/R)・ボール物理(重力/バウンド/転がり摩擦/疑似3D高さ)・カメラのボール追従切替）
+  - スコープはユーザー承認済み: 精密照準軸(L/R+キック)とカーブ/バックスピン(キック後入力)は今回**対象外**（後続フェーズに委譲）
+  - `src/sim/state.ts`: `BallState`に`height`/`zVel`、`PlayerState`に`kickChargeFrames`を追加。`Inputs`型は変更なし（キック溜め時間などtickをまたぐ状態はGameState側で保持）
+  - `src/sim/dribble.ts`（新規）: `isNearBall`(sqrt不要の距離二乗判定)・`applyDribbleTouch`(吸着させず触れると転がる)・`isLongDribbleActive`
+  - `src/sim/kick.ts`（新規）: `updateKickCharge`(純粋な整数カウンタでedge検出、Inputsへのbuttons Pressed追加は不要と判断)・`applyKick`(速度軸+弾道軸)
+  - `src/sim/ballPhysics.ts`（新規）: `stepBallPhysics`(重力・バウンド・転がり摩擦)・`clampToPitchBounds`(プレイヤー/ボール共用)
+  - `src/sim/ballConstants.ts`（新規）: Phase 1関連定数（すべて仮値、プレイテスト前提）
+  - `src/core/fixed.ts`: `lerpFixed`追加
+  - `src/render/`: 疑似3D描画（影+高さリフト）、カメラ追従先をプレイヤー→ボールに切替（Phase 0の`camera.ts`docコメント通り1箇所の差し替えで対応）
+  - **設計時に発見・修正した重要なバグ**: 重力を無条件適用すると静止球が起動直後から無限バウンドし続ける問題を発見。空中判定(`height>0 || zVel>0`)でゲートし、着地速度が閾値未満なら跳ねずに静止させる形に修正。回帰テストを追加済み
+  - テスト: 32件追加（既存30件+新規32件=**62件**）、うち上記バグの回帰テストを含む。`npm run test` / `npm run check:determinism` / `npm run build` すべて成功
+  - Browser preview で動作確認: キーボード操作（矢印+Z=B等）でドリブル/長押しキック/ロングドリブルを実行し、コンソールエラー無し・canvasが入力に反応して変化し・キック後は数秒でぴたりと静止（無限バウンド無し）を確認。**このセッションではBrowser paneのスクリーンショット機能が一時的に利用不可**だったため、目視のスクリーンショットではなく、canvas の `toDataURL()` 差分比較（入力に反応して変化→着地後は完全に静止）とコンソール監視で機能確認した
+  - コミット未実施（下記参照）
 
 ## 2. 進行中の作業と正確な現状
 
-- 進行中のタスクなし。Phase 0 は完了し、リモート(`origin/main`, `origin/phase-0`)まで反映済み。
-- ローカルブランチは `main`、`origin/main` と同期済み（ahead/behind 0）。
+- 実装・自動検証は完了。ローカルの変更はまだコミットしていない（Phase 0と同様「mainに直接コミット」の運用のため、次のアクションとしてコミットが必要）。
+- ゲームパッド実機での目視確認（下記4参照）はユーザー側で未実施。
 
 ## 3. 次にやるべきこと（優先順）
 
-1. **Phase 1 着手**: ドリブル・キック実装（方向+B同時押しの強キック、押下時間による弾道高さ、L/R精密照準、キック後入力によるカーブ/バックスピン）、ボール物理（転がり摩擦・バウンド・疑似3D高さ）。CLAUDE.md「操作仕様」節を参照。
-2. Phase 1 完了時点で GitHub Pages 公開設定（`vite.config.ts` の `base: './'` は対応済み、あとは Pages 側のワークフロー追加）。
-3. ユーザー側での実機ゲームパッド確認（下記4参照）を Phase 1 の作業と並行、または着手前に実施してもらう。
+1. このセッションの変更を`main`にコミットする（Phase 0と同じ運用）。ユーザーからの明示的な依頼を待って実施する。
+2. コミット後、`phase-1`タグを打ってpushするかはユーザーに確認する（Phase 0では別途明示的に依頼された）。
+3. **ユーザー側での目視確認を推奨**: 実際にBrowser（またはゲームパッド実機）でドリブル・キックの弾道の高さ・バウンドの跳ね返り具合・ロングドリブルの手触りを見て、`src/sim/ballConstants.ts`の仮値（キック速度・重力・摩擦係数等）を調整してほしい。このセッションではスクリーンショットが取得できず、動作ロジックの正しさはテスト+canvas差分で確認したのみで、見た目の「気持ちよさ」は未評価
+4. Phase 1完了後、CLAUDE.mdの段階開発計画に従い Phase 2（11 vs 11とチームAI）に着手。ただしPhase 1で対象外とした精密照準軸・カーブ/バックスピンをPhase 2着手前に追加するかは要相談（CLAUDE.mdの「操作仕様」は確定仕様として明記されているため、いずれかのタイミングで実装が必要）
 
 ## 4. 未解決の課題・ユーザー判断待ち
 
-- **実機ゲームパッドでのみ確認可能**（このセッションのサンドボックスに物理パッドが無いため未検証）:
-  - Xbox系パッド接続時のオーバーレイ表示・自動非表示の挙動
-  - 十字キー/左スティック両方での8方向入力の実際の操作感（デッドゾーン0.35は仮値）
-  - B/Y/A/X/L/R の配置が意図通りか。特に **SFC論理ボタンX（上）→ Xbox Y（index 3）** は CLAUDE.md に明記が無く対称性からの推測（`src/input/gamepadMapping.ts`）。CLAUDE.md「要検証仕様」に追記済み。
-- CLAUDE.md の他の「要検証仕様」項目（カーブ/バックスピンの受付フレーム数、精密照準の解釈、キーパー操作の自動/手動切替など）は Phase 1〜2 で実装する際に改めて実機確認が必要。
+- **精密照準軸(L/R+キックで4→8方向)とカーブ/バックスピン(キック後入力)をいつ実装するか**: 今回のPhase 1では意図的に対象外とした（ユーザー承認済みのスコープ決定）。CLAUDE.mdの「操作仕様」は確定仕様として位置づけられているため、後続フェーズでの実装タイミングを決める必要がある
+- Phase 0から持ち越し: 実機ゲームパッドでのB/Y/A/X/L/R配置確認（特にX→Xbox Y割り当て）は依然未確認
+- Phase 1の新規定数（キック速度・重力・バウンド減衰・摩擦係数・ドリブル半径等、`src/sim/ballConstants.ts`）はすべて仮値。実機/プレイテストでの調整が必要
 
 ## 5. 重要な決定事項と理由
 
 計画書（`.claude/plans/claude-md-cheerful-cookie.md`、ユーザー承認済み）に詳細あり。要点:
 
-- **Phaser `^3.90.0` を採用**（npm最新タグは4.2.1だが、CLAUDE.mdが明示的に「Phaser 3」を3箇所で指定し、自前物理・Canvas2D限定の設計も3系のAPIを前提にしているため）
-- **TypeScript `^5.9.3` を採用**（最新7.0.2は`typescript-eslint`等のツール群が未追随のため見送り）
-- **`src/sim/**` は `phaser` を import しない/`Math.random`・`sin`・`cos`・`atan2` を使わない**という鉄則を機械チェック化（`scripts/checkDeterminism.mjs`）。決定論はロックステップ対戦・リプレイの前提であり最優先事項のため。
-- **vitest を新規追加**（依存最小化の指示はあるが、決定論が安全性に直結する要件と明記されているため、純関数群への低コストなユニットテストを優先）。ESLintは追加せず、決定論チェックは専用スクリプトで代替。
-- **GameState.player/ball は単数フィールド**（配列ではない）。Phase 2で `players: PlayerState[]` へ移行する際は `sim/state.ts` と `sim/update.ts` に閉じた小さな機械的リファクタになる想定。
-- **カメラのスクロール位置・レーダーのイージングは GameState に含めない**（決定論の対象外の「見た目」の状態と明確に位置づけ、ここのみ float のイージングを許可）。
-- Phase 0 で仮決めした値（CLAUDE.mdの「要検証仕様」と同様、後日調整前提）: ピッチ/ビューポート寸法（480×720 / 480×1800）、カメラ先読みオフセット定数・追従イージング係数、レーダーのサイズ・配置（右上・幅22%）、アナログスティックのデッドゾーン(0.35)、プレイヤー移動速度、キーボードのSFCボタン仮割り当て(Z/X/C/V/Q/E → B/A/Y/X/L/R)。
+- **キックのスコープを速度軸+弾道軸+ロングドリブルに限定**（精密照準・カーブは対象外）。理由: CLAUDE.mdの「要検証仕様」にある未確定値（後入力受付フレーム数20f仮、4→8方向か8→16方向か）に依存せず、Phase 0の決定論基盤に無理なく積み増せる範囲に収めるため（ユーザー承認済み）
+- **`Inputs`型は変更しない**。キック溜め時間などtickをまたぐ状態はすべて`GameState`(`PlayerState.kickChargeFrames`)側に持たせ、前tickの蓄積値と今tickの`inputs.buttons.B`を比較するだけで立ち上がり/立ち下がり両方を導出する設計にした。`InputFrame.buttonsPressed`(edge情報)を`Inputs`に追加する必要が無くなり、sim/を入力層の詳細から切り離せる
+- **ドリブルタッチは「上書き」方式**（加算ではない）。毎tick再適用されても速度が際限なく積み上がらず、「触れるたびに少し前に転がる→追いつく→また転がる」というリズムを生む
+- **ボール近接判定はsqrtを使わず距離の二乗比較**。キック方向も既存の事前正規化済み`DIRECTION_VECTORS`をそのまま流用（精密照準対象外のためnormalize不要）。結果として`Math.sqrt`はPhase 1全体で未使用、`scripts/checkDeterminism.mjs`の変更は不要だった
+- **重力は空中(`height>0`または`zVel>0`)の場合のみ適用し、着地速度が閾値未満ならバウンドさせず静止させる**。設計段階で「重力を無条件適用すると静止球が無限バウンドする」バグを発見し、この形に修正した（詳細は上記1参照、回帰テスト追加済み）
+- **壁（ピッチ境界）は位置クランプのみで速度反射は行わない**。上下=地面のみバウンドをモデル化する（水平方向のバウンドは今回対象外）
+- Phase 1の新規定数はすべて仮値（Phase 0の`PLAYER_SPEED_FIXED`等と同じ扱い）
 
-## 6. 変更ファイル一覧（このセッションで作成・変更）
+## 6. 変更ファイル一覧（このセッションで作成・変更、未コミット）
 
-**Phase 0 実装コミット（`283318b`）** — 37 files changed, 2852 insertions(+), 2 deletions(-)
+**新規**: `src/sim/ballConstants.ts` / `src/sim/ballPhysics.ts` / `src/sim/dribble.ts` / `src/sim/kick.ts` / `tests/sim/ballPhysics.test.ts` / `tests/sim/dribble.test.ts` / `tests/sim/kick.test.ts`
 
-- 設定: `package.json`, `package-lock.json`, `tsconfig.json`, `tsconfig.app.json`, `tsconfig.node.json`, `vite.config.ts`, `index.html`, `.claude/launch.json`
-- `scripts/checkDeterminism.mjs`
-- `src/main.ts`, `src/style.css`
-- `src/config/{pitch,gameConfig}.ts`
-- `src/core/{types,fixed,rng,loop}.ts`
-- `src/sim/{state,constants,update}.ts`
-- `src/input/{types,gamepadMapping,gamepad,keyboard,inputManager,overlay}.ts`
-- `src/render/{BootScene,PitchScene,camera,radar,fixedToPixel}.ts`
-- `tests/core/{fixed,rng,loop}.test.ts`, `tests/sim/update.test.ts`, `tests/input/gamepadMapping.test.ts`
-- `HANDOFF.md`（更新）
-
-**このhandoffセッション内での追加変更**（未コミット→本コミットに含める）:
-
-- `CLAUDE.md`: 「要検証仕様」に SFC論理ボタンX→Xboxパッド割り当ての項目を追加
-- `HANDOFF.md`: 本ファイルの全面更新
+**変更**: `src/sim/state.ts`(BallState/PlayerState拡張) / `src/sim/update.ts`(パイプライン組み込み) / `src/sim/constants.ts`(`ENTITY_RADIUS_FIXED`→`PLAYER_RADIUS_FIXED`改称) / `src/core/fixed.ts`(`lerpFixed`追加) / `src/render/fixedToPixel.ts`(`ballLiftPx`追加) / `src/render/PitchScene.ts`(影描画・高さ反映・カメラ追従先変更) / `tests/core/fixed.test.ts`(`lerpFixed`テスト追加) / `tests/sim/update.test.ts`(Phase 1統合テスト追加) / `HANDOFF.md`(本ファイル)
 
 ## 申し送り
 
 - モデル設定は opusplan。設計判断を伴うタスクは必ず Plan Mode（Shift+Tab）で開始する。
-- リポジトリ: `origin` = `https://github.com/appstockhub/vertical-striker.git`。`main` ブランチに直接コミットする運用（ユーザー承認済み）。
+- リポジトリ: `origin` = `https://github.com/appstockhub/vertical-striker.git`。`main` ブランチに直接コミットする運用（ユーザー承認済み、Phase 0から継続）。
+- タグ: `phase-0`は作成・push済み。`phase-1`は本セッションではまだ作成していない。

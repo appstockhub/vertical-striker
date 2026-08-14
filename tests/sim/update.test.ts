@@ -1,10 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { createInitialState } from '../../src/sim/state';
+import { toFixed, toFloat } from '../../src/core/fixed';
+import { createInitialState, type GameState } from '../../src/sim/state';
 import { simulate } from '../../src/sim/update';
-import { Direction8, emptyButtonState } from '../../src/input/types';
+import { Direction8, emptyButtonState, LogicalButton, type ButtonState } from '../../src/input/types';
 
 function inputs(direction: Direction8) {
   return { direction, buttons: emptyButtonState() };
+}
+
+function inputsWithButtons(direction: Direction8, held: Partial<Record<LogicalButton, boolean>>) {
+  const buttons: ButtonState = { ...emptyButtonState(), ...held };
+  return { direction, buttons };
+}
+
+/** テスト用: プレイヤー/ボールの初期位置だけを差し替えた GameState を作る。 */
+function withPositions(
+  seed: number,
+  playerPos: { x: number; y: number },
+  ballPos: { x: number; y: number },
+): GameState {
+  const base = createInitialState(seed);
+  return {
+    ...base,
+    player: { ...base.player, pos: { x: toFixed(playerPos.x), y: toFixed(playerPos.y) } },
+    ball: { ...base.ball, pos: { x: toFixed(ballPos.x), y: toFixed(ballPos.y) } },
+  };
 }
 
 describe('simulate (pure state transition)', () => {
@@ -69,5 +89,80 @@ describe('simulate (pure state transition)', () => {
       state = simulate(state, inputs(Direction8.Up));
     }
     expect(state.player.pos.y).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('simulate — Phase 1: dribble + kick integration', () => {
+  it('is deterministic across a sequence including a charged kick and long dribble', () => {
+    const sequence: Array<{ direction: Direction8; held: Partial<Record<LogicalButton, boolean>> }> = [
+      { direction: Direction8.Up, held: {} },
+      { direction: Direction8.Up, held: { L: true } }, // ロングドリブル
+      { direction: Direction8.None, held: { B: true } }, // キック溜め開始
+      { direction: Direction8.None, held: { B: true } },
+      { direction: Direction8.None, held: { B: true } },
+      { direction: Direction8.Right, held: {} }, // B解放=キック実行
+    ];
+
+    let stateA = withPositions(42, { x: 100, y: 200 }, { x: 105, y: 200 });
+    let stateB = withPositions(42, { x: 100, y: 200 }, { x: 105, y: 200 });
+
+    for (const { direction, held } of sequence) {
+      stateA = simulate(stateA, inputsWithButtons(direction, held));
+      stateB = simulate(stateB, inputsWithButtons(direction, held));
+    }
+
+    expect(stateA).toEqual(stateB);
+  });
+
+  it('does not mutate the input state when dribbling/kicking', () => {
+    const state = withPositions(1, { x: 100, y: 200 }, { x: 105, y: 200 });
+    const snapshotBefore = JSON.parse(JSON.stringify(state));
+    simulate(state, inputsWithButtons(Direction8.Right, { B: true }));
+    expect(state).toEqual(snapshotBefore);
+  });
+
+  it('nudges the ball forward when the player dribbles into it', () => {
+    const state = withPositions(1, { x: 100, y: 100 }, { x: 105, y: 100 });
+    const next = simulate(state, inputs(Direction8.Right));
+    expect(toFloat(next.ball.pos.x)).toBeGreaterThan(toFloat(state.ball.pos.x));
+    expect(toFloat(next.ball.vel.x)).toBeGreaterThan(0);
+  });
+
+  it('long dribble (L held) pushes the ball further per tick than plain dribble', () => {
+    const base = withPositions(1, { x: 100, y: 100 }, { x: 105, y: 100 });
+
+    const plain = simulate(base, inputs(Direction8.Right));
+    const long = simulate(base, inputsWithButtons(Direction8.Right, { L: true }));
+
+    const plainDelta = toFloat(plain.ball.pos.x) - toFloat(base.ball.pos.x);
+    const longDelta = toFloat(long.ball.pos.x) - toFloat(base.ball.pos.x);
+    expect(longDelta).toBeGreaterThan(plainDelta);
+
+    const plainPlayerDelta = toFloat(plain.player.pos.x) - toFloat(base.player.pos.x);
+    const longPlayerDelta = toFloat(long.player.pos.x) - toFloat(base.player.pos.x);
+    expect(longPlayerDelta).toBeGreaterThan(plainPlayerDelta);
+  });
+
+  it('charging B then releasing with a direction launches the ball airborne toward that direction', () => {
+    let state = withPositions(1, { x: 100, y: 100 }, { x: 105, y: 100 });
+
+    const chargeTicks = 20;
+    for (let i = 0; i < chargeTicks; i++) {
+      state = simulate(state, inputsWithButtons(Direction8.None, { B: true }));
+    }
+    expect(state.player.kickChargeFrames).toBe(chargeTicks);
+
+    const afterKick = simulate(state, inputsWithButtons(Direction8.Right, {}));
+    expect(afterKick.player.kickChargeFrames).toBe(0);
+    expect(toFloat(afterKick.ball.zVel)).toBeGreaterThan(0);
+    expect(toFloat(afterKick.ball.vel.x)).toBeGreaterThan(0);
+  });
+
+  it('a short tap (min charge) kick stays a grounder (near-zero zVel)', () => {
+    const state = withPositions(1, { x: 100, y: 100 }, { x: 105, y: 100 });
+    const charging = simulate(state, inputsWithButtons(Direction8.None, { B: true }));
+    const released = simulate(charging, inputsWithButtons(Direction8.Right, {}));
+    expect(toFloat(released.ball.zVel)).toBeCloseTo(0, 1);
+    expect(toFloat(released.ball.vel.x)).toBeGreaterThan(0);
   });
 });

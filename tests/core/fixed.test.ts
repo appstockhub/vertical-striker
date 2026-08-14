@@ -6,6 +6,7 @@ import {
   fixedDiv,
   fixedMul,
   fixedSub,
+  lerpFixed,
   toFixed,
   toFloat,
   vAdd,
@@ -56,5 +57,25 @@ describe('fixed-point math', () => {
     const sum = vAdd(a, b);
     expect(toFloat(sum.x)).toBe(4);
     expect(toFloat(sum.y)).toBe(6);
+  });
+
+  describe('lerpFixed', () => {
+    it('returns a at t=0', () => {
+      const a = toFixed(2);
+      const b = toFixed(10);
+      expect(toFloat(lerpFixed(a, b, toFixed(0)))).toBe(2);
+    });
+
+    it('returns b at t=FIXED_ONE (1.0)', () => {
+      const a = toFixed(2);
+      const b = toFixed(10);
+      expect(toFloat(lerpFixed(a, b, toFixed(1)))).toBe(10);
+    });
+
+    it('returns the midpoint at t=0.5', () => {
+      const a = toFixed(0);
+      const b = toFixed(10);
+      expect(toFloat(lerpFixed(a, b, toFixed(0.5)))).toBeCloseTo(5, 1);
+    });
   });
 });

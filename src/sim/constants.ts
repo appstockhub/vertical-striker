@@ -23,8 +23,8 @@ export const DIRECTION_VECTORS: Readonly<Record<Direction8, Vec2Fixed>> = {
 /** プレイヤーの移動速度 (px/tick, 仮値)。60fpsで秒速約3px*60=180px/secに相当。 */
 export const PLAYER_SPEED_FIXED: Fixed = toFixed(3.0);
 
-/** プレイヤー/ボールの当たり半径 (px, 仮値。ピッチ境界クランプの余白に使う)。 */
-export const ENTITY_RADIUS_FIXED: Fixed = toFixed(10);
+/** プレイヤーの当たり半径 (px, 仮値。ピッチ境界クランプの余白に使う)。ボール用は ballConstants.ts 参照。 */
+export const PLAYER_RADIUS_FIXED: Fixed = toFixed(10);
 
 export const PITCH_BOUNDS = {
   minX: toFixed(0) as Fixed,
