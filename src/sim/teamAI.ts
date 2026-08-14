@@ -46,6 +46,8 @@ import {
   LINE_FOLLOW_GRID_FIXED,
   HOME_PULL_WEIGHT_NEAR_FIXED,
   LINE_PUSH_STANDOFF_FIXED,
+  LINE_PUSH_FOLLOW_BOOST_MIN_HOME_DEPTH_FIXED,
+  LINE_PUSH_FOLLOW_MIN_FIXED,
   LINE_RETREAT_DAMPING_FIXED,
   OFFSIDE_BIAS_MARGIN_FIXED,
   OFFSIDE_BIAS_WEIGHT_FIXED,
@@ -223,8 +225,20 @@ export function computeLineAdjustedHomePosition(
   // 減衰無しだと、AI_HOME_LEASH_SQ_FIXEDによる「ホーム近傍でのボール追跡」との相乗効果で、
   // 守備側の選手がホームからどれだけ離れていても常にボールとほぼ同じ深さまで一斉に引き寄せられ、
   // 実質的に全員でボールを取り囲んでしまう(実プレイ相当のテストで発覚、計画時の想定を超えた過剰収束)。
+  //
+  // 押し上げ側の追従率の下限 (Phase 5、乖離B-2の修正、挙動仕様書1.2「キャリア周囲の
+  // パスの選択肢」): ホーム深さ由来の追従率(MF≈0.5)のままでは、ボールが敵陣深くへ進むほど
+  // 中盤が置いていかれ(ボール深度1400の時にMFは550px後方)、キャリアの周囲にパスの選択肢が
+  // 存在しなくなる — 特にCPUキャリアは最速で前進するため近接サポートが実測0.39-0.86まで
+  // 低下していた。ホーム深さがLINE_PUSH_FOLLOW_BOOST_MIN_HOME_DEPTH以上のスロット
+  // (MF/FW、DFは対象外=レストディフェンス維持)に限り、押し上げ時の追従率に下限を設けて
+  // 支援ライン(standoff手前)まで随伴させる。
+  const boostedFollowFraction =
+    teamHasBall && homeDepth >= (LINE_PUSH_FOLLOW_BOOST_MIN_HOME_DEPTH_FIXED as number)
+      ? (Math.max(followFraction as number, LINE_PUSH_FOLLOW_MIN_FIXED as number) as Fixed)
+      : followFraction;
   const effectiveFollowFraction = teamHasBall
-    ? followFraction
+    ? boostedFollowFraction
     : fixedMul(followFraction, LINE_RETREAT_DAMPING_FIXED);
   const adjustedDepth = lerpFixed(homeDepth as Fixed, targetDepth, effectiveFollowFraction);
 

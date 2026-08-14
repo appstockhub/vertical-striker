@@ -165,6 +165,10 @@ const XSHIFT_BALL_OFFSET_MIN = 60;
 /** 近接サポート測定: キャリアからこの距離帯 [min,max] にいる味方を「パスの選択肢」と数える。 */
 const NEAR_SUPPORT_MIN = 120;
 const NEAR_SUPPORT_MAX = 250;
+/** 近接サポート測定: ボール深度がこの帯にある時のみサンプルする (仕様1.2は「中盤」の基準。
+ * 敵陣深くのボックス攻略は仕様1.3の別基準)。 */
+const NEAR_SUPPORT_BALL_DEPTH_MIN = 400;
+const NEAR_SUPPORT_BALL_DEPTH_MAX = 1400;
 /** レストディフェンス測定: ボール深度よりこのpx以上後方を「保険の位置」と数える。 */
 const REST_DEFENDER_BEHIND_PX = 300;
 /** リスタート保護測定: 再開からこのtick以内の最初のタッチを判定対象にする。 */
@@ -817,9 +821,17 @@ export function runSimulatedMatch(opts: RunMatchOptions): MatchStats {
         }
       }
 
-      // 保持側: 近接サポート (仕様1.2) — キャリアがいる時のみ
+      // 保持側: 近接サポート (仕様1.2「ボールが中盤」) — キャリアがいて、かつボールが
+      // 中盤帯にある時のみ。敵陣深く(ボックス攻略)は仕様1.3の別基準の領分であり、
+      // ゴール前では味方がボックス内へ散開するため近接帯の人数は構造的に減る。
       const behTouchIdx = findTouchPriorityPlayer(state.players, state.ball.pos);
-      if (behTouchIdx !== null && state.players[behTouchIdx]!.team === behPossTeam) {
+      const behBallDepthPoss = toFloat(depthFromOwnGoal(behPossTeam, half, state.ball.pos.y));
+      if (
+        behTouchIdx !== null &&
+        state.players[behTouchIdx]!.team === behPossTeam &&
+        behBallDepthPoss >= NEAR_SUPPORT_BALL_DEPTH_MIN &&
+        behBallDepthPoss <= NEAR_SUPPORT_BALL_DEPTH_MAX
+      ) {
         const carrier = state.players[behTouchIdx]!;
         let near = 0;
         state.players.forEach((p, idx) => {

@@ -57,11 +57,24 @@ export const CHASE_RIGHT_HOLDERS_POSSESSING = 1;
 
 /**
  * ライン押し上げ(自チーム保持中)の目標深度をボールの深さからこの距離だけ手前に留める (px、仮値)。
- * 0だと全ラインがボールと同じ深さまで密着し、同深度の味方がボール150px圏に常時2〜3人入る
+ * 0だと全ラインがボールと同じ深さまで密着し、同深度の味方がボールの団子判定圏に常時入る
  * 「厚すぎるサポート」= 団子度悪化の一因になる (観戦シミュレーターで発覚)。
- * 「ボールの後方150pxに支援ラインを敷く」という現実のサッカーのサポート距離の近似。
+ * 「ボールの後方に支援ラインを敷く」という現実のサッカーのサポート距離の近似。
+ * Phase 5 (乖離B-2修正): LINE_PUSH_FOLLOW_MINの導入で支援ラインに実際に到達する選手が
+ * 増えたため、団子判定半径(150px)の内側に入らないよう150→190pxへ拡大した。
+ * 190pxはホームdeadzone(28px)を引いても162px>150で団子圏外、かつキャリアへの
+ * パス射程(220px)とnearSupport帯(120-250px)の内側に収まる。
  */
-export const LINE_PUSH_STANDOFF_FIXED: Fixed = toFixed(150);
+export const LINE_PUSH_STANDOFF_FIXED: Fixed = toFixed(190);
+
+/**
+ * 押し上げ時の追従率の下限 (Phase 5、乖離B-2修正、仮値)。ホーム深さが
+ * LINE_PUSH_FOLLOW_BOOST_MIN_HOME_DEPTH 以上のスロット(MF/FW)のみに適用し、
+ * DF(≈135-162px)とGKは対象外にする(レストディフェンス=カウンター保険の維持、挙動仕様書1.3)。
+ * 0.95 = 支援ライン(ボール後方190px)までほぼ完全に随伴する。
+ */
+export const LINE_PUSH_FOLLOW_MIN_FIXED: Fixed = toFixed(0.95);
+export const LINE_PUSH_FOLLOW_BOOST_MIN_HOME_DEPTH_FIXED: Fixed = toFixed(400);
 
 /**
  * ライン押し上げ/引き下げが参照するボール深度の量子化グリッド (px、仮値)。

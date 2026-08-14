@@ -54,14 +54,15 @@ describe('behavior spec layer-2 criteria (挙動仕様書の定量基準)', () =
     expect(RESULTS.length).toBeGreaterThan(0);
   });
 
-  // B2 (仕様1.2): 保持側はキャリアの周囲120-250pxに常時パスの選択肢を持つ。
-  // Team A (人間側) は達成済み (実測min 1.36) → ゲート0.8。
-  // Team B (CPU) は未達 (実測0.39-0.86) → [report-only]、乖離リスト B-2。
-  it('B2: Team A keeps >= 0.8 teammates in pass range of the carrier (Team B is report-only)', () => {
+  // B2 (仕様1.2): 保持側はキャリアの周囲120-250pxに常時パスの選択肢を持つ (ボールが中盤帯の時)。
+  // 乖離B-2の修正 (LINE_PUSH_FOLLOW_MIN、押し上げ追従率の下限) 後に両チームゲート化:
+  // 修正前 B 0.39-0.86 → 修正後 B 1.10-1.55 / A 1.21-1.85。ゲート0.8。
+  it('B2: possessing team keeps >= 0.8 teammates in pass range of the carrier', () => {
     for (const stats of ACTIVE) {
-      const a = stats.teams[0].behavior;
-      if (a.nearSupportSamples >= 1000) {
-        expect(a.nearSupportAvg, `${label(stats)} teamA nearSupport`).toBeGreaterThanOrEqual(0.8);
+      for (const team of [0, 1] as const) {
+        const b = stats.teams[team].behavior;
+        if (b.nearSupportSamples < 800) continue;
+        expect(b.nearSupportAvg, `${label(stats)} team${team} nearSupport`).toBeGreaterThanOrEqual(0.8);
       }
     }
     expect(RESULTS.length).toBeGreaterThan(0);
