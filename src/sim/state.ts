@@ -61,6 +61,16 @@ export interface GameState {
   readonly score: readonly [number, number];
   /** 最後にボールに触れた(ドリブルタッチ/キック/タックル奪取/セーブ)チーム。スローイン等の相手判定に使う。 */
   readonly lastTouchTeam: TeamId | null;
+  /**
+   * チームライン押し上げ/引き下げが現在反映している保持チーム (時間ヒステリシス付き)。
+   * 瞬間的な保持の入れ替わり(GKのパンチング・ディフレクション等、数十tickの揺り戻し)の
+   * たびにライン目標が静的ホームへ即座に巻き戻ると、チーム全体が一斉に自陣へ行進して
+   * すぐ戻る不自然な動きになる (観戦シミュレーターのpostShotRetreat測定で発覚)。
+   * 相手が LINE_POSSESSION_SWITCH_TICKS 連続で保持し続けた時だけ切り替わる。
+   */
+  readonly linePossessionTeam: TeamId | null;
+  /** 上記の切替判定用: linePossessionTeam と異なるチームが連続保持しているtick数。 */
+  readonly linePossessionSwitchTicks: number;
   /** Team B(CPU)の攻撃AI難易度。試合開始時に決定、以後不変。 */
   readonly difficulty: Difficulty;
   /** オフサイドルールのON/OFF。試合開始時に決定、以後不変。 */
@@ -94,6 +104,8 @@ export function createInitialState(seed: number, options: CreateInitialStateOpti
     teamFormations,
     score: [0, 0],
     lastTouchTeam: null,
+    linePossessionTeam: null,
+    linePossessionSwitchTicks: 0,
     difficulty: options.difficulty ?? 'medium',
     offsideEnabled: options.offsideEnabled ?? true,
   };

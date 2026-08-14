@@ -15,22 +15,38 @@ import {
 } from './goalkeeperConstants';
 
 const GOAL_CENTER_X: Fixed = GOAL_CENTER_X_FIXED;
-// 0 だと「ちょうど目標位置にいる (差ベクトル=(0,0))」場合に quantizeToDirection8 の
-// デッドゾーン判定が `magSq(0) < deadzoneSq(0)` = false になって素通りし、8方向タイブレークの
-// 先頭 (Up) にフォールバックしてしまう (実際にテストで踏んだ回帰)。ごく小さい正の値にする。
-const AI_STEER_DEADZONE_SQ: Fixed = fixedMul(toFixed(0.5), toFixed(0.5));
+// デッドゾーンは GK の1tick移動量 (GK_AUTO_SPEED=2.2px) より大きくすること。
+// バグ修正 (観戦シミュレーターの振動検出で発覚): 旧値0.5pxは移動量2.2pxより小さく、
+// GKが目標x座標を毎tick跨ぎ越して±2.2pxを永久に往復するジッターを構造的に起こしていた
+// (0にできない理由は従来どおり: 差ベクトル(0,0)がデッドゾーン判定を素通りしUpへ
+// フォールバックする既知の回帰があるため)。
+const AI_STEER_DEADZONE_SQ: Fixed = fixedMul(toFixed(2.5), toFixed(2.5));
+
+/** ボールx座標の追従グリッド (px)。GKの1tick移動量(2.2px)より大きい8px単位に量子化する。 */
+const GK_TRACK_GRID_FIXED: Fixed = toFixed(8);
 
 /**
  * キーパーの自動ステアリング目標位置。ゴールライン上、ボールのx位置に追従しつつ
- * GK_COVERAGE_RADIUS でクランプする。y座標はホームポジション (フォーメーションのGK深さ) を維持する。
+ * GK_COVERAGE_RADIUS でクランプする。y座標はフォーメーションのホームy (homeY) へ戻る。
+ *
+ * バグ修正 (観戦シミュレーターで発覚): 旧実装は y に gk.pos.y (現在位置) を使っており、
+ * GKがセーブやボール確保後のドリブルでゴール前から動いた場合、二度と定位置に戻らず
+ * ゴールががら空きのままになる不具合があった。homeY は呼び出し側がフォーメーションから
+ * 毎tick導出して渡す (「derive、cacheしない」方針)。
+ *
+ * ボールxは8pxグリッドに量子化してから使う (観戦シミュレーターの振動検出で発覚した
+ * ジッターの修正: 生のボールxを追うと、ボールの毎tickの微小な横揺れにGKが延々と
+ * シャッフルし続ける。グリッド1つぶんボールが動いた時だけGKが動けば十分)。
  */
-export function computeGoalkeeperTargetPos(gk: PlayerState, ballPos: Vec2Fixed): Vec2Fixed {
+export function computeGoalkeeperTargetPos(gk: PlayerState, ballPos: Vec2Fixed, homeY?: Fixed): Vec2Fixed {
+  const grid = GK_TRACK_GRID_FIXED as number;
+  const quantizedBallX = (Math.floor((ballPos.x as number) / grid) * grid) as Fixed;
   const targetX = clampFixed(
-    ballPos.x,
+    quantizedBallX,
     fixedSub(GOAL_CENTER_X, GK_COVERAGE_RADIUS_FIXED),
     fixedAdd(GOAL_CENTER_X, GK_COVERAGE_RADIUS_FIXED),
   );
-  return { x: targetX, y: gk.pos.y };
+  return { x: targetX, y: homeY ?? gk.pos.y };
 }
 
 /**
@@ -38,8 +54,8 @@ export function computeGoalkeeperTargetPos(gk: PlayerState, ballPos: Vec2Fixed):
  * 「反応速度」は呼び出し側 (sim/update.ts) が GK_AUTO_SPEED_FIXED を使って
  * 通常より遅い速度でこの方向へ動かすことで表現する (パラメータ化された反応速度)。
  */
-export function computeGoalkeeperAutoDirection(gk: PlayerState, ballPos: Vec2Fixed): Direction8 {
-  const target = computeGoalkeeperTargetPos(gk, ballPos);
+export function computeGoalkeeperAutoDirection(gk: PlayerState, ballPos: Vec2Fixed, homeY?: Fixed): Direction8 {
+  const target = computeGoalkeeperTargetPos(gk, ballPos, homeY);
   const toTarget = { x: fixedSub(target.x, gk.pos.x), y: fixedSub(target.y, gk.pos.y) };
   return quantizeToDirection8(toTarget, AI_STEER_DEADZONE_SQ);
 }

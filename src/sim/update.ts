@@ -1,9 +1,10 @@
-import { fixedMul, vAdd, vSub, vZero, ZERO_FIXED } from '../core/fixed';
+import { dotFixed, fixedMul, toFixed, vAdd, vSub, vZero, ZERO_FIXED } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, emptyButtonState, type ButtonState } from '../input/types';
 import type { BallState, GameState, PlayerState } from './state';
-import { TacklePhase, TeamId } from './state';
-import { opponentOf } from './formations';
+import { PLAYERS_PER_TEAM, TacklePhase, TeamId } from './state';
+import { getHomePosition, opponentOf } from './formations';
+import { PITCH_HEIGHT } from '../config/pitch';
 import { checkOffside } from './offsideRule';
 import { DIRECTION_VECTORS, PLAYER_RADIUS_FIXED, PLAYER_SPEED_FIXED } from './constants';
 import { KICK_MIN_CHARGE_FRAMES, LONG_DRIBBLE_PLAYER_SPEED_FIXED } from './ballConstants';
@@ -21,7 +22,13 @@ import {
   resolveSaveOutcome,
   shouldTakeOverGoalkeeper,
 } from './goalkeeperAI';
-import { GK_AUTO_SPEED_FIXED } from './goalkeeperConstants';
+import {
+  CATCH_MAX_SPEED_FIXED,
+  GK_AUTO_SPEED_FIXED,
+  SAVE_CONTEXT_MIN_BALL_SPEED_SQ_FIXED,
+} from './goalkeeperConstants';
+import { GOAL_KICK_EXCLUSION_DEPTH_FIXED } from './boundsConstants';
+import { LINE_POSSESSION_SWITCH_TICKS } from './teamAIConstants';
 import {
   advanceTacklePhase,
   applyTackleWin,
@@ -109,6 +116,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       teamFormations: state.teamFormations,
       score: state.score,
       lastTouchTeam: null,
+      linePossessionTeam: null,
+      linePossessionSwitchTicks: 0,
       difficulty: state.difficulty,
       offsideEnabled: state.offsideEnabled,
     };
@@ -141,34 +150,65 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   const controlledPlayerIndex = cursor.controlledPlayerIndex;
   const controlledPlayer = state.players[controlledPlayerIndex];
 
+  // セーブ文脈は「速いボールが飛んできている」時のみ。遅い/静止ボールがGKの足元にある時は
+  // 通常のキック文脈のままにする (速度条件なしだと、GKは確保したボールを永遠に蹴れず、
+  // ドリブルで運ぶしかなくなる詰みがあった — 観戦シミュレーターで発覚した実プレイ直結の欠陥)。
+  const ballSpeedSqForSave = dotFixed(state.ball.vel, state.ball.vel) as number;
   const inSaveRange =
-    !!controlledPlayer && controlledPlayer.isGoalkeeper && isInSaveRange(controlledPlayer, state.ball.pos);
+    !!controlledPlayer &&
+    controlledPlayer.isGoalkeeper &&
+    isInSaveRange(controlledPlayer, state.ball.pos) &&
+    ballSpeedSqForSave > (SAVE_CONTEXT_MIN_BALL_SPEED_SQ_FIXED as number);
 
   // マイルストーン6: touch-priorityをTeam B(CPU)が保持している時だけ攻撃AIの判断を1回だけ計算する。
   // resolveCursorの設計上、Team Aの誰かがtouch-priorityを持てば操作対象は即座にそちらへ
   // スナップされるため (計画セクションFの前提)、Team Aがtouch-priorityを持ちながらAI操作の
   // ままになることは無い。よってこの分岐は事実上「Team Bがボールを持っている時のみ」発火する。
   const touchPlayerForCpu = touchPriorityIndex !== null ? state.players[touchPriorityIndex] : undefined;
-  // 現在どちらのチームがボールを保持しているか (どちらもtouch-priorityを持たなければnull=競り合い中)。
-  // チームライン押し上げ/引き下げ (computeLineAdjustedHomePosition) の入力として使う。
-  const possessionTeam = touchPlayerForCpu ? touchPlayerForCpu.team : null;
+  // 現在どちらのチームがボールを保持しているか (生の判定)。追跡権(プレス)は即応すべきなので
+  // こちらを使う。
+  // 重要 (観戦シミュレーターで発覚した「シュート直後にチーム全体が自陣へ一斉後退する」バグの修正):
+  // touch-priorityの有無だけで判定すると、キック/シュートの瞬間にボールが足元を離れて
+  // 誰の touch-priority でもなくなり (ボールが飛んでいる間ずっと)、その間 possessionTeam=null
+  // = 「押し上げ無しの静的ホーム」へ全員が即座に戻ろうとしてしまう。ボールが飛行中は
+  // 最後に触れたチーム (lastTouchTeam、前tickまでの値) の保持が続いているとみなす。
+  const possessionTeam = touchPlayerForCpu ? touchPlayerForCpu.team : state.lastTouchTeam;
+
+  // チームライン用の保持チームは時間ヒステリシス付き (linePossessionTeam)。瞬間的な保持の
+  // 入れ替わり (GKパンチング等の数十tickの揺り戻し) ではラインを巻き戻さない。
+  let linePossessionTeam = state.linePossessionTeam;
+  let linePossessionSwitchTicks = state.linePossessionSwitchTicks;
+  if (possessionTeam === null || possessionTeam === linePossessionTeam) {
+    linePossessionSwitchTicks = 0;
+  } else {
+    linePossessionSwitchTicks++;
+    if (linePossessionSwitchTicks >= LINE_POSSESSION_SWITCH_TICKS) {
+      linePossessionTeam = possessionTeam;
+      linePossessionSwitchTicks = 0;
+    }
+  }
   const cpuDecision =
     touchPriorityIndex !== null && touchPlayerForCpu && !isTeamAInPossession(touchPriorityIndex)
       ? decideCpuAttack(touchPriorityIndex, state.players, half, state.difficulty, state.rngState)
       : null;
   let rngState = cpuDecision ? cpuDecision.rngState : state.rngState;
 
-  // 「団子サッカー」防止: 各チームでボールに最も近い選手+カバー数人だけがボール引力を
-  // フルに使う (バグ修正、実プレイで発覚)。毎tick1回だけ計算する。
-  const chaseRightIndices = computeChaseRightIndices(state.players, state.ball.pos);
+  // 「団子サッカー」防止: 守備側は最寄り2人(プレス+カバー)、保持側は最寄り1人(受け手)だけが
+  // ボール引力をフルに使う (バグ修正、実プレイ+観戦シミュレーターで発覚)。毎tick1回だけ計算する。
+  const chaseRightIndices = computeChaseRightIndices(state.players, state.ball.pos, possessionTeam);
 
   const effectiveInputs: Inputs[] = state.players.map((player, index) => {
     if (index === controlledPlayerIndex) return inputs;
-    if (player.isGoalkeeper) {
-      return { direction: computeGoalkeeperAutoDirection(player, state.ball.pos), buttons: NO_BUTTONS };
-    }
+    // CPU判断はGK自動ステアリングより優先する (順序バグの修正、観戦シミュレーターで発覚):
+    // CPU側のGKがボールを確保して touch-priority 保持者になった場合、GK枝が先だと
+    // 「CPUはドリブルで運び出そうと判断しているのに、実際の入力はGKの左右追従(その場でNone)」
+    // となり、GKがボールを抱えたまま永久に固まるデッドロックがあった。
     if (cpuDecision && index === touchPriorityIndex) {
       return { direction: cpuDecision.direction, buttons: NO_BUTTONS };
+    }
+    if (player.isGoalkeeper) {
+      const gkHome = getHomePosition(player.team, 0, state.teamFormations[player.team], half);
+      return { direction: computeGoalkeeperAutoDirection(player, state.ball.pos, gkHome.y), buttons: NO_BUTTONS };
     }
     const direction = computeNonControlledDirection(
       player,
@@ -176,8 +216,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       state.ball.pos,
       state.teamFormations,
       half,
-      possessionTeam,
-      chaseRightIndices.has(index),
+      linePossessionTeam,
+      chaseRightIndices.get(index) ?? null,
     );
     return { direction, buttons: NO_BUTTONS };
   });
@@ -281,6 +321,31 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     }
   }
 
+  // 非操作GKの自動セーブ (観戦シミュレーターで発覚したギャップの修正): applySaveは従来
+  // 「人間が操作しているGK」の Y/B 入力からしか呼ばれず、AI制御のGK (Team BのGKは常時、
+  // Team AのGKも自動交代が発動していない間) はシュートに一切反応できなかった。
+  // CLAUDE.mdのキーパーAI仕様「シュートコースへの反応」に沿い、非操作GKはセーブ範囲に
+  // ボールが入ったら自動でセーブを試みる: キャッチ可能な遅さならキャッチ、速ければ
+  // パンチング (人間の Y/B の使い分けと同じリスクリターン構造を決定論的に適用)。
+  // players[] 昇順 (A GK=0 → B GK=11) で処理する決定論的順序。
+  for (const gkIndex of [TeamId.A * PLAYERS_PER_TEAM, TeamId.B * PLAYERS_PER_TEAM]) {
+    if (gkIndex === controlledPlayerIndex) continue; // 人間操作中のGKは従来どおり手動セーブのみ
+    const gk = state.players[gkIndex];
+    if (!gk || !gk.isGoalkeeper) continue;
+    if (!isInSaveRange(gk, ball.pos)) continue;
+    const ballSpeedSq = dotFixed(ball.vel, ball.vel) as number;
+    // 人間のセーブ文脈と同じ速度ゲート: 遅い/静止ボールは「セーブ対象」ではなく「拾って
+    // プレーするボール」。ゲート無しだと、自動GKが自分でドリブルし始めたボールや
+    // 確保済みのボールを毎tickキャッチし直し、その場で永久に固まる (観戦シミュレーターで発覚)。
+    if (ballSpeedSq <= (SAVE_CONTEXT_MIN_BALL_SPEED_SQ_FIXED as number)) continue;
+    const catchable = ballSpeedSq <= (fixedMul(CATCH_MAX_SPEED_FIXED, CATCH_MAX_SPEED_FIXED) as number);
+    const outcome = resolveSaveOutcome(gk, ball, catchable ? 'catch' : 'punch');
+    if (outcome !== 'missed') {
+      ball = applySave(ball, gk, outcome, half);
+      lastTouchTeam = gk.team;
+    }
+  }
+
   if (cpuDecision && touchPriorityIndex !== null && (cpuDecision.action === 'shoot' || cpuDecision.action === 'pass')) {
     // CPU(Team B)のシュート/パス実行。オフサイド判定はTeam Aの2箇所(カーソルパス/チャージキック)と
     // 同じ扱いにする (計画セクションF、offsideフックをCPUのキックにも適用)。溜め無し・
@@ -322,17 +387,30 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       teamFormations: state.teamFormations,
       score,
       lastTouchTeam: null,
+      linePossessionTeam: null,
+      linePossessionSwitchTicks: 0,
       difficulty: state.difficulty,
       offsideEnabled: state.offsideEnabled,
     };
   }
 
+  let goalKickExclusion: { readonly restartTeam: TeamId; readonly northEnd: boolean } | null = null;
   if (boundaryEvent) {
     // スローイン/ゴールキック/コーナー: 即座にテレポートするのみ (試合停止の演出は無し)。
     // 選手移動処理はこのまま続ける (Team Aはカーソルスナップ、Team Bはボール引力AIが
     // 自然にリスタート位置へ収束する、計画セクションC)。
     ball = { pos: boundaryEvent.pos, vel: vZero(), height: ZERO_FIXED, zVel: ZERO_FIXED };
-    lastTouchTeam = null;
+    // リスタートのボールは再開するチームのものとして扱う (観戦シミュレーターで発覚した
+    // リスタート・キャンプ問題の修正の一部: lastTouchTeam=nullだと「競り合い」扱いになり
+    // 両チームの追跡権保持者が同数でスポットに殺到する。再開チームに帰属させることで、
+    // 相手側は守備側の追跡権(2人)、再開側は回収役(1人)という自然な役割になる)。
+    lastTouchTeam = boundaryEvent.restartTeam;
+    if (boundaryEvent.type === 'goalKick') {
+      goalKickExclusion = {
+        restartTeam: boundaryEvent.restartTeam,
+        northEnd: (boundaryEvent.pos.y as number) < (toFixed(PITCH_HEIGHT / 2) as number),
+      };
+    }
   } else {
     ball = ballStep.ball;
   }
@@ -352,7 +430,23 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       if (movementOverride.speed !== undefined) speedOverride = movementOverride.speed;
     }
 
-    const moved = updatePlayer(player, effectiveDirection, longDribble, speedOverride);
+    let moved = updatePlayer(player, effectiveDirection, longDribble, speedOverride);
+
+    // ゴールキック時の退避ルール (観戦シミュレーターで発覚した「リスタート・キャンプ」問題の修正):
+    // 即時テレポート復帰+ピッチ全域プレスの組み合わせでは、相手の追跡権保持者がゴールキックの
+    // スポットに張り付き、再開した瞬間に奪う→シュートのループが成立してしまう。実サッカーの
+    // 「ゴールキック時は相手はペナルティエリア外」に相当する最小ルールとして、再開側のゴール
+    // ラインから一定距離未満にいる相手選手をその距離まで軸方向に押し出す (sqrt不要のyクランプ)。
+    if (goalKickExclusion && player.team !== goalKickExclusion.restartTeam && !player.isGoalkeeper) {
+      const limitY = goalKickExclusion.northEnd
+        ? (GOAL_KICK_EXCLUSION_DEPTH_FIXED as number)
+        : ((toFixed(PITCH_HEIGHT) as number) - (GOAL_KICK_EXCLUSION_DEPTH_FIXED as number));
+      const y = moved.pos.y as number;
+      const needsPush = goalKickExclusion.northEnd ? y < limitY : y > limitY;
+      if (needsPush) {
+        moved = { ...moved, pos: { x: moved.pos.x, y: limitY as Fixed } };
+      }
+    }
 
     if (index !== controlledPlayerIndex) return moved;
     return {
@@ -374,6 +468,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     teamFormations: state.teamFormations,
     score: state.score,
     lastTouchTeam,
+    linePossessionTeam,
+    linePossessionSwitchTicks,
     difficulty: state.difficulty,
     offsideEnabled: state.offsideEnabled,
   };

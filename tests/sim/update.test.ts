@@ -393,7 +393,9 @@ describe('simulate — Phase 3: boundary detection (goals, throw-in/goal-kick/co
     const state = { ...base, lastTouchTeam: TeamId.A };
     const next = simulate(state, inputs(Direction8.None));
     expect(next.score).toEqual([0, 0]);
-    expect(next.lastTouchTeam).toBeNull(); // リスタート発生でクリアされる
+    // リスタートのボールは再開チーム(ゴールキック=守備側B)に帰属する
+    // (観戦シミュレーターで発覚したリスタート・キャンプ問題の修正で null → restartTeam に変更)
+    expect(next.lastTouchTeam).toBe(TeamId.B);
     expect(toFloat(next.ball.vel.x)).toBe(0);
     expect(toFloat(next.ball.vel.y)).toBe(0);
   });
@@ -616,13 +618,23 @@ describe('simulate — Phase 3: team line push/retreat fixes "Team B doesn\'t at
   it('Team B commits forward as a team and advances substantially into the attacking third when given room to run', () => {
     let state = withOpenCounterAttack(1300); // 自陣寄り(500px先がゴール)からスタート
     const startY = toFloat(state.ball.pos.y);
+    let maxBallY = startY;
+    let scored = false;
     for (let i = 0; i < 150; i++) {
       state = simulate(state, inputs(Direction8.None));
+      const y = toFloat(state.ball.pos.y);
+      if (y > maxBallY) maxBallY = y;
+      if (state.score[1] > 0) {
+        scored = true;
+        break;
+      }
     }
-    const endY = toFloat(state.ball.pos.y);
     // 旧実装(チームライン押し上げ無し)ではボールがハーフウェー付近で頭打ちになり、
     // ホームポジション固定のためチーム全体が追随できなかった。修正後は明確に前進する。
-    expect(endY - startY).toBeGreaterThan(150);
+    // CPUのシュート射程が現実化(200px)されてからは、この150tick内に得点まで到達することも
+    // あるため、「得点した」も成功として扱う (得点後はキックオフに戻りボールYが巻き戻るので
+    // 最終位置ではなく最大到達点で判定する)。
+    expect(scored || maxBallY - startY > 150).toBe(true);
   });
 
   it('Team B reaches the penalty box and scores from a realistic attacking-third position, with no human input (regression for both the team-line-push fix and the goal-line dead-zone bug)', () => {

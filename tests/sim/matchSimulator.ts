@@ -1,0 +1,746 @@
+import { distSqFixed, toFixed, toFloat, vSub, fixedMul } from '../../src/core/fixed';
+import type { Fixed } from '../../src/core/types';
+import { createRng, nextRangeInt, type RngState } from '../../src/core/rng';
+import { createInitialState, TeamId, type Difficulty, type GameState } from '../../src/sim/state';
+import { simulate, type Inputs } from '../../src/sim/update';
+import { Direction8, emptyButtonState, type ButtonState } from '../../src/input/types';
+import { attackingIsUpward, depthFromOwnGoal, opponentOf, type Half } from '../../src/sim/formations';
+import { FULL_MATCH_DURATION_FRAMES, getHalf } from '../../src/sim/matchClock';
+import { findTouchPriorityPlayer } from '../../src/sim/ballTouch';
+import { selectPassTarget } from '../../src/sim/cursor';
+import { quantizeToDirection8 } from '../../src/sim/steering';
+import { DIRECTION_VECTORS } from '../../src/sim/constants';
+import { PITCH_HEIGHT, PITCH_WIDTH } from '../../src/config/pitch';
+
+/**
+ * 観戦シミュレーター (Phase 3、実プレイ相当の自律検証基盤)。
+ *
+ * simulate() をフルマッチ分回し、「サッカーとして正常か」を判定するための統計と
+ * イベントログを出力する。人間入力は4パターンの決定論的スクリプト (mulberry32、
+ * Math.random不使用) で模擬する。soccerSanity.test.ts がこの統計に対して
+ * 正常性基準を assert し、回帰検知に使う。matchReport.test.ts は同じ統計を
+ * 人間が読むためのサマリとして出力する。
+ *
+ * 統計の設計メモ:
+ * - シュート検出: ボール速度が1tickでしきい値(6.5px/tick)を跨いで増加=キック。
+ *   ロングドリブルの蹴り出し(6.0)を除外しつつ、強キック(9.0)・CPUシュート(9.0)・
+ *   チャージ強キック(最大溜めでも6.3)を拾う値。その中で「相手ゴールライン方向へ向かい、
+ *   ゴールライン600px以内から放たれ、直線外挿でゴール中心±100px以内を通る」ものをシュート、
+ *   ±44px(ゴール半幅40+マージン)以内なら枠内とする。
+ * - 団子度: 毎tickボール150px以内の選手数(22人中)の平均。
+ * - 振動検出: 90tickの非重複窓で、移動総量>120pxなのに滞在範囲(バウンディングボックス)が
+ *   24px四方未満の選手=「狭い範囲で動き続けている」選手を検出する。
+ * - シュート後の陣形急変: シュートから90tick後のチーム重心深度の後退量。リスタート/得点/
+ *   相手への支配移転があった窓は除外する(それらによる後退は正当なため)。
+ * - プレス距離: 相手が保持中かつボールが自陣から見て敵陣側1/3にある時の、
+ *   自チームフィールドプレイヤーの最小ボール距離の平均。前線プレスの有無を測る。
+ */
+
+export type HumanPattern = 'aggressive' | 'passHeavy' | 'idle' | 'defensive';
+
+export interface TeamMatchStats {
+  shots: number;
+  shotsOnTarget: number;
+  goals: number;
+  /** 相手ペナルティエリア(ゴールライン150px×中央±130px)へのボール侵入回数。 */
+  boxEntries: number;
+  /** 支配率 (lastTouchTeamベース、どちらかが保持していたtickのうちの割合、%)。 */
+  possessionPct: number;
+  /** シュートから90tick後のチーム重心(アウトフィールド)の後退量平均 (px)。 */
+  postShotRetreatAvgPx: number;
+  postShotRetreatSamples: number;
+  /** 相手保持中・ボールが敵陣側1/3にある時の、自チーム最寄り選手のボール距離平均 (px)。 */
+  pressDistanceAvgPx: number;
+  pressSamples: number;
+}
+
+export interface PlayerDistribution {
+  meanX: number;
+  meanY: number;
+  /** 平均位置からの散らばり (px、平方根平均二乗偏差)。 */
+  spread: number;
+  /** 自陣側1/3 / 中盤1/3 / 敵陣側1/3 に居た時間の割合 (0..1)。 */
+  thirds: [number, number, number];
+}
+
+export interface MatchStats {
+  pattern: HumanPattern;
+  seed: number;
+  scriptSeed: number;
+  ticks: number;
+  finalScore: readonly [number, number];
+  teams: [TeamMatchStats, TeamMatchStats];
+  /** ボール150px以内の選手数の平均と最大。 */
+  dangoAvg: number;
+  dangoMax: number;
+  /** 振動検出に引っかかった選手のindex一覧 (重複なし)。 */
+  oscillatingPlayers: number[];
+  players: PlayerDistribution[];
+  /** 主要イベントのログ (先頭200件まで)。 */
+  events: string[];
+}
+
+const KICK_DETECT_SPEED = 6.5; // px/tick
+const SHOT_MAX_RANGE = 600; // ゴールラインからの距離
+const SHOT_AIM_HALF_WIDTH = 100;
+const ON_TARGET_HALF_WIDTH = 44;
+const BOX_DEPTH = 150;
+const BOX_HALF_WIDTH = 130;
+const DANGO_RADIUS_PX = 150;
+const OSC_WINDOW = 90;
+const OSC_MIN_PATH = 120;
+const OSC_MAX_BBOX = 24;
+const RETREAT_WINDOW = 90;
+const PRESS_DEPTH_THRESHOLD = (PITCH_HEIGHT / 3) * 2; // 自陣ゴールからこの深さより先=敵陣側1/3
+const GOAL_CENTER_X = PITCH_WIDTH / 2;
+
+const AIM_DEADZONE_SQ: Fixed = fixedMul(toFixed(0.5), toFixed(0.5));
+
+const ALL_DIRECTIONS = [
+  Direction8.Up,
+  Direction8.UpRight,
+  Direction8.Right,
+  Direction8.DownRight,
+  Direction8.Down,
+  Direction8.DownLeft,
+  Direction8.Left,
+  Direction8.UpLeft,
+];
+
+function goalLineY(attackUp: boolean): number {
+  return attackUp ? 0 : PITCH_HEIGHT;
+}
+
+/** 人間スクリプトのシュート開始距離 (px)。グラウンダーの物理的到達距離(~225px)に合わせる。 */
+const SCRIPT_SHOOT_RANGE = 220;
+
+/**
+ * 人間入力の模擬スクリプト。パターンごとに閉包内に最小限の状態(チャージ進行・前tickのボタン)を
+ * 持つが、乱数はmulberry32のみで決定論的 (同じseed+同じ状態列なら同じ入力列)。
+ *
+ * 全アクティブパターン共通で「操作がGKに切り替わっていてボールが近い時はキャッチ(Y)を試みる」
+ * を含む — 実際の人間プレイヤーが必ず行う操作で、これ無しの検証はGK不在と同じになり、
+ * CPUのシュートが全部入る非現実的なスコアになる (観戦シミュレーターの初期計測で確認)。
+ */
+export function createHumanScript(pattern: HumanPattern, scriptSeed: number): (state: GameState) => Inputs {
+  let rng: RngState = createRng(scriptSeed);
+  let chargeTicksLeft = 0;
+  /** チャージ開始時に決めた解放方向 (None=解放時にゴール中心方向を量子化して使う)。 */
+  let aimDirection: Direction8 = Direction8.None;
+  let prevY = false;
+  let prevB = false;
+
+  const roll = (max: number): number => {
+    let value: number;
+    [value, rng] = nextRangeInt(rng, 0, max);
+    return value;
+  };
+
+  const randomDirection = (): Direction8 => ALL_DIRECTIONS[roll(ALL_DIRECTIONS.length)] as Direction8;
+
+  return (state: GameState): Inputs => {
+    if (pattern === 'idle') {
+      return { direction: Direction8.None, buttons: emptyButtonState() };
+    }
+
+    const half: Half = getHalf(state.frame);
+    const attackUp = attackingIsUpward(TeamId.A, half);
+    const forward = attackUp ? Direction8.Up : Direction8.Down;
+    const controlled = state.players[state.controlledPlayerIndex];
+    const isCarrier = findTouchPriorityPlayer(state.players, state.ball.pos) === state.controlledPlayerIndex;
+
+    const buttons: ButtonState = { ...emptyButtonState() };
+    let direction = Direction8.None;
+
+    const finish = (): Inputs => {
+      prevY = buttons.Y;
+      prevB = buttons.B;
+      return { direction, buttons };
+    };
+
+    // 最寄りの相手選手 (プレス回避の判断材料。実プレイヤーは常に見ている情報)
+    let nearestOppDist = Infinity;
+    let nearestOppIsLeft = false;
+    if (controlled) {
+      for (const p of state.players) {
+        if (p.team !== TeamId.B) continue;
+        const d = Math.sqrt(distSqFixed(p.pos, controlled.pos) as number) / 16;
+        if (d < nearestOppDist) {
+          nearestOppDist = d;
+          nearestOppIsLeft = toFloat(p.pos.x) < toFloat(controlled.pos.x);
+        }
+      }
+    }
+
+    // --- GKセーブ (全アクティブパターン共通) ---
+    // 飛んでくるボール(速い)にはパンチング(B)。キャッチ(Y)は使わない: このゲームには
+    // GKの保持からの配球(スロー/パントキック)が未実装のため、キャッチすると足元に確保した
+    // ボールを毎tickキャッチし直す无限ループに陥り、試合が完全に止まる (観戦シミュレーターの
+    // 初期計測で発覚したデッドロック)。パンチングは入射速度ぶんだけ前方へ弾くので流れが続く。
+    // 足元の死んだボール(遅い)はドリブルで前へ運び出す。
+    if (controlled?.isGoalkeeper) {
+      const distToBall = Math.sqrt(distSqFixed(controlled.pos, state.ball.pos) as number) / 16;
+      const ballVelX = toFloat(state.ball.vel.x);
+      const ballVelY = toFloat(state.ball.vel.y);
+      const ballSpeed = Math.hypot(ballVelX, ballVelY);
+      if (distToBall < 32 && ballSpeed > 4.5 && !prevB) {
+        buttons.B = true; // 速いボールにはパンチング試行 (エッジ)
+        return finish();
+      }
+      if (isCarrier && ballSpeed <= 4.5) {
+        if (nearestOppDist < 50) {
+          // プレスが目前: 立ち止まって溜めると奪われるので、まず離れる方向へ運ぶ
+          direction = attackUp
+            ? nearestOppIsLeft
+              ? Direction8.UpRight
+              : Direction8.UpLeft
+            : nearestOppIsLeft
+              ? Direction8.DownRight
+              : Direction8.DownLeft;
+          return finish();
+        }
+        // 足元の死んだボール: 短いチャージキックで素早く前線へクリアする
+        // (遅いボールはセーブ文脈にならず通常キックが使える — simの詰み修正に対応した操作)
+        chargeTicksLeft = 2 + roll(2);
+        buttons.B = true;
+        return finish();
+      }
+      if (distToBall > 200) {
+        // ボールが離れたら自陣ゴール前へ戻る (GKの基本ポジショニング)
+        const homeY = goalLineY(!attackUp) + (attackUp ? -36 : 36);
+        direction = quantizeToDirection8(
+          vSub({ x: toFixed(GOAL_CENTER_X), y: toFixed(homeY) }, controlled.pos),
+          AIM_DEADZONE_SQ,
+        );
+        return finish();
+      }
+      // 位置調整: ボールが向かってくる場合は「GKのy座標に到達する時のx」を予測して先回りする
+      // (現在のボール位置を追いかけるだけではコーナーへのシュートに追いつけない、人間の
+      // 実際のセービング操作の近似)。
+      const gkY = toFloat(controlled.pos.y);
+      const bY = toFloat(state.ball.pos.y);
+      let targetX = toFloat(state.ball.pos.x);
+      if (Math.abs(ballVelY) > 0.3 && Math.sign(gkY - bY) === Math.sign(ballVelY)) {
+        const ticksToArrive = Math.abs((gkY - bY) / ballVelY);
+        targetX = toFloat(state.ball.pos.x) + ballVelX * Math.min(ticksToArrive, 60);
+      }
+      targetX = Math.min(Math.max(targetX, GOAL_CENTER_X - 60), GOAL_CENTER_X + 60);
+      direction = quantizeToDirection8(
+        vSub({ x: toFixed(targetX), y: controlled.pos.y }, controlled.pos),
+        AIM_DEADZONE_SQ,
+      );
+      return finish();
+    }
+
+    // --- チャージキック進行中: B押しっぱなし→最後のtickで方向+B解放(=キック実行) ---
+    if (chargeTicksLeft > 0) {
+      chargeTicksLeft--;
+      if (chargeTicksLeft > 0) {
+        buttons.B = true;
+        direction = Direction8.None;
+      } else if (controlled) {
+        // 解放tick: チャージ開始時に選んだ照準方向 (未指定ならゴール中心方向を量子化)
+        if (aimDirection !== Direction8.None) {
+          direction = aimDirection;
+          aimDirection = Direction8.None;
+        } else {
+          const goalPos = { x: toFixed(GOAL_CENTER_X), y: toFixed(goalLineY(attackUp)) };
+          direction = quantizeToDirection8(vSub(goalPos, controlled.pos), AIM_DEADZONE_SQ);
+        }
+      }
+      return finish();
+    }
+
+    const distToGoalLine = controlled ? Math.abs(toFloat(controlled.pos.y) - goalLineY(attackUp)) : PITCH_HEIGHT;
+    const goalPos = { x: toFixed(GOAL_CENTER_X), y: toFixed(goalLineY(attackUp)) };
+    const towardGoal = controlled
+      ? quantizeToDirection8(vSub(goalPos, controlled.pos), AIM_DEADZONE_SQ)
+      : forward;
+
+    // 照準チェック: 8方向のうち、直線外挿でゴールマウス(±40px)に入る方向があればそれを返す。
+    // 8方向量子化のため「ゴール中心を向いた方向」は最大22.5°ずれ、遠目からだと枠を外れる。
+    // 実プレイヤーと同様、8つの撃ち分けから枠に入るコースを選び、無ければ撃たない
+    // (CLAUDE.mdの「照準スキル」= 位置取りとコース選択で枠に入れる、の操作近似)。
+    const bestShotDirection = (): Direction8 | null => {
+      if (!controlled) return null;
+      const goalY = goalLineY(attackUp);
+      const px = toFloat(controlled.pos.x);
+      const py = toFloat(controlled.pos.y);
+      let best: Direction8 | null = null;
+      let bestOffset = Infinity;
+      for (const dir of ALL_DIRECTIONS) {
+        const v = DIRECTION_VECTORS[dir];
+        const vx = toFloat(v.x as Fixed);
+        const vy = toFloat(v.y as Fixed);
+        if (Math.abs(vy) < 0.01) continue;
+        if (attackUp ? vy >= 0 : vy <= 0) continue;
+        const t = (goalY - py) / vy;
+        const xAtGoal = px + vx * t;
+        const offset = Math.abs(xAtGoal - GOAL_CENTER_X);
+        if (offset <= 40 && offset < bestOffset) {
+          best = dir;
+          bestOffset = offset;
+        }
+      }
+      return best;
+    };
+
+    // プレスから離れる斜め前方 (相手が左なら右前へ、右なら左前へ)
+    const evadeDirection = attackUp
+      ? nearestOppIsLeft
+        ? Direction8.UpRight
+        : Direction8.UpLeft
+      : nearestOppIsLeft
+        ? Direction8.DownRight
+        : Direction8.DownLeft;
+
+    switch (pattern) {
+      case 'aggressive': {
+        const shotDir = isCarrier && distToGoalLine < 340 ? bestShotDirection() : null;
+        if (isCarrier && shotDir !== null && distToGoalLine < SCRIPT_SHOOT_RANGE && roll(100) < 85) {
+          // 枠に飛ぶ撃ち分けコースがある時だけ速射 (照準スキルの近似)
+          aimDirection = shotDir;
+          chargeTicksLeft = 1 + roll(2);
+          buttons.B = true;
+          return finish();
+        }
+        if (isCarrier && shotDir !== null && distToGoalLine < 340 && roll(100) < 15) {
+          // やや遠めからの思い切ったミドルシュート (頻度低め)
+          aimDirection = shotDir;
+          chargeTicksLeft = 1 + roll(2);
+          buttons.B = true;
+          return finish();
+        }
+        if (isCarrier && distToGoalLine > 400 && nearestOppDist > 70 && roll(100) < 12) {
+          // 自陣/中盤からのロングパント (溜めて高弾道、空中は転がり摩擦が無いため大きく前進する。
+          // 前線の味方(保持側の追跡権1人+押し上げたライン)が回収する、実プレイのロングボール戦術)
+          chargeTicksLeft = 8 + roll(7);
+          buttons.B = true;
+          return finish();
+        }
+        if (isCarrier) {
+          // プレスが迫っていたら味方への逃がしパス (受け手がいる時のみ)
+          if (nearestOppDist < 50 && !prevY && roll(100) < 30) {
+            if (selectPassTarget(state.controlledPlayerIndex, state.players) !== null) {
+              buttons.Y = true;
+              direction = towardGoal;
+              return finish();
+            }
+          }
+          // プレスが近い時は斜めに外しながら前進、遠い時はゴールへ直進
+          const r = roll(100);
+          if (nearestOppDist < 70) {
+            direction = r < 75 ? evadeDirection : towardGoal;
+          } else {
+            direction = r < 75 ? towardGoal : r < 92 ? randomDirection() : forward;
+          }
+          // ロングドリブル(L)はスペースがある時だけ (蹴り出しが大きい=プレスに弱い、CLAUDE.mdの
+          // リスクリターン設計どおりの使い分け)
+          buttons.L = nearestOppDist > 80;
+        } else {
+          // 非保持: ボールへ寄せる/前へ。近ければタックル。
+          const distToBall = controlled
+            ? Math.sqrt(distSqFixed(controlled.pos, state.ball.pos) as number) / 16
+            : Infinity;
+          if (state.lastTouchTeam === TeamId.B && distToBall < 90 && !prevB && roll(100) < 10) {
+            buttons.B = true; // タックル (エッジ)
+          }
+          const r = roll(100);
+          if (r < 50 && controlled) {
+            direction = quantizeToDirection8(vSub(state.ball.pos, controlled.pos), AIM_DEADZONE_SQ);
+          } else if (r < 80) {
+            direction = forward;
+          } else {
+            direction = randomDirection();
+          }
+        }
+        break;
+      }
+      case 'passHeavy': {
+        const shotDir = isCarrier && distToGoalLine < SCRIPT_SHOOT_RANGE ? bestShotDirection() : null;
+        if (isCarrier && shotDir !== null && roll(100) < 40) {
+          aimDirection = shotDir;
+          chargeTicksLeft = 1 + roll(2);
+          buttons.B = true;
+          return finish();
+        }
+        if (isCarrier) {
+          const r = roll(100);
+          direction = nearestOppDist < 70 ? evadeDirection : r < 55 ? towardGoal : r < 85 ? randomDirection() : Direction8.None;
+          // 高頻度のカーソルパス (受け手がいる時のみ、エッジになるよう前tickがYでない時のみ)
+          if (!prevY && roll(100) < 15 && selectPassTarget(state.controlledPlayerIndex, state.players) !== null) {
+            buttons.Y = true;
+          }
+        } else {
+          const r = roll(100);
+          if (r < 40 && controlled) {
+            direction = quantizeToDirection8(vSub(state.ball.pos, controlled.pos), AIM_DEADZONE_SQ);
+          } else if (r < 75) {
+            direction = forward;
+          } else {
+            direction = randomDirection();
+          }
+        }
+        break;
+      }
+      case 'defensive': {
+        // 自陣ゴールとボールの中間点へ向かう (ゴール前を固める動き)
+        if (controlled) {
+          const ownGoalY = goalLineY(!attackUp);
+          const midpoint = {
+            x: toFixed((toFloat(state.ball.pos.x) + GOAL_CENTER_X) / 2),
+            y: toFixed((toFloat(state.ball.pos.y) + ownGoalY) / 2),
+          };
+          direction = quantizeToDirection8(vSub(midpoint, controlled.pos), AIM_DEADZONE_SQ);
+        }
+        // ボールが近ければたまにタックル(Bエッジ)
+        if (!isCarrier && controlled) {
+          const distToBall = Math.sqrt(distSqFixed(controlled.pos, state.ball.pos) as number) / 16;
+          if (distToBall < 100 && !prevB && roll(100) < 6) buttons.B = true;
+        }
+        // 奪ったら前線へ蹴り出す
+        if (isCarrier && roll(100) < 10) {
+          chargeTicksLeft = 4 + roll(6);
+          buttons.B = true;
+          return finish();
+        }
+        break;
+      }
+    }
+
+    return finish();
+  };
+}
+
+interface PendingShotWindow {
+  team: TeamId;
+  resolveAtFrame: number;
+  beforeCentroidDepth: number;
+  scoreA: number;
+  scoreB: number;
+  half: Half;
+  shotFrame: number;
+  /** 窓の途中で相手がボールに触れたら真になり、この窓は測定対象外になる
+   * (相手に渡った後の後退は正当な守備移行のため、「不自然な後退」の測定から外す)。 */
+  invalidated: boolean;
+}
+
+function centroidDepth(state: GameState, team: TeamId, half: Half): number {
+  let sum = 0;
+  let count = 0;
+  for (const p of state.players) {
+    if (p.team !== team || p.isGoalkeeper) continue;
+    sum += toFloat(depthFromOwnGoal(team, half, p.pos.y));
+    count++;
+  }
+  return count > 0 ? sum / count : 0;
+}
+
+export interface RunMatchOptions {
+  seed: number;
+  scriptSeed?: number;
+  pattern: HumanPattern;
+  difficulty?: Difficulty;
+  ticks?: number;
+}
+
+export function runSimulatedMatch(opts: RunMatchOptions): MatchStats {
+  const ticks = opts.ticks ?? FULL_MATCH_DURATION_FRAMES;
+  const scriptSeed = opts.scriptSeed ?? 42;
+  const script = createHumanScript(opts.pattern, scriptSeed);
+  let state = createInitialState(opts.seed, { difficulty: opts.difficulty ?? 'hard', offsideEnabled: true });
+
+  const events: string[] = [];
+  const logEvent = (msg: string) => {
+    if (events.length < 200) events.push(msg);
+  };
+
+  // 集計器
+  const shots: [number, number] = [0, 0];
+  const shotsOnTarget: [number, number] = [0, 0];
+  const boxEntries: [number, number] = [0, 0];
+  const possessionTicks: [number, number] = [0, 0];
+  let dangoSum = 0;
+  let dangoMax = 0;
+  let dangoCount = 0;
+  const retreatSum: [number, number] = [0, 0];
+  const retreatCount: [number, number] = [0, 0];
+  const pressSum: [number, number] = [0, 0];
+  const pressCount: [number, number] = [0, 0];
+
+  // 選手分布
+  const posSumX = new Array<number>(22).fill(0);
+  const posSumY = new Array<number>(22).fill(0);
+  const posSumSq = new Array<number>(22).fill(0);
+  const thirds: Array<[number, number, number]> = Array.from({ length: 22 }, () => [0, 0, 0]);
+
+  // 振動検出 (非重複窓)
+  const oscPath = new Array<number>(22).fill(0);
+  const oscMinX = new Array<number>(22).fill(Infinity);
+  const oscMaxX = new Array<number>(22).fill(-Infinity);
+  const oscMinY = new Array<number>(22).fill(Infinity);
+  const oscMaxY = new Array<number>(22).fill(-Infinity);
+  let oscWindowStart = 0;
+  const oscillating = new Set<number>();
+  const resetOscWindow = (frame: number) => {
+    oscPath.fill(0);
+    oscMinX.fill(Infinity);
+    oscMaxX.fill(-Infinity);
+    oscMinY.fill(Infinity);
+    oscMaxY.fill(-Infinity);
+    oscWindowStart = frame;
+  };
+
+  const pendingShotWindows: PendingShotWindow[] = [];
+  let lastRestartFrame = -1;
+
+  // 前tickの状態スナップショット (イベント検出用)
+  let prevBallSpeed = 0;
+  let prevScore: readonly [number, number] = state.score;
+  let prevHalf: Half = getHalf(state.frame);
+  let prevInsideBox: [boolean, boolean] = [false, false]; // [Aの自陣ボックス内, Bの自陣ボックス内]
+  let prevPositions = state.players.map((p) => ({ x: toFloat(p.pos.x), y: toFloat(p.pos.y) }));
+  let prevBallPos = { x: toFloat(state.ball.pos.x), y: toFloat(state.ball.pos.y) };
+
+  for (let i = 0; i < ticks; i++) {
+    const inputs = script(state);
+    state = simulate(state, inputs);
+    const half: Half = getHalf(state.frame);
+
+    const ballX = toFloat(state.ball.pos.x);
+    const ballY = toFloat(state.ball.pos.y);
+    const ballVelX = toFloat(state.ball.vel.x);
+    const ballVelY = toFloat(state.ball.vel.y);
+    const ballSpeed = Math.hypot(ballVelX, ballVelY);
+
+    // --- リスタート(テレポート)検出 ---
+    const ballJump = Math.hypot(ballX - prevBallPos.x, ballY - prevBallPos.y);
+    if (ballJump > 15) {
+      lastRestartFrame = state.frame;
+      logEvent(`t${state.frame} restart/teleport ball -> (${ballX.toFixed(0)},${ballY.toFixed(0)})`);
+    }
+
+    // --- 得点検出 ---
+    if (state.score[0] !== prevScore[0] || state.score[1] !== prevScore[1]) {
+      const scorer = state.score[0] !== prevScore[0] ? TeamId.A : TeamId.B;
+      logEvent(`t${state.frame} GOAL team${scorer} score=${state.score[0]}-${state.score[1]}`);
+    }
+
+    // --- ハーフ切替 / 得点による陣形リセット: 振動窓・保留中のシュート窓を破棄 ---
+    const formationReset =
+      half !== prevHalf || state.score[0] !== prevScore[0] || state.score[1] !== prevScore[1];
+    if (formationReset) {
+      resetOscWindow(state.frame);
+      pendingShotWindows.length = 0;
+    }
+
+    // --- キック/シュート検出 (速度しきい値の立ち上がり) ---
+    if (ballSpeed >= KICK_DETECT_SPEED && prevBallSpeed < KICK_DETECT_SPEED && state.lastTouchTeam !== null) {
+      const kicker = state.lastTouchTeam;
+      const kickerAttacksUp = attackingIsUpward(kicker, half);
+      const targetGoalY = goalLineY(kickerAttacksUp);
+      const headingToGoal = kickerAttacksUp ? ballVelY < 0 : ballVelY > 0;
+      const distToGoal = Math.abs(ballY - targetGoalY);
+      if (headingToGoal && distToGoal < SHOT_MAX_RANGE && Math.abs(ballVelY) > 0.01) {
+        const t = (targetGoalY - ballY) / ballVelY;
+        const xAtGoal = ballX + ballVelX * t;
+        if (Math.abs(xAtGoal - GOAL_CENTER_X) <= SHOT_AIM_HALF_WIDTH) {
+          shots[kicker]++;
+          const onTarget = Math.abs(xAtGoal - GOAL_CENTER_X) <= ON_TARGET_HALF_WIDTH;
+          if (onTarget) shotsOnTarget[kicker]++;
+          logEvent(
+            `t${state.frame} SHOT team${kicker} from(${ballX.toFixed(0)},${ballY.toFixed(0)}) xAtGoal=${xAtGoal.toFixed(0)}${onTarget ? ' [on target]' : ''}`,
+          );
+          // 陣形後退の測定対象は「実際のシュート距離(300px以内)からの一撃」のみに絞る
+          // (中盤からの前方への蹴り出しも上の緩い定義ではシュートに数えられるが、
+          //  その後の陣形変化はシュート反応とは言えないため)。
+          if (distToGoal < 300) {
+            pendingShotWindows.push({
+              team: kicker,
+              resolveAtFrame: state.frame + RETREAT_WINDOW,
+              beforeCentroidDepth: centroidDepth(state, kicker, half),
+              scoreA: state.score[0],
+              scoreB: state.score[1],
+              half,
+              shotFrame: state.frame,
+              invalidated: false,
+            });
+          }
+        }
+      }
+    }
+
+    // --- シュート後の陣形後退の測定 ---
+    for (let w = pendingShotWindows.length - 1; w >= 0; w--) {
+      const win = pendingShotWindows[w]!;
+      // 窓の途中で一度でも相手がボールに触れたら測定対象外 (相手に渡った後の後退は正当)。
+      if (state.lastTouchTeam === opponentOf(win.team)) win.invalidated = true;
+      if (state.frame < win.resolveAtFrame) continue;
+      pendingShotWindows.splice(w, 1);
+      const scoreChanged = state.score[0] !== win.scoreA || state.score[1] !== win.scoreB;
+      const halfChanged = half !== win.half;
+      const restartInWindow = lastRestartFrame >= win.shotFrame;
+      if (win.invalidated || scoreChanged || halfChanged || restartInWindow) continue; // 正当な後退要因は除外
+      const after = centroidDepth(state, win.team, half);
+      const retreat = Math.max(0, win.beforeCentroidDepth - after);
+      retreatSum[win.team] += retreat;
+      retreatCount[win.team]++;
+      if (retreat > 60) {
+        logEvent(`t${state.frame} POST-SHOT RETREAT team${win.team} ${retreat.toFixed(0)}px`);
+      }
+    }
+
+    // --- ペナルティエリア侵入 ---
+    // defendingTeam D のボックス: Dのゴールライン側150px×中央±130px
+    const insideBox: [boolean, boolean] = [false, false];
+    for (const d of [TeamId.A, TeamId.B]) {
+      const dDepth = toFloat(depthFromOwnGoal(d, half, state.ball.pos.y));
+      insideBox[d] = dDepth <= BOX_DEPTH && Math.abs(ballX - GOAL_CENTER_X) <= BOX_HALF_WIDTH;
+      if (insideBox[d] && !prevInsideBox[d]) {
+        const attacker = opponentOf(d);
+        boxEntries[attacker]++;
+        logEvent(`t${state.frame} BOX ENTRY by team${attacker} (ball ${ballX.toFixed(0)},${ballY.toFixed(0)})`);
+      }
+    }
+    prevInsideBox = insideBox;
+
+    // --- 支配率 ---
+    if (state.lastTouchTeam !== null) possessionTicks[state.lastTouchTeam]++;
+
+    // --- 団子度 ---
+    if (i > 50) {
+      let near = 0;
+      for (const p of state.players) {
+        const distPx = Math.sqrt(distSqFixed(p.pos, state.ball.pos) as number) / 16;
+        if (distPx <= DANGO_RADIUS_PX) near++;
+      }
+      dangoSum += near;
+      dangoCount++;
+      if (near > dangoMax) dangoMax = near;
+    }
+
+    // --- プレス距離 ---
+    if (state.lastTouchTeam !== null) {
+      const presser = opponentOf(state.lastTouchTeam);
+      const presserBallDepth = toFloat(depthFromOwnGoal(presser, half, state.ball.pos.y));
+      if (presserBallDepth > PRESS_DEPTH_THRESHOLD) {
+        let minDist = Infinity;
+        for (const p of state.players) {
+          if (p.team !== presser || p.isGoalkeeper) continue;
+          const distPx = Math.sqrt(distSqFixed(p.pos, state.ball.pos) as number) / 16;
+          if (distPx < minDist) minDist = distPx;
+        }
+        if (Number.isFinite(minDist)) {
+          pressSum[presser] += minDist;
+          pressCount[presser]++;
+        }
+      }
+    }
+
+    // --- 選手分布・振動 ---
+    state.players.forEach((p, idx) => {
+      const x = toFloat(p.pos.x);
+      const y = toFloat(p.pos.y);
+      posSumX[idx]! += x;
+      posSumY[idx]! += y;
+      const prev = prevPositions[idx]!;
+      const step = Math.hypot(x - prev.x, y - prev.y);
+      posSumSq[idx]! += x * x + y * y;
+      const depth = toFloat(depthFromOwnGoal(p.team, half, p.pos.y));
+      const third = depth < PITCH_HEIGHT / 3 ? 0 : depth < (PITCH_HEIGHT / 3) * 2 ? 1 : 2;
+      thirds[idx]![third]++;
+
+      // 振動検出の対象はAI操作の選手のみ (人間が操作中の選手のこまめな位置調整は意図的な
+      // 入力なので、AIの不具合検出という趣旨から除外する)。テレポート(陣形リセット等)も
+      // 振動窓に混ぜない。
+      if (step < 40 && idx !== state.controlledPlayerIndex) {
+        oscPath[idx]! += step;
+        if (x < oscMinX[idx]!) oscMinX[idx] = x;
+        if (x > oscMaxX[idx]!) oscMaxX[idx] = x;
+        if (y < oscMinY[idx]!) oscMinY[idx] = y;
+        if (y > oscMaxY[idx]!) oscMaxY[idx] = y;
+      }
+    });
+    if (state.frame - oscWindowStart >= OSC_WINDOW) {
+      for (let idx = 0; idx < 22; idx++) {
+        const bboxW = oscMaxX[idx]! - oscMinX[idx]!;
+        const bboxH = oscMaxY[idx]! - oscMinY[idx]!;
+        if (oscPath[idx]! > OSC_MIN_PATH && bboxW < OSC_MAX_BBOX && bboxH < OSC_MAX_BBOX) {
+          if (!oscillating.has(idx)) {
+            logEvent(`t${state.frame} OSCILLATION player${idx} path=${oscPath[idx]!.toFixed(0)}px bbox=${bboxW.toFixed(0)}x${bboxH.toFixed(0)}`);
+          }
+          oscillating.add(idx);
+        }
+      }
+      resetOscWindow(state.frame);
+    }
+
+    prevBallSpeed = ballSpeed;
+    prevScore = state.score;
+    prevHalf = half;
+    prevPositions = state.players.map((p) => ({ x: toFloat(p.pos.x), y: toFloat(p.pos.y) }));
+    prevBallPos = { x: ballX, y: ballY };
+  }
+
+  const decidedTicks = possessionTicks[0] + possessionTicks[1];
+  const players: PlayerDistribution[] = Array.from({ length: 22 }, (_, idx) => {
+    const meanX = posSumX[idx]! / ticks;
+    const meanY = posSumY[idx]! / ticks;
+    const meanSq = posSumSq[idx]! / ticks;
+    const variance = Math.max(0, meanSq - (meanX * meanX + meanY * meanY));
+    const total = thirds[idx]![0] + thirds[idx]![1] + thirds[idx]![2];
+    return {
+      meanX,
+      meanY,
+      spread: Math.sqrt(variance),
+      thirds: [thirds[idx]![0] / total, thirds[idx]![1] / total, thirds[idx]![2] / total] as [number, number, number],
+    };
+  });
+
+  const teamStats = (team: TeamId): TeamMatchStats => ({
+    shots: shots[team],
+    shotsOnTarget: shotsOnTarget[team],
+    goals: state.score[team],
+    boxEntries: boxEntries[team],
+    possessionPct: decidedTicks > 0 ? (possessionTicks[team] / decidedTicks) * 100 : 0,
+    postShotRetreatAvgPx: retreatCount[team] > 0 ? retreatSum[team] / retreatCount[team] : 0,
+    postShotRetreatSamples: retreatCount[team],
+    pressDistanceAvgPx: pressCount[team] > 0 ? pressSum[team] / pressCount[team] : 0,
+    pressSamples: pressCount[team],
+  });
+
+  return {
+    pattern: opts.pattern,
+    seed: opts.seed,
+    scriptSeed,
+    ticks,
+    finalScore: state.score,
+    teams: [teamStats(TeamId.A), teamStats(TeamId.B)],
+    dangoAvg: dangoCount > 0 ? dangoSum / dangoCount : 0,
+    dangoMax,
+    oscillatingPlayers: [...oscillating].sort((a, b) => a - b),
+    players,
+    events,
+  };
+}
+
+/** レポート表示用の整形。 */
+export function formatMatchSummary(stats: MatchStats): string {
+  const lines: string[] = [];
+  const t = (team: 0 | 1) => stats.teams[team];
+  lines.push(
+    `=== pattern=${stats.pattern} seed=${stats.seed} scriptSeed=${stats.scriptSeed} ticks=${stats.ticks} ===`,
+  );
+  lines.push(`score: TeamA ${stats.finalScore[0]} - ${stats.finalScore[1]} TeamB`);
+  for (const team of [0, 1] as const) {
+    const s = t(team);
+    lines.push(
+      `Team${team === 0 ? 'A' : 'B'}: shots=${s.shots} onTarget=${s.shotsOnTarget} boxEntries=${s.boxEntries} ` +
+        `possession=${s.possessionPct.toFixed(1)}% postShotRetreat=${s.postShotRetreatAvgPx.toFixed(1)}px(n=${s.postShotRetreatSamples}) ` +
+        `pressDist=${s.pressDistanceAvgPx.toFixed(0)}px(n=${s.pressSamples})`,
+    );
+  }
+  lines.push(`dango: avg=${stats.dangoAvg.toFixed(2)} max=${stats.dangoMax}`);
+  lines.push(`oscillating players: [${stats.oscillatingPlayers.join(', ')}]`);
+  return lines.join('\n');
+}

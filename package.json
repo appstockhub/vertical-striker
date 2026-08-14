@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check:determinism": "node scripts/checkDeterminism.mjs"
+    "check:determinism": "node scripts/checkDeterminism.mjs",
+    "sim:report": "vitest run tests/sim/matchReport.test.ts --reporter=verbose",
+    "sim:sanity": "vitest run tests/sim/soccerSanity.test.ts --reporter=verbose"
   },
   "dependencies": {
     "phaser": "^3.90.0"

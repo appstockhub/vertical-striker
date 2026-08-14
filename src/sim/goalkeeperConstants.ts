@@ -38,3 +38,20 @@ export const PUNCH_RANGE_SQ_FIXED: Fixed = fixedMul(PUNCH_RANGE_FIXED, PUNCH_RAN
 
 /** Y/Bがキャッチ/パンチングの文脈になる外縁 (パンチング届く範囲と同じにする)。 */
 export const GK_SAVE_RANGE_SQ_FIXED: Fixed = PUNCH_RANGE_SQ_FIXED;
+
+/**
+ * セーブ文脈が発動する最低ボール速度 (px/tick, 仮値)。これ以下の遅い/静止したボールが
+ * GKの足元にある時は通常のキック文脈のままにする。
+ *
+ * バグ修正 (観戦シミュレーターで発覚): 速度条件なしだと、GKが確保した/足元に転がってきた
+ * ボールに対して B=パンチング(速度0なので何も起きない)・Y=キャッチ(再確保)しか
+ * できず、**GKは静止ボールを永遠に蹴れない** (チャージキックはセーブ文脈に奪われる)。
+ * 人間プレイヤーがGKでボールを拾うと詰む、実プレイに直結する欠陥だった。
+ * ドリブルタッチ速度(3.6)より上・強シュート(9)より下の4.5に設定し、
+ * 「飛んでくるボールにはセーブ、収めたボールにはキック」を自然に切り分ける。
+ */
+export const SAVE_CONTEXT_MIN_BALL_SPEED_FIXED: Fixed = toFixed(4.5);
+export const SAVE_CONTEXT_MIN_BALL_SPEED_SQ_FIXED: Fixed = fixedMul(
+  SAVE_CONTEXT_MIN_BALL_SPEED_FIXED,
+  SAVE_CONTEXT_MIN_BALL_SPEED_FIXED,
+);

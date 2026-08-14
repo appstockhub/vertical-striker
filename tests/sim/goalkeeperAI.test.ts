@@ -41,12 +41,22 @@ function makeBall(x: number, y: number, velX = 0, velY = 0): BallState {
 const GOAL_CENTER_X = PITCH_WIDTH / 2;
 
 describe('computeGoalkeeperTargetPos / computeGoalkeeperAutoDirection', () => {
-  it('tracks the ball x position while staying clamped within the coverage radius', () => {
+  it('tracks the ball x position (quantized to an 8px grid) while staying clamped within the coverage radius', () => {
     const gk = makeGK(GOAL_CENTER_X, 1780, TeamId.A);
     const ballNearCenter = { x: toFixed(GOAL_CENTER_X + 10), y: ZERO_FIXED };
     const target = computeGoalkeeperTargetPos(gk, ballNearCenter);
-    expect(toFloat(target.x)).toBeCloseTo(GOAL_CENTER_X + 10, 1);
-    expect(target.y).toBe(gk.pos.y); // yはホームポジション維持
+    // ボールx=250 は8pxグリッドに量子化されて248になる (ジッター防止、observer simulatorで発覚した修正)
+    expect(toFloat(target.x)).toBeCloseTo(248, 1);
+    expect(target.y).toBe(gk.pos.y); // homeY未指定時は現在のyを維持
+  });
+
+  it('returns toward the provided formation home y when displaced (does not stay stranded upfield)', () => {
+    const gk = makeGK(GOAL_CENTER_X, 1500, TeamId.A); // セーブ後などでゴール前から離れてしまった状態
+    const ball = { x: toFixed(GOAL_CENTER_X), y: toFixed(900) };
+    const homeY = toFixed(1764);
+    const target = computeGoalkeeperTargetPos(gk, ball, homeY);
+    expect(target.y).toBe(homeY);
+    expect(computeGoalkeeperAutoDirection(gk, ball, homeY)).toBe(Direction8.Down); // 自陣ゴールへ戻る
   });
 
   it('clamps the target x to the coverage radius when the ball is far to one side', () => {

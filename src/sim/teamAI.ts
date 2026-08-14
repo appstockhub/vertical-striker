@@ -35,14 +35,18 @@ import {
   AI_HOME_LEASH_RAMP_FAR_SQ_FIXED,
   AI_HOME_LEASH_RAMP_NEAR_SQ_FIXED,
   BALL_ATTRACTION_WEIGHT_CLOSE_RANGE_FIXED,
-  BALL_ATTRACTION_WEIGHT_FIXED,
+  BALL_ATTRACTION_WEIGHT_COVER_FIXED,
   BALL_ATTRACTION_WEIGHT_NON_CHASER_FIXED,
-  BALL_CLOSE_RANGE_SQ_FIXED,
-  CHASE_RIGHT_HOLDERS_PER_TEAM,
+  CHASE_RIGHT_HOLDERS_DEFENDING,
+  CHASE_RIGHT_HOLDERS_POSSESSING,
   HOME_PULL_WEIGHT_FAR_FIXED,
+  LINE_FOLLOW_GRID_FIXED,
   HOME_PULL_WEIGHT_NEAR_FIXED,
+  LINE_PUSH_STANDOFF_FIXED,
   LINE_RETREAT_DAMPING_FIXED,
+  OFFSIDE_BIAS_MARGIN_FIXED,
   OFFSIDE_BIAS_WEIGHT_FIXED,
+  ONSIDE_HOME_MARGIN_FIXED,
   STICKY_FACING_BIAS_FIXED,
 } from './teamAIConstants';
 
@@ -82,35 +86,63 @@ export function computeOffsideLine(allPlayers: readonly PlayerState[], team: Tea
   return secondDepth === null ? bestY : secondY;
 }
 
+/** ボール追跡権の役割。primary=最寄り(ボールに直行)、cover=カバー(付かず離れず)、null=権利なし。 */
+export type ChaseRole = 'primary' | 'cover';
+
 /**
- * 「ボール追跡権」を持つ選手の players[] index 集合を求める (毎tick1回だけ呼ぶ純関数)。
+ * 「ボール追跡権」を持つ選手の players[] index → 役割 のマップを求める (毎tick1回だけ呼ぶ純関数)。
  * 各チームごとに、フィールドプレイヤー(GK除く)をボールとの距離の二乗で昇順ソートし、
- * 上位 holdersPerTeam 人 (通常2人=最寄り+カバー1人) だけを追跡権保持者とする。
+ * 上位N人に役割を与える。Nはチームの立場で変える:
+ * 守備側(ボール非保持)=CHASE_RIGHT_HOLDERS_DEFENDING(2人、1人目=primary/2人目=cover)、
+ * 保持側=CHASE_RIGHT_HOLDERS_POSSESSING(1人=primary、パスの受け手/こぼれ球回収)、
+ * 競り合い中(possessionTeam=null)=両チームとも守備側扱い。
  * 同点は小さいindexが勝つ (既存の決定論的タイブレーク方針を踏襲、argminの安定化)。
  *
  * 実プレイで発覚した「団子サッカー」(ほぼ全選手がボールへ殺到する) バグの修正。
  * 追跡権を持たない選手は computeNonControlledDirection 内で
- * BALL_ATTRACTION_WEIGHT_NON_CHASER_FIXED (弱い引力) を使うことで、ホームポジション
- * (チームライン調整込み) を優先し、フォーメーションの形を保つ。
+ * BALL_ATTRACTION_WEIGHT_NON_CHASER_FIXED (弱い引力) を使い、ホームポジション
+ * (チームライン調整込み) を優先してフォーメーションの形を保つ。
+ * primary/coverを分けるのは観戦シミュレーターでの団子度測定に基づく調整: 2人とも
+ * 全力でボール座標へ直行させると同じ点に折り重なるため、カバーは中間の引力で
+ * 付かず離れずの距離を保たせる (プレス+カバーの読み合い構造は維持)。
  */
 export function computeChaseRightIndices(
   players: readonly PlayerState[],
   ballPos: Vec2Fixed,
-  holdersPerTeam: number = CHASE_RIGHT_HOLDERS_PER_TEAM,
-): ReadonlySet<number> {
-  const result = new Set<number>();
+  possessionTeam: TeamId | null,
+): ReadonlyMap<number, ChaseRole> {
+  const result = new Map<number, ChaseRole>();
+
+  // 距離は48px相当のバケットに量子化してから順位付けする (メンバーシップの安定化):
+  // 生の距離で毎tickソートすると、ほぼ等距離の2人が互いに1歩動くたびに追跡権の
+  // メンバー自体が入れ替わり、片方が「追跡権あり(ボールへ)/なし(ホームへ)」を毎tick
+  // 往復して足踏みし続ける (観戦シミュレーターの振動検出で発覚)。同バケット内は
+  // 小さいindexが常に勝つため、近接した2人の順位は完全に安定する。
+  const DIST_BUCKET = toFixed(48 * 48) as number; // 48px の距離二乗 (Fixedスケール)
 
   for (const team of [TeamId.A, TeamId.B]) {
-    const candidates: Array<{ index: number; distSq: number }> = [];
+    const holders =
+      possessionTeam === team ? CHASE_RIGHT_HOLDERS_POSSESSING : CHASE_RIGHT_HOLDERS_DEFENDING;
+    const candidates: Array<{ index: number; bucket: number }> = [];
     for (let i = 0; i < players.length; i++) {
       const player = players[i];
       if (!player || player.team !== team || player.isGoalkeeper) continue;
-      candidates.push({ index: i, distSq: distSqFixed(player.pos, ballPos) as number });
+      const distSq = distSqFixed(player.pos, ballPos) as number;
+      candidates.push({ index: i, bucket: Math.floor(distSq / DIST_BUCKET) });
     }
-    candidates.sort((a, b) => (a.distSq !== b.distSq ? a.distSq - b.distSq : a.index - b.index));
-    for (let k = 0; k < Math.min(holdersPerTeam, candidates.length); k++) {
-      const candidate = candidates[k];
-      if (candidate) result.add(candidate.index);
+    candidates.sort((a, b) => (a.bucket !== b.bucket ? a.bucket - b.bucket : a.index - b.index));
+    const selected = candidates.slice(0, Math.min(holders, candidates.length));
+    // primary/cover の役割は「選ばれた中で最小index」に固定する (距離順にしない)。
+    // 距離順で決めると、2人がボールからほぼ等距離の時に毎tick役割が入れ替わり、
+    // 引力の重み(0.9/0.45)が交互に切り替わって2人ともボール周りで小刻みに踊り続ける
+    // (観戦シミュレーターの振動検出で発覚)。メンバー自体の入れ替わりは距離差が
+    // 大きくないと起きないため自然なヒステリシスがあるが、ペア内の役割は
+    // indexという不変の属性に紐付けて完全に安定させる。
+    if (selected.length > 0) {
+      const primaryIndex = Math.min(...selected.map((c) => c.index));
+      for (const c of selected) {
+        result.set(c.index, c.index === primaryIndex ? 'primary' : 'cover');
+      }
     }
   }
 
@@ -144,9 +176,19 @@ export function computeLineAdjustedHomePosition(
   if (possessionTeam === null) return home;
 
   const homeDepth = depthFromOwnGoal(team, half, home.y) as number;
-  const ballDepth = depthFromOwnGoal(team, half, ballPos.y) as number;
+  // ボール深度は粗いグリッドに量子化して使う (ボールの毎tickの微小移動にライン全体が
+  // 追随して全選手が小刻みに揺れるのを防ぐ — 観戦シミュレーターの振動検出で発覚)。
+  const grid = LINE_FOLLOW_GRID_FIXED as number;
+  const rawBallDepth = depthFromOwnGoal(team, half, ballPos.y) as number;
+  const ballDepth = Math.floor(rawBallDepth / grid) * grid;
   const teamHasBall = possessionTeam === team;
-  const targetDepth = (teamHasBall ? Math.max(homeDepth, ballDepth) : Math.min(homeDepth, ballDepth)) as Fixed;
+  // 押し上げ時はボール深度そのものではなく、その手前 LINE_PUSH_STANDOFF (150px) を目標にする
+  // (「ボールの後方に支援ラインを敷く」近似。ボール深度に密着させると同深度の味方が
+  // ボール周辺に常時複数入り、団子度が悪化する — 観戦シミュレーターで発覚)。
+  const pushTargetDepth = ballDepth - (LINE_PUSH_STANDOFF_FIXED as number);
+  const targetDepth = (
+    teamHasBall ? Math.max(homeDepth, pushTargetDepth) : Math.min(homeDepth, ballDepth)
+  ) as Fixed;
 
   // 追従率 = このスロットのホーム深さ / ハーフの深さ (0..1にクランプ、GKはほぼ0、FWは大きい)。
   const followFraction = clampFixed(fixedDiv(homeDepth as Fixed, HALF_PITCH_DEPTH_FIXED), ZERO_FIXED, toFixed(1));
@@ -184,8 +226,10 @@ export function computeLineAdjustedHomePosition(
  * ハーフラインを越えて攻めない」バグの修正)。この関数はその「動くホーム」に向かって
  * 収束しようとするだけで、押し上げ量の計算自体には関与しない。
  *
- * hasChaseRight (computeChaseRightIndices が毎tick1回だけ判定) が false の選手は
- * ボール引力を BALL_ATTRACTION_WEIGHT_NON_CHASER_FIXED (弱い) に差し替える。
+ * chaseRole (computeChaseRightIndices が毎tick1回だけ判定) による使い分け:
+ * - 'primary' (最寄り): フル引力 + 最終アプローチ + リーシュ免除 = ボールへ直行。
+ * - 'cover' (カバー): 中間の引力 + リーシュ免除、最終アプローチ無し = 付かず離れず。
+ * - null (権利なし): 弱い引力 = ホームポジション優先でスペースを守る。
  * 全員が常にフル引力だった旧実装は、リーシュ内にいる選手全員がボールへ収束してしまう
  * 「団子サッカー」を引き起こしていた (実プレイで発覚)。
  *
@@ -199,9 +243,9 @@ export function computeNonControlledDirection(
   teamFormations: readonly [FormationId, FormationId],
   half: Half,
   possessionTeam: TeamId | null,
-  hasChaseRight: boolean,
+  chaseRole: ChaseRole | null,
 ): Direction8 {
-  const home = computeLineAdjustedHomePosition(
+  const lineHome = computeLineAdjustedHomePosition(
     player.team,
     player.slotIndex,
     teamFormations[player.team],
@@ -209,19 +253,40 @@ export function computeNonControlledDirection(
     ballPos,
     possessionTeam,
   );
+
+  const offsideLineY = computeOffsideLine(allPlayers, opponentOf(player.team), half);
+  const attacksUp = attackingIsUpward(player.team, half);
+  // マージン付きのライン超過判定 (バイアスのON/OFFがラインの微動で毎tick反転して
+  // FWが小刻みに揺れ続けるのを防ぐ。マージン内のわずかな超過は許容する)。
+  const margin = OFFSIDE_BIAS_MARGIN_FIXED as number;
+  const beyondLine = attacksUp
+    ? (player.pos.y as number) < (offsideLineY as number) - margin
+    : (player.pos.y as number) > (offsideLineY as number) + margin;
+  const offsideDir = beyondLine ? (attacksUp ? Direction8.Down : Direction8.Up) : Direction8.None;
+
+  // ライン調整後のホーム目標をオンサイド側にクランプする (振動バグの修正、観戦シミュレーターで
+  // 発覚): 押し上げでホームがオフサイドラインの先まで進むと、ホーム復元力(前へ)と
+  // オフサイドバイアス(後ろへ)が境界を挟んで毎tick反転する押し合いになり、選手がライン上で
+  // 永久に振動する。目標自体をラインの手前(ONSIDE_HOME_MARGIN)に留めれば対立は起きない。
+  // クランプ位置は24pxグリッドに量子化する (相手DFが動くたびにラインが毎tick数px滑り、
+  // ライン際に立つFWのホーム目標がそれに追随して延々シャッフルするのを防ぐ。
+  // グリッド1段(24px)はホームdeadzone(28px)より小さいため、1段の変化では選手は動かない)。
+  const CLAMP_GRID = 24 * 256; // 24px (Fixed単位)
+  const quantizedLineY = (Math.floor((offsideLineY as number) / CLAMP_GRID) * CLAMP_GRID) as Fixed;
+  const onsideLimitY = attacksUp
+    ? (((quantizedLineY as number) + CLAMP_GRID + (ONSIDE_HOME_MARGIN_FIXED as number)) as Fixed)
+    : (((quantizedLineY as number) - (ONSIDE_HOME_MARGIN_FIXED as number)) as Fixed);
+  const clampedHomeY = attacksUp
+    ? (Math.max(lineHome.y as number, onsideLimitY as number) as Fixed)
+    : (Math.min(lineHome.y as number, onsideLimitY as number) as Fixed);
+  const home = { x: lineHome.x, y: clampedHomeY };
+
   const homeDiff = vSub(home, player.pos);
   const homeDistSq = dotFixed(homeDiff, homeDiff);
   const homeDir = quantizeToDirection8(homeDiff, AI_HOME_DEADZONE_SQ_FIXED);
   const ballDiff = vSub(ballPos, player.pos);
-  const ballDistSq = dotFixed(ballDiff, ballDiff);
-  const ballDir = quantizeToDirection8(ballDiff, AI_BALL_DEADZONE_SQ_FIXED);
 
-  const offsideLineY = computeOffsideLine(allPlayers, opponentOf(player.team), half);
-  const attacksUp = attackingIsUpward(player.team, half);
-  const beyondLine = attacksUp
-    ? (player.pos.y as number) < (offsideLineY as number)
-    : (player.pos.y as number) > (offsideLineY as number);
-  const offsideDir = beyondLine ? (attacksUp ? Direction8.Down : Direction8.Up) : Direction8.None;
+  const ballDir = quantizeToDirection8(ballDiff, AI_BALL_DEADZONE_SQ_FIXED);
 
   // near半径以内は0、far半径以遠は1、間は距離の二乗に対して線形に遷移する比率
   // (チャタリング防止のため、単一しきい値での瞬時切替をやめて滑らかな帯にした)。
@@ -233,21 +298,30 @@ export function computeNonControlledDirection(
     ZERO_FIXED,
     toFixed(1),
   );
-  const homeWeight = lerpFixed(HOME_PULL_WEIGHT_NEAR_FIXED, HOME_PULL_WEIGHT_FAR_FIXED, leashRampFraction);
-  // 追跡権を持つ選手がボールにごく近い(BALL_CLOSE_RANGE_SQ_FIXED以内)場合は、ボール引力を
-  // 大きく引き上げてホーム復元力を実質無視させる(「最終アプローチ」)。
-  // 量子化した8方向どうしを重み付け合成する都合上、目標が斜め方向にある場合など、
-  // ホームとボールの成分が軸ごとに打ち消し合って本来ボールに向かうべきなのに
-  // 合成方向がボールから外れてしまい、ボールの手前20〜30px程度で永久に足踏みする
-  // (八方向量子化のこの合成方式に内在する既知の限界、実プレイ相当のテストで発覚)。
-  // ボールにこれだけ近ければホーム位置を気にする理由が薄いという前提のもと、
-  // 最終接近では引力を圧倒的に優勢にすることで対処する。
-  const isFinalApproach = hasChaseRight && (ballDistSq as number) <= (BALL_CLOSE_RANGE_SQ_FIXED as number);
-  const ballWeight = isFinalApproach
-    ? BALL_ATTRACTION_WEIGHT_CLOSE_RANGE_FIXED
-    : hasChaseRight
-      ? BALL_ATTRACTION_WEIGHT_FIXED
-      : BALL_ATTRACTION_WEIGHT_NON_CHASER_FIXED;
+  // 追跡権保持者はリーシュ(遠方での強い呼び戻し)を免除し、ピッチ全域でボールを追える
+  // (観戦シミュレーターで発覚した「前線からのプレスが存在しない」バグの修正: ボールが
+  // 敵陣深くにあると、最寄りのFWが追跡権を持っていてもホームから離れるほど呼び戻しが
+  // 強まり、リーシュ半径の先へは決して踏み込めなかった。設計方針: 追跡権=ピッチ全域での
+  // 追跡許可。それ以外の選手のポジション規律はライン押し上げ/引き下げが担う)。
+  const homeWeight =
+    chaseRole !== null
+      ? HOME_PULL_WEIGHT_NEAR_FIXED
+      : lerpFixed(HOME_PULL_WEIGHT_NEAR_FIXED, HOME_PULL_WEIGHT_FAR_FIXED, leashRampFraction);
+  // primary追跡者はボールへの引力を距離によらず圧倒的優勢(3.0)にする: 「追う」と決めた
+  // 1人はホーム復元力等との合成で足が止まらず、単調にボールへ収束する。
+  // これは2つの実測バグの構造的な解決策 (観戦シミュレーターで発覚):
+  // 1. 中間の引力(0.9)だとホーム項と部分的に打ち消し合い、ボールの手前で足踏み/
+  //    振動する equilibrium が距離帯ごとに発生し得る (八方向量子化の合成方式に内在)。
+  // 2. 追跡権のメンバーシップがほぼ等距離の2人の間で毎tick入れ替わる場合でも、
+  //    primaryになったtickで確実に距離が縮む(圧倒的引力)なら、次tickもprimaryで
+  //    あり続け、入れ替わり自体が自然に止まる (自己安定化)。
+  // cover(カバー役)は中間の引力で付かず離れず、非追跡権はホーム優先 — 従来どおり。
+  const ballWeight =
+    chaseRole === 'primary'
+      ? BALL_ATTRACTION_WEIGHT_CLOSE_RANGE_FIXED
+      : chaseRole === 'cover'
+        ? BALL_ATTRACTION_WEIGHT_COVER_FIXED
+        : BALL_ATTRACTION_WEIGHT_NON_CHASER_FIXED;
 
   const combined = vAdd(
     vAdd(
@@ -261,12 +335,17 @@ export function computeNonControlledDirection(
   // 隣り合う2つの8方向のちょうど境界付近にある場合、バイアス無しだと選手が1tickごとに
   // 位置がわずかに動くたびargmaxの勝者が入れ替わり、2方向を永久に往復するチャタリングに
   // 陥る(境界の滑らか化だけでは解決しない、実プレイ相当のテストで発覚した別種の不具合)。
-  // combinedがすでに最終deadzone未満(=実質的に静止すべき状態)の時はバイアスを加えない
-  // (常に前の向きへわずかに動き続けてしまい、二度と静止できなくなるのを防ぐため)。
+  // バイアスを加えるのは以下2条件を満たす時のみ:
+  // - combinedが最終deadzone以上 (静止すべき状態で向き癖により動き続けるのを防ぐ)
+  // - 現在の向きがcombinedと同じ側 (内積>0)。逆向きのバイアスは「隣接方向のタイブレーク」
+  //   という目的を超えて合成結果を打ち消し、弱い正味の力をdeadzone未満に押し下げて
+  //   選手を不当に静止させてしまう (単体テストで発覚した境界ケース)。
   const combinedMagSq = dotFixed(combined, combined) as number;
+  const facingVec = DIRECTION_VECTORS[player.facing];
+  const facingAligned = (dotFixed(combined, facingVec) as number) > 0;
   const biased =
-    combinedMagSq >= (AI_FINAL_DEADZONE_SQ_FIXED as number)
-      ? vAdd(combined, vScaleFixed(DIRECTION_VECTORS[player.facing], STICKY_FACING_BIAS_FIXED))
+    combinedMagSq >= (AI_FINAL_DEADZONE_SQ_FIXED as number) && facingAligned
+      ? vAdd(combined, vScaleFixed(facingVec, STICKY_FACING_BIAS_FIXED))
       : combined;
 
   return quantizeToDirection8(biased, AI_FINAL_DEADZONE_SQ_FIXED);
