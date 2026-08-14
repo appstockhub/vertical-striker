@@ -10,6 +10,8 @@ import { computeRadarLayout } from './radar';
 import { TEAM_COLORS, BALL_COLOR, CURSOR_RING_COLOR, PASS_MARKER_COLOR } from './teamColors';
 import { findTouchPriorityPlayer } from '../sim/ballTouch';
 import { isTeamAInPossession, selectPassTarget } from '../sim/cursor';
+import { toFloat } from '../core/fixed';
+import { GOAL_WIDTH_FIXED } from '../sim/goalkeeperConstants';
 import {
   PITCH_HEIGHT,
   PITCH_WIDTH,
@@ -89,6 +91,35 @@ export class PitchScene extends Phaser.Scene {
       const line = this.add.line(0, 0, 0, y, PITCH_WIDTH, y, 0xffffff, 0.25);
       line.setOrigin(0, 0);
     }
+
+    // ゴールマウスの目印 (得点処理は伴わない、GKの位置取り確認用の最小限の幾何参照)。
+    // Team A の自陣ゴールは y=PITCH_HEIGHT 側、Team B は y=0 側。
+    const goalHalfWidth = toFloat(GOAL_WIDTH_FIXED) / 2;
+    const goalCenterX = PITCH_WIDTH / 2;
+    const goalLineA = this.add.line(
+      0,
+      0,
+      goalCenterX - goalHalfWidth,
+      PITCH_HEIGHT,
+      goalCenterX + goalHalfWidth,
+      PITCH_HEIGHT,
+      0xffffff,
+      0.9,
+    );
+    goalLineA.setOrigin(0, 0);
+    goalLineA.setLineWidth(4);
+    const goalLineB = this.add.line(
+      0,
+      0,
+      goalCenterX - goalHalfWidth,
+      0,
+      goalCenterX + goalHalfWidth,
+      0,
+      0xffffff,
+      0.9,
+    );
+    goalLineB.setOrigin(0, 0);
+    goalLineB.setLineWidth(4);
   }
 
   private colorFor(player: PlayerState): number {

@@ -1,4 +1,4 @@
-import { fixedAdd, fixedMul, fixedSub } from '../core/fixed';
+import { distSqFixed } from '../core/fixed';
 import type { Vec2Fixed } from '../core/types';
 import type { PlayerState } from './state';
 import { DRIBBLE_RADIUS_SQ_FIXED } from './ballConstants';
@@ -24,9 +24,7 @@ export function findTouchPriorityPlayer(
     const player = players[i];
     if (!player) continue;
 
-    const dx = fixedSub(ballPos.x, player.pos.x);
-    const dy = fixedSub(ballPos.y, player.pos.y);
-    const distSq = fixedAdd(fixedMul(dx, dx), fixedMul(dy, dy)) as number;
+    const distSq = distSqFixed(ballPos, player.pos) as number;
 
     if (distSq > (DRIBBLE_RADIUS_SQ_FIXED as number)) continue;
     if (bestIndex === null || distSq < bestDistSq) {

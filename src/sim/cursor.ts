@@ -1,4 +1,4 @@
-import { dotFixed, fixedAdd, fixedMul, fixedSub } from '../core/fixed';
+import { distSqFixed, dotFixed, fixedMul, fixedSub } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import type { ButtonState } from '../input/types';
 import { DIRECTION_VECTORS } from './constants';
@@ -13,12 +13,6 @@ import {
 /** Team A の outfield 選手の index 範囲 (0=GK は自動追従/手動切替の対象外)。 */
 const TEAM_A_OUTFIELD_START = 1;
 const TEAM_A_OUTFIELD_END = PLAYERS_PER_TEAM - 1; // 10
-
-function squaredDistance(a: Vec2Fixed, b: Vec2Fixed): Fixed {
-  const dx = fixedSub(a.x, b.x);
-  const dy = fixedSub(a.y, b.y);
-  return fixedAdd(fixedMul(dx, dx), fixedMul(dy, dy));
-}
 
 /**
  * Team A がボールの touch-priority を保持しているか (=攻撃中かどうかのYボタン文脈判定)。
@@ -43,7 +37,7 @@ function findNearestTeamAOutfield(
     if (i === excludeIndex) continue;
     const player = players[i];
     if (!player) continue;
-    const distSq = squaredDistance(player.pos, ballPos) as number;
+    const distSq = distSqFixed(player.pos, ballPos) as number;
     if (bestIndex === null || distSq < bestDistSq) {
       bestIndex = i;
       bestDistSq = distSq;
@@ -73,7 +67,7 @@ export function selectPassTarget(carrierIndex: number, players: readonly PlayerS
     if (!receiver) continue;
 
     const toReceiver = { x: fixedSub(receiver.pos.x, carrier.pos.x), y: fixedSub(receiver.pos.y, carrier.pos.y) };
-    const distSq = fixedAdd(fixedMul(toReceiver.x, toReceiver.x), fixedMul(toReceiver.y, toReceiver.y)) as number;
+    const distSq = dotFixed(toReceiver, toReceiver) as number; // |toReceiver|^2
     if (distSq > (PASS_MAX_RANGE_SQ_FIXED as number)) continue;
 
     const dot = dotFixed(facingVec, toReceiver);
@@ -177,10 +171,10 @@ export function resolveCursor(
     return { controlledPlayerIndex: candidate, passTriggered: false, passTargetIndex: null };
   }
 
-  const currentDistSq = squaredDistance(currentPlayer.pos, ballPos) as number;
+  const currentDistSq = distSqFixed(currentPlayer.pos, ballPos) as number;
   const candidatePlayer = players[candidate];
   if (!candidatePlayer) return noSwitch;
-  const candidateDistSq = squaredDistance(candidatePlayer.pos, ballPos) as number;
+  const candidateDistSq = distSqFixed(candidatePlayer.pos, ballPos) as number;
 
   if (candidateDistSq < currentDistSq - (CURSOR_HYSTERESIS_MARGIN_SQ_FIXED as number)) {
     return { controlledPlayerIndex: candidate, passTriggered: false, passTargetIndex: null };

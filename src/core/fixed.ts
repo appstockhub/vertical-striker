@@ -82,3 +82,10 @@ export function lerpFixed(a: Fixed, b: Fixed, t: Fixed): Fixed {
 export function dotFixed(a: Vec2Fixed, b: Vec2Fixed): Fixed {
   return fixedAdd(fixedMul(a.x, b.x), fixedMul(a.y, b.y));
 }
+
+/** 2点間の距離の二乗。sqrtを使わない近接判定 (ドリブル半径・カーソル距離比較等) で使う共通ヘルパー。 */
+export function distSqFixed(a: Vec2Fixed, b: Vec2Fixed): Fixed {
+  const dx = fixedSub(a.x, b.x);
+  const dy = fixedSub(a.y, b.y);
+  return fixedAdd(fixedMul(dx, dx), fixedMul(dy, dy));
+}
