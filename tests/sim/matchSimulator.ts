@@ -8,6 +8,7 @@ import { attackingIsUpward, depthFromOwnGoal, opponentOf, type Half } from '../.
 import { FULL_MATCH_DURATION_FRAMES, getHalf } from '../../src/sim/matchClock';
 import { findTouchPriorityPlayer } from '../../src/sim/ballTouch';
 import { selectPassTarget } from '../../src/sim/cursor';
+import { computeMarkAssignments } from '../../src/sim/marking';
 import { quantizeToDirection8 } from '../../src/sim/steering';
 import { DIRECTION_VECTORS } from '../../src/sim/constants';
 import { PITCH_HEIGHT, PITCH_WIDTH } from '../../src/config/pitch';
@@ -52,6 +53,19 @@ export interface TeamMatchStats {
   /** 相手保持中・ボールが敵陣側1/3にある時の、自チーム最寄り選手のボール距離平均 (px)。 */
   pressDistanceAvgPx: number;
   pressSamples: number;
+  /**
+   * サポートラン測定: 自チームがラインベース保持中(linePossessionTeam)かつボールが
+   * 自陣側1/3を出ている時の、「ボール深度+50pxより前方にいる非GK・非キャリア選手数」の平均。
+   * ライン押し引きだけでは全員がボールの後方(150px standoff)に留まるため、この値は
+   * サポートラン実装前は~0になる — 新挙動を分離して測定できる。
+   */
+  supportRunnersAvgAhead: number;
+  supportSamples: number;
+  /** マーク測定: このチームが守備側の時の、マーカー↔マーク対象の平均距離 (px)。 */
+  markDistanceAvgPx: number;
+  markSamples: number;
+  /** 守備側だったtickのうちマーク割り当てが1件以上あったtickの割合 (レポート用、ゲート無し)。 */
+  markedTicksShare: number;
 }
 
 export interface PlayerDistribution {
@@ -93,6 +107,24 @@ const OSC_MAX_BBOX = 24;
 const RETREAT_WINDOW = 90;
 const PRESS_DEPTH_THRESHOLD = (PITCH_HEIGHT / 3) * 2; // 自陣ゴールからこの深さより先=敵陣側1/3
 const GOAL_CENTER_X = PITCH_WIDTH / 2;
+/** サポートラン測定: ボール深度からこのpx以上前方にいる選手を「前方の受け手」と数える。 */
+const SUPPORT_AHEAD_METRIC_PX = 50;
+/** サポートラン測定: ボールがこの深度(自陣側1/3)を出ている時だけサンプルする。 */
+const SUPPORT_DEPTH_THRESHOLD = PITCH_HEIGHT / 3;
+
+/**
+ * マーク割り当ての取得 (update.ts が毎tick計算しているものと同じ純関数を同じ引数で再計算する。
+ * selectPassTarget と同じパターン: 可視状態からの純関数なので測定側で再導出できる)。
+ */
+function markAssignmentsForStats(state: GameState): ReadonlyMap<number, number> {
+  return computeMarkAssignments(
+    state.players,
+    state.linePossessionTeam,
+    getHalf(state.frame),
+    state.teamFormations,
+    state.ball.pos,
+  );
+}
 
 const AIM_DEADZONE_SQ: Fixed = fixedMul(toFixed(0.5), toFixed(0.5));
 
@@ -467,6 +499,12 @@ export function runSimulatedMatch(opts: RunMatchOptions): MatchStats {
   const retreatCount: [number, number] = [0, 0];
   const pressSum: [number, number] = [0, 0];
   const pressCount: [number, number] = [0, 0];
+  const supportSum: [number, number] = [0, 0];
+  const supportCount: [number, number] = [0, 0];
+  const markDistSum: [number, number] = [0, 0];
+  const markCount: [number, number] = [0, 0];
+  const markedTicks: [number, number] = [0, 0];
+  const defendingTicks: [number, number] = [0, 0];
 
   // 選手分布
   const posSumX = new Array<number>(22).fill(0);
@@ -637,6 +675,33 @@ export function runSimulatedMatch(opts: RunMatchOptions): MatchStats {
       }
     }
 
+    // --- サポートラン / マーク測定 (linePossessionTeamベース: 陣形挙動と同じシグナル) ---
+    if (state.linePossessionTeam !== null) {
+      const possTeam = state.linePossessionTeam;
+      const ballDepthForPoss = toFloat(depthFromOwnGoal(possTeam, half, state.ball.pos.y));
+      if (ballDepthForPoss > SUPPORT_DEPTH_THRESHOLD) {
+        const touchIdx = findTouchPriorityPlayer(state.players, state.ball.pos);
+        let ahead = 0;
+        state.players.forEach((p, idx) => {
+          if (p.team !== possTeam || p.isGoalkeeper || idx === touchIdx) return;
+          const pDepth = toFloat(depthFromOwnGoal(possTeam, half, p.pos.y));
+          if (pDepth > ballDepthForPoss + SUPPORT_AHEAD_METRIC_PX) ahead++;
+        });
+        supportSum[possTeam] += ahead;
+        supportCount[possTeam]++;
+      }
+      const defender = opponentOf(possTeam);
+      defendingTicks[defender]++;
+      const assignments = markAssignmentsForStats(state);
+      if (assignments.size > 0) markedTicks[defender]++;
+      for (const [markerIdx, targetIdx] of assignments) {
+        const distPx =
+          Math.sqrt(distSqFixed(state.players[markerIdx]!.pos, state.players[targetIdx]!.pos) as number) / 16;
+        markDistSum[defender] += distPx;
+        markCount[defender]++;
+      }
+    }
+
     // --- 選手分布・振動 ---
     state.players.forEach((p, idx) => {
       const x = toFloat(p.pos.x);
@@ -707,6 +772,11 @@ export function runSimulatedMatch(opts: RunMatchOptions): MatchStats {
     postShotRetreatSamples: retreatCount[team],
     pressDistanceAvgPx: pressCount[team] > 0 ? pressSum[team] / pressCount[team] : 0,
     pressSamples: pressCount[team],
+    supportRunnersAvgAhead: supportCount[team] > 0 ? supportSum[team] / supportCount[team] : 0,
+    supportSamples: supportCount[team],
+    markDistanceAvgPx: markCount[team] > 0 ? markDistSum[team] / markCount[team] : 0,
+    markSamples: markCount[team],
+    markedTicksShare: defendingTicks[team] > 0 ? markedTicks[team] / defendingTicks[team] : 0,
   });
 
   return {
@@ -737,7 +807,9 @@ export function formatMatchSummary(stats: MatchStats): string {
     lines.push(
       `Team${team === 0 ? 'A' : 'B'}: shots=${s.shots} onTarget=${s.shotsOnTarget} boxEntries=${s.boxEntries} ` +
         `possession=${s.possessionPct.toFixed(1)}% postShotRetreat=${s.postShotRetreatAvgPx.toFixed(1)}px(n=${s.postShotRetreatSamples}) ` +
-        `pressDist=${s.pressDistanceAvgPx.toFixed(0)}px(n=${s.pressSamples})`,
+        `pressDist=${s.pressDistanceAvgPx.toFixed(0)}px(n=${s.pressSamples}) ` +
+        `supportAhead=${s.supportRunnersAvgAhead.toFixed(2)}(n=${s.supportSamples}) ` +
+        `markDist=${s.markDistanceAvgPx.toFixed(0)}px(n=${s.markSamples}) marked=${(s.markedTicksShare * 100).toFixed(0)}%`,
     );
   }
   lines.push(`dango: avg=${stats.dangoAvg.toFixed(2)} max=${stats.dangoMax}`);

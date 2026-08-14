@@ -6,6 +6,8 @@ import { TacklePhase, type PlayerState } from './state';
 import { PLAYERS_PER_TEAM } from './state';
 import {
   CURSOR_HYSTERESIS_MARGIN_SQ_FIXED,
+  CURSOR_SWITCH_DOMINANCE_DEN,
+  CURSOR_SWITCH_DOMINANCE_NUM,
   PASS_CONE_COS_THRESHOLD_SQ_FIXED,
   PASS_MAX_RANGE_SQ_FIXED,
 } from './cursorConstants';
@@ -57,7 +59,11 @@ function findNearestTeamAOutfield(
  * パス判断にも同じ関数を使い回すための汎用化)。Team A では teamStart=0 になり、
  * Phase 2 までの挙動と完全に同一のまま変わらない。
  */
-export function selectPassTarget(carrierIndex: number, players: readonly PlayerState[]): number | null {
+export function selectPassTarget(
+  carrierIndex: number,
+  players: readonly PlayerState[],
+  excludeIndex: number | null = null,
+): number | null {
   const carrier = players[carrierIndex];
   if (!carrier) return null;
   const facingVec = DIRECTION_VECTORS[carrier.facing];
@@ -70,6 +76,8 @@ export function selectPassTarget(carrierIndex: number, players: readonly PlayerS
   let bestDistSq = 0;
   for (let i = teamStart; i < teamEnd; i++) {
     if (i === carrierIndex) continue;
+    // CPUの相互パスピンポン防止用の除外 (cpuAttackAI.ts から指定される。人間のカーソルパスでは未使用)
+    if (i === excludeIndex) continue;
     const receiver = players[i];
     if (!receiver) continue;
 
@@ -183,7 +191,15 @@ export function resolveCursor(
   if (!candidatePlayer) return noSwitch;
   const candidateDistSq = distSqFixed(candidatePlayer.pos, ballPos) as number;
 
-  if (candidateDistSq < currentDistSq - (CURSOR_HYSTERESIS_MARGIN_SQ_FIXED as number)) {
+  // 切替条件は2つのAND (どちらもヒステリシス):
+  // - 絶対マージン: 至近距離での僅差フリッカー防止 (Phase 2 から)。
+  // - 相対比 (candidate*36 < current*25 = 候補が距離比で17%以上近い): ボールから遠い時は
+  //   絶対マージンが1tickの移動量より小さくなり機能しないため、距離に比例する条件を追加
+  //   (Phase 4 バグ修正、詳細は cursorConstants.ts の CURSOR_SWITCH_DOMINANCE_* 参照)。
+  if (
+    candidateDistSq < currentDistSq - (CURSOR_HYSTERESIS_MARGIN_SQ_FIXED as number) &&
+    candidateDistSq * CURSOR_SWITCH_DOMINANCE_NUM < currentDistSq * CURSOR_SWITCH_DOMINANCE_DEN
+  ) {
     return { controlledPlayerIndex: candidate, passTriggered: false, passTargetIndex: null };
   }
   return noSwitch;

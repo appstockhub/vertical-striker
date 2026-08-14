@@ -28,6 +28,8 @@ import {
   type Half,
 } from './formations';
 import type { PlayerState } from './state';
+import { computeMarkHomePosition } from './marking';
+import { computeSupportHomePosition, isSupportRunner } from './supportRun';
 import {
   AI_BALL_DEADZONE_SQ_FIXED,
   AI_FINAL_DEADZONE_SQ_FIXED,
@@ -227,11 +229,20 @@ export function computeLineAdjustedHomePosition(
  * 収束しようとするだけで、押し上げ量の計算自体には関与しない。
  *
  * chaseRole (computeChaseRightIndices が毎tick1回だけ判定) による使い分け:
- * - 'primary' (最寄り): フル引力 + 最終アプローチ + リーシュ免除 = ボールへ直行。
- * - 'cover' (カバー): 中間の引力 + リーシュ免除、最終アプローチ無し = 付かず離れず。
+ * - 'primary' (最寄り): 圧倒的なボール引力(3.0) + リーシュ免除 = ボールへ直行。
+ * - 'cover' (カバー): 中間の引力 + リーシュ免除 = 付かず離れず。
  * - null (権利なし): 弱い引力 = ホームポジション優先でスペースを守る。
  * 全員が常にフル引力だった旧実装は、リーシュ内にいる選手全員がボールへ収束してしまう
  * 「団子サッカー」を引き起こしていた (実プレイで発覚)。
+ *
+ * ホーム目標の差し替え (Phase 4: マーク + サポートラン)。新しい力項は追加せず、
+ * ホーム復元力が収束する目標点を役割に応じて差し替える。選手ごとの優先順位:
+ * 1. chaseRole あり → ライン調整ホーム (追跡が最優先、マーク/サポートは無視)
+ * 2. markTargetIndex あり (守備側DF、computeMarkAssignments) → マーク対象のゴール側48px
+ * 3. サポートランナー枠 (攻撃側、isSupportRunner) → ボール前方180pxの走り込み点
+ * 4. それ以外 → ライン調整ホーム
+ * 実プレイで判明した「マークが無い・パスを受ける動きが無い(連動性の不足)」への対応。
+ * 差し替え後の目標にもオンサイドクランプ以降の既存の振動対策がすべて適用される。
  *
  * 出力は既存の Direction8 語彙のため、そのまま updatePlayer/applyDribbleTouch に渡せる
  * (Phase 1 のシグネチャ変更が本当に不要だった、という設計判断の実例)。
@@ -244,6 +255,7 @@ export function computeNonControlledDirection(
   half: Half,
   possessionTeam: TeamId | null,
   chaseRole: ChaseRole | null,
+  markTargetIndex: number | null = null,
 ): Direction8 {
   const lineHome = computeLineAdjustedHomePosition(
     player.team,
@@ -253,6 +265,24 @@ export function computeNonControlledDirection(
     ballPos,
     possessionTeam,
   );
+
+  // ホーム目標の差し替え (Phase 4): 新しい力項は追加せず、ホーム復元力が収束する目標点だけを
+  // 選手の役割に応じて差し替える。以降のオンサイドクランプ・ホームdeadzone・リーシュランプ等の
+  // 既存の振動対策はすべてそのまま効く。優先順位:
+  // 1. 追跡権保有者 → ライン調整ホームのまま (マーク/サポートより追跡が優先、分岐順で保証)
+  // 2. マーク対象あり (守備側、computeMarkAssignments が毎tick1回割り当て)
+  //    → マーク対象のゴール側スタンドオフ点
+  // 3. サポートランナー枠 (攻撃側、isSupportRunner は静的述語)
+  //    → ボール前方への走り込み点 (オフサイドは既存クランプが頭打ちにする)
+  // 4. それ以外 → ライン調整ホームのまま
+  const baseHome =
+    chaseRole === null && markTargetIndex !== null && allPlayers[markTargetIndex]
+      ? computeMarkHomePosition(allPlayers[markTargetIndex].pos, player.team, half)
+      : chaseRole === null &&
+          possessionTeam === player.team &&
+          isSupportRunner(player.slotIndex, teamFormations[player.team])
+        ? computeSupportHomePosition(player, allPlayers, lineHome, ballPos, half)
+        : lineHome;
 
   const offsideLineY = computeOffsideLine(allPlayers, opponentOf(player.team), half);
   const attacksUp = attackingIsUpward(player.team, half);
@@ -277,9 +307,9 @@ export function computeNonControlledDirection(
     ? (((quantizedLineY as number) + CLAMP_GRID + (ONSIDE_HOME_MARGIN_FIXED as number)) as Fixed)
     : (((quantizedLineY as number) - (ONSIDE_HOME_MARGIN_FIXED as number)) as Fixed);
   const clampedHomeY = attacksUp
-    ? (Math.max(lineHome.y as number, onsideLimitY as number) as Fixed)
-    : (Math.min(lineHome.y as number, onsideLimitY as number) as Fixed);
-  const home = { x: lineHome.x, y: clampedHomeY };
+    ? (Math.max(baseHome.y as number, onsideLimitY as number) as Fixed)
+    : (Math.min(baseHome.y as number, onsideLimitY as number) as Fixed);
+  const home = { x: baseHome.x, y: clampedHomeY };
 
   const homeDiff = vSub(home, player.pos);
   const homeDistSq = dotFixed(homeDiff, homeDiff);

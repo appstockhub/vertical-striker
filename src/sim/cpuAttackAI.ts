@@ -30,6 +30,15 @@ const CPU_STEER_DEADZONE_SQ: Fixed = fixedMul(toFixed(0.5), toFixed(0.5));
 // ゴールポストの際ではなく、ゴール幅のこの割合だけ内側を狙う (幾何誤差でwide判定になるのを避ける仮値)。
 const NEAR_POST_INSET_RATIO: Fixed = toFixed(0.85);
 
+// 相互パスの永久ピンポン防止 (Phase 4 バグ修正、観戦シミュレーターの振動検出から遡って発覚):
+// 同じライン深度で向かい合った2人のCPUが互いを受け手に選び、2人の間でボールが毎tick
+// 往復して試合が180tick以上完全停止するデッドロックがあった。
+// 対策は「直前に自分へボールを渡した選手 (prevTouchPlayerIndex) をパス先から除外する」のみ。
+// A→B→A の即時往復が構造的に不可能になる一方、パスの頻度・方向の分布は変えない。
+// 注意: 「前進パスのみ許可」等のパス頻度を下げる対策も試したが、CPUがドリブル主体になると
+// ボールを失う機会 (パスの移動中のインターセプト) が消えて攻撃転換が強くなりすぎ、
+// 人間側が陣地を回復できずシュート数が激減するバランス崩れが起きた (観戦シミュレーターで実測)。
+
 /**
  * Team B(CPU)のボール保持者1人ぶんの攻撃判断。CLAUDE.mdの「シュート・パス・崩しの意思決定」に
  * 対応する優先順位: 1.シュート圏内なら遠いポストを狙って強キック 2.ダメならカーソルパスと
@@ -46,6 +55,7 @@ export function decideCpuAttack(
   half: Half,
   difficulty: Difficulty,
   rngState: RngState,
+  prevTouchPlayerIndex: number | null = null,
 ): CpuAttackDecision {
   const carrier = players[carrierIndex];
   if (!carrier) {
@@ -85,7 +95,8 @@ export function decideCpuAttack(
     return { action: 'shoot', direction, passTargetIndex: null, rngState: nextRngState };
   }
 
-  const passTarget = selectPassTarget(carrierIndex, players);
+  // 直前に自分へボールを渡した選手は受け手候補から除外する (相互パスのピンポン防止、上のコメント参照)。
+  const passTarget = selectPassTarget(carrierIndex, players, prevTouchPlayerIndex);
   if (passTarget !== null) {
     const receiver = players[passTarget];
     if (receiver) {

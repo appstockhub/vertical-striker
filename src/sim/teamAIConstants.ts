@@ -17,7 +17,6 @@ import type { Fixed } from '../core/types';
  */
 export const HOME_PULL_WEIGHT_NEAR_FIXED: Fixed = toFixed(0.5);
 export const HOME_PULL_WEIGHT_FAR_FIXED: Fixed = toFixed(2.5);
-export const BALL_ATTRACTION_WEIGHT_FIXED: Fixed = toFixed(0.9);
 export const OFFSIDE_BIAS_WEIGHT_FIXED: Fixed = toFixed(0.8);
 
 /**
@@ -32,19 +31,18 @@ export const OFFSIDE_BIAS_MARGIN_FIXED: Fixed = toFixed(16);
 /**
  * ボール「追跡権」(computeChaseRightIndices) を持たない選手のボール引力。仮値。
  * 実プレイで「団子サッカー」(ほぼ全員がボールに殺到する) が発覚したため導入。
- * BALL_ATTRACTION_WEIGHT_FIXED(0.9)を全員に適用していた旧実装は、各チームの
- * フィールドプレイヤー全員がAI_HOME_LEASH_SQ_FIXEDのリーシュ内であればボールへ
- * 収束してしまっていた。追跡権を持つ選手(チームごとに最寄り+カバー
- * CHASE_RIGHT_HOLDERS_PER_TEAM人)だけがBALL_ATTRACTION_WEIGHT_FIXEDのフル引力を
- * 使い、それ以外はこの弱い値を使うことで、HOME_PULL_WEIGHT_NEAR_FIXED(0.5)が
- * 優位になり(ライン調整された)ホームポジション優先でスペースを守るようにする。
+ * 強いボール引力を全員に適用していた旧実装は、各チームのフィールドプレイヤー全員が
+ * リーシュ内であればボールへ収束してしまっていた。追跡権を持つ選手だけが強い引力
+ * (primary=BALL_ATTRACTION_WEIGHT_CLOSE_RANGE_FIXED / cover=COVER) を使い、
+ * それ以外はこの弱い値を使うことで、HOME_PULL_WEIGHT_NEAR_FIXED(0.5)が優位になり
+ * (ライン調整された)ホームポジション優先でスペースを守るようにする。
  */
 export const BALL_ATTRACTION_WEIGHT_NON_CHASER_FIXED: Fixed = toFixed(0.15);
 
 /**
- * カバー役(追跡権2人目)のボール引力。仮値。primary(0.9)より弱く、非追跡権(0.15)より強い
- * 中間値で、ボールに付かず離れずの距離を保つ。primaryと同じフル引力+最終アプローチを
- * 与えると2人が同じボール座標に折り重なって団子になる (観戦シミュレーターで発覚)。
+ * カバー役(追跡権2人目)のボール引力。仮値。primary(3.0)より弱く、非追跡権(0.15)より強い
+ * 中間値で、ボールに付かず離れずの距離を保つ。primaryと同じフル引力を与えると
+ * 2人が同じボール座標に折り重なって団子になる (観戦シミュレーターで発覚)。
  */
 export const BALL_ATTRACTION_WEIGHT_COVER_FIXED: Fixed = toFixed(0.45);
 
@@ -74,7 +72,7 @@ export const LINE_PUSH_STANDOFF_FIXED: Fixed = toFixed(150);
 export const LINE_FOLLOW_GRID_FIXED: Fixed = toFixed(32);
 
 /**
- * チームラインが反映する保持チームを切り替えるのに必要な連続保持tick数 (仮値、45tick=0.75秒)。
+ * チームラインが反映する保持チームを切り替えるのに必要な連続保持tick数 (仮値、90tick=1.5秒)。
  * GameState.linePossessionTeam の時間ヒステリシス。瞬間的な保持の入れ替わり
  * (GKパンチング・こぼれ球の一瞬の接触等) でライン全体が静的ホームへ巻き戻って
  * 「シュート直後にチーム全体が一斉に自陣へ戻る」不自然な行進が起きるのを防ぐ
@@ -93,16 +91,14 @@ export const LINE_POSSESSION_SWITCH_TICKS = 90;
 export const ONSIDE_HOME_MARGIN_FIXED: Fixed = toFixed(10);
 
 /**
- * 追跡権を持つ選手がこの距離(px、仮値)以内までボールに近づいたら「最終アプローチ」とみなし、
- * ボール引力を BALL_ATTRACTION_WEIGHT_CLOSE_RANGE_FIXED まで引き上げてホーム復元力を
- * 実質無視させる。8方向に量子化した各項を重み付け合成する既存方式は、目標が斜め方向にある
- * 場合などにホーム/ボール成分が軸ごとに打ち消し合い、本来ボールに向かうべきなのに合成方向が
- * それてしまい、ボールの手前20〜30px程度で選手が永久に足踏みする問題が実プレイ相当のテストで
- * 発覚した。ボールにこれだけ近ければホームポジションを気にする理由が薄いという前提で、
- * 最終接近時のみ引力を圧倒的に優勢にすることでこれを回避する。
+ * primary追跡者のボール引力 (距離によらず常時、圧倒的優勢)。仮値。
+ * 8方向に量子化した各項を重み付け合成する既存方式は、目標が斜め方向にある場合などに
+ * ホーム/ボール成分が軸ごとに打ち消し合い、本来ボールに向かうべきなのに合成方向がそれて
+ * しまい、ボールの手前20〜30px程度で選手が永久に足踏みする問題が実プレイ相当のテストで
+ * 発覚した。当初は「最終アプローチ」(ボール80px以内の時だけこの値へ引き上げ)だったが、
+ * 距離ゲート自体が追跡権メンバーシップの入れ替わりと干渉して振動を生んだため、
+ * primaryは距離によらず常にこの値を使う方式に変更した (teamAI.ts のコメント参照)。
  */
-export const BALL_CLOSE_RANGE_RADIUS_FIXED: Fixed = toFixed(80);
-export const BALL_CLOSE_RANGE_SQ_FIXED: Fixed = fixedMul(BALL_CLOSE_RANGE_RADIUS_FIXED, BALL_CLOSE_RANGE_RADIUS_FIXED);
 export const BALL_ATTRACTION_WEIGHT_CLOSE_RANGE_FIXED: Fixed = toFixed(3.0);
 
 /**
@@ -171,3 +167,103 @@ export const AI_BALL_DEADZONE_SQ_FIXED: Fixed = fixedMul(toFixed(4), toFixed(4))
  * 起こしていた。
  */
 export const AI_FINAL_DEADZONE_SQ_FIXED: Fixed = fixedMul(toFixed(0.25), toFixed(0.25));
+
+// ============================================================================
+// マーク (marking.ts) / サポートラン (supportRun.ts) 用の定数。すべて仮値。
+//
+// 注意: 以下はすべて「目標位置・適格判定の半径/グリッド」であり、力の重みではない。
+// 両機能とも既存のホーム復元力が収束する目標点を差し替えるだけで、8方向量子化+重み合成には
+// 新しい項を追加しない (Phase 4 実装計画参照)。したがって上記の
+// AI_FINAL_DEADZONE_SQ_FIXED の重み帯ルール (0.25境界) には一切影響しない。
+// ============================================================================
+
+/**
+ * マーカー適格判定: 静的ホーム深度(ライン調整前)がこの値以下の守備側選手だけがマークを行う (px)。
+ * depthFrac 0.35 * (PITCH_HEIGHT/2=900) = 315px。全4フォーメーションでDFライン(depthFrac
+ * 0.15-0.18 → 135-162px)だけが該当し、MF(0.5 → 450px)は該当しない。静的な値なので
+ * マーカー集合は試合中に一切変動しない (割り当て churn の構造的排除)。
+ */
+export const MARKER_MAX_HOME_DEPTH_FIXED: Fixed = toFixed(315);
+
+/**
+ * マーク候補の適格判定: 量子化深度(自陣ゴールから、LINE_FOLLOW_GRIDで量子化)がこの値未満の
+ * 相手外野選手だけをマーク対象にする (px)。
+ * 初期案の900px(自陣ハーフ全体)は観戦シミュレーターで平均マーク距離が313-532pxに膨らんだ:
+ * ハーフライン際をうろつくだけの(まだ危険でない)相手にまで深い位置のDFが割り当てられ、
+ * 永遠に移動中= マークが実質機能しない状態になっていた。危険域(自陣ゴールから450px)に
+ * 絞ることで、DFライン(ホーム深度~150px)からの移動距離が短くなり実際に付き切れる。
+ */
+export const MARK_ZONE_DEPTH_FIXED: Fixed = toFixed(450);
+
+/**
+ * マーク候補のボール除外半径 (px、二乗を保存)。ボールからこの距離未満にいる相手は
+ * マーク対象にしない — ボール近傍の相手(キャリア・至近の受け手)は追跡権保有者の仕事であり、
+ * そこへマーカーまで引き寄せると団子度が悪化する (団子化への主防壁)。
+ * 判定は48px²バケット(追跡権と同じ量子化)で行うため、実効境界は約117px。
+ */
+export const MARK_BALL_EXCLUSION_RADIUS_FIXED: Fixed = toFixed(120);
+export const MARK_BALL_EXCLUSION_SQ_FIXED: Fixed = fixedMul(
+  MARK_BALL_EXCLUSION_RADIUS_FIXED,
+  MARK_BALL_EXCLUSION_RADIUS_FIXED,
+);
+
+/** 同時にマークを行うマーカーの最大人数 (仮値)。団子度/CPUシュート数が悪化したら下げる。 */
+export const MARK_MAX_MARKERS = 4;
+
+/**
+ * マークホームのゴール側スタンドオフ (px)。マーク対象の量子化位置から自ゴール方向へ
+ * この距離だけずらした点をホーム目標にする。ホームdeadzone(28px)より大きくすることで、
+ * マーカーが対象に重なって止まる(=団子・タックル誤爆の温床)ことを構造的に防ぐ。
+ */
+export const MARK_STANDOFF_FIXED: Fixed = toFixed(48);
+
+/**
+ * マークホーム目標の量子化グリッド (px)。オンサイドクランプの24pxグリッドと同じ理由:
+ * グリッド1段(24px)はホームdeadzone(28px)より小さいため、マーク対象が1段ぶん動いても
+ * 到着済みのマーカーは動かない (毎tickの微小追随=振動の構造的排除)。
+ */
+export const MARK_TARGET_GRID_FIXED: Fixed = toFixed(24);
+
+/**
+ * サポートランナーの人数 (フォーメーションごとに depthFrac 最大の外野スロットから選ぶ、仮値)。
+ * 3人にすることで、うち1人がキャリア(teamAI駆動されない)でも非キャリア2人以上の
+ * サポートが常に保証される (正常性基準9の前提)。観戦シミュレーターの実測でも、
+ * 2人では人間側(Team A)の攻撃が組み立たず、3人で初めてシュート数が回復した
+ * (前線の受け手の枚数が攻撃成立の主要因)。
+ */
+export const SUPPORT_RUNNER_COUNT = 3;
+
+/**
+ * サポートランの目標深度: ボールの量子化深度(LINE_FOLLOW_GRID)からこの距離だけ前方 (px、仮値)。
+ * ライン押し上げの「ボール後方150px」(LINE_PUSH_STANDOFF)をランナーだけ反転し、
+ * 「キャリア前方のスペースへ走り込んでパスを受ける」動きを作る。
+ * 実際の目標は既存のオンサイドクランプでオフサイドラインの手前に頭打ちされる。
+ *
+ * 初期案の100pxは団子度測定の半径(150px)より小さく、定着したランナー自体が
+ * ボール周辺150px圏の人数にカウントされて passHeavy で団子度5.0を叩き出した
+ * (観戦シミュレーターで発覚)。団子半径より外側かつカーソルパス射程
+ * (PASS_MAX_RANGE=220px)の内側、という帯の中に置く。
+ */
+export const SUPPORT_AHEAD_STANDOFF_FIXED: Fixed = toFixed(180);
+
+/**
+ * サポートランの目標深度の上限 (自陣ゴールからの距離、px、仮値)。相手ボックスの縁
+ * (PITCH_HEIGHT - 150) 相当。ボールが敵陣深くにある時に ballDepth+standoff が
+ * ピッチ外 (>PITCH_HEIGHT) の目標を生み、ランナーが境界クランプに押し付けられ続ける
+ * 不具合の防止 (観戦シミュレーターで発覚)。ゴール前の密集への追加合流も防ぐ。
+ */
+export const SUPPORT_MAX_DEPTH_FIXED: Fixed = toFixed(1650);
+
+/**
+ * サポートランの味方回避: 最寄りの味方がこの距離以内なら目標Xをずらす (px、二乗を保存、仮値)。
+ * 判定は48px²バケットで安定化。フォーメーションのX間隔(FW同士144px)より狭いので通常は
+ * 発動せず、スクランブル後の密集を解消するための保険。
+ */
+export const SUPPORT_SPACING_RADIUS_FIXED: Fixed = toFixed(64);
+export const SUPPORT_SPACING_SQ_FIXED: Fixed = fixedMul(SUPPORT_SPACING_RADIUS_FIXED, SUPPORT_SPACING_RADIUS_FIXED);
+
+/** サポートランの味方回避で目標Xをずらす量 (px、仮値)。 */
+export const SUPPORT_SPREAD_OFFSET_FIXED: Fixed = toFixed(64);
+
+/** サポートランの目標Xの量子化グリッド (px)。MARK_TARGET_GRIDと同じ理由 (< ホームdeadzone 28px)。 */
+export const SUPPORT_X_GRID_FIXED: Fixed = toFixed(24);

@@ -286,6 +286,44 @@ describe('computeNonControlledDirection', () => {
     // ボールは選手から見て左下(DownLeft)。最終アプローチが効いていれば、その方向寄りになるはず。
     expect([Direction8.DownLeft, Direction8.Down, Direction8.Left]).toContain(direction);
   });
+
+  // Phase 4 (マーク): マーク対象を割り当てられた非追跡権DFは、静的ホームではなく
+  // マーク対象のゴール側スタンドオフ点へ収束し、到着したら止まる (deadzone)。
+  it('mark: a null-chase DF with a mark target converges to the goal-side standoff point and stops there', () => {
+    // Team A DF (slot 1、ホーム x=72,y=1638)。マーク対象の Team B FW が x=300,y=1500 に侵入。
+    const intruder = makePlayer(300, 1500, TeamId.B, 9);
+    const teamBRest = Array.from({ length: 10 }, (_, slot) => makePlayer(400, 100 + slot * 5, TeamId.B, slot));
+    const ballPos = { x: toFixed(240), y: toFixed(600) }; // ボールは遠く (Team B 陣内)
+
+    // スタンドオフ点 (24px床量子化 + ゴール側48px): x=floor(300/24)*24=288, y=floor(1500/24)*24+48=1548
+    // その点に立つDFは deadzone 内 → 静止するはず。
+    const arrived = makePlayer(288, 1548, TeamId.A, 1);
+    let roster = [arrived, intruder, ...teamBRest];
+    const dirArrived = computeNonControlledDirection(arrived, roster, ballPos, FORMATIONS, 1, TeamId.B, null, 1);
+    expect(dirArrived).toBe(Direction8.None);
+
+    // 静的ホーム (x=72,y=1638) に立つ同じDFは、マーク対象へ向かって動き出すはず
+    // (マークが無ければ deadzone 内で静止する位置 → 動く=マーク目標が効いている証拠)。
+    const atHome = makePlayer(72, 1638, TeamId.A, 1);
+    roster = [atHome, intruder, ...teamBRest];
+    const dirAtHome = computeNonControlledDirection(atHome, roster, ballPos, FORMATIONS, 1, TeamId.B, null, 1);
+    expect(dirAtHome).not.toBe(Direction8.None);
+    // マーク対象は右上方向 (x: 72→288, y: 1638→1548)
+    expect([Direction8.UpRight, Direction8.Right, Direction8.Up]).toContain(dirAtHome);
+  });
+
+  // Phase 4 (マーク): 追跡権保有者はマーク割り当てを無視してボールへ向かう (分岐順の保証)。
+  it('mark: a chase-right holder ignores its mark assignment and keeps chasing the ball', () => {
+    const intruder = makePlayer(300, 1500, TeamId.B, 9);
+    const teamBRest = Array.from({ length: 10 }, (_, slot) => makePlayer(400, 100 + slot * 5, TeamId.B, slot));
+    // DFはマークのスタンドオフ点に立っているが、primary 追跡権を持つ。ボールは左下遠方。
+    const df = makePlayer(288, 1548, TeamId.A, 1);
+    const ballPos = { x: toFixed(100), y: toFixed(1700) };
+    const roster = [df, intruder, ...teamBRest];
+    const dir = computeNonControlledDirection(df, roster, ballPos, FORMATIONS, 1, TeamId.B, 'primary', 1);
+    // マークに従うなら None (到着済み) だが、追跡権が勝つのでボール方向 (左下) へ動くはず。
+    expect([Direction8.DownLeft, Direction8.Down, Direction8.Left]).toContain(dir);
+  });
 });
 
 describe('computeChaseRightIndices', () => {

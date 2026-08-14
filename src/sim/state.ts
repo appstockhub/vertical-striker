@@ -71,6 +71,18 @@ export interface GameState {
   readonly linePossessionTeam: TeamId | null;
   /** 上記の切替判定用: linePossessionTeam と異なるチームが連続保持しているtick数。 */
   readonly linePossessionSwitchTicks: number;
+  /**
+   * 最後に touch-priority を保持した選手の players[] index (Phase 4)。
+   * ドリブルの蹴り出しでボールが一時的に足元を離れ touch=null になっても保持され、
+   * 「別の選手」が touch を取った時だけ更新される。
+   */
+  readonly lastTouchPlayerIndex: number | null;
+  /**
+   * lastTouchPlayerIndex の1つ前の (別の) 保持者の players[] index (Phase 4)。
+   * 「いま保持している選手に、直前にボールを渡した選手」を表し、CPUのパス先から除外する
+   * (相互パスの永久ピンポン防止、cpuAttackAI.ts のコメント参照)。
+   */
+  readonly prevTouchPlayerIndex: number | null;
   /** Team B(CPU)の攻撃AI難易度。試合開始時に決定、以後不変。 */
   readonly difficulty: Difficulty;
   /** オフサイドルールのON/OFF。試合開始時に決定、以後不変。 */
@@ -106,6 +118,8 @@ export function createInitialState(seed: number, options: CreateInitialStateOpti
     lastTouchTeam: null,
     linePossessionTeam: null,
     linePossessionSwitchTicks: 0,
+    lastTouchPlayerIndex: null,
+    prevTouchPlayerIndex: null,
     difficulty: options.difficulty ?? 'medium',
     offsideEnabled: options.offsideEnabled ?? true,
   };

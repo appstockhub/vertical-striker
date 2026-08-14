@@ -145,6 +145,18 @@ export function getHomePosition(
   return slotToWorld(team, half, slot);
 }
 
+/**
+ * 外野スロットの depthFrac を返す (slotIndex 1..10)。サポートランナー判定 (supportRun.ts) 用。
+ * 静的なフォーメーション定義値なので試合中に変化しない。
+ */
+export function getOutfieldSlotDepthFrac(formationId: FormationId, slotIndex: number): number {
+  const slot = FORMATIONS[formationId].outfieldSlots[slotIndex - 1];
+  if (!slot) {
+    throw new Error(`invalid outfield slotIndex ${slotIndex} for formation ${formationId}`);
+  }
+  return slot.depthFrac;
+}
+
 /** チームの攻撃方向 (自陣→相手陣への単位ベクトルの向き、Direction8 表現)。オフサイドライン計算等で使う。 */
 export function attackingIsUpward(team: TeamId, half: Half): boolean {
   return !teamDefendsNorth(team, half); // 北を守るチームは南(下)へ攻める、その逆は北(上)へ攻める

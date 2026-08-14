@@ -13,6 +13,7 @@ import { applyKick, updateKickCharge } from './kick';
 import { clampToPitchBounds, stepBallPhysicsDetailed } from './ballPhysics';
 import { findTouchPriorityPlayer } from './ballTouch';
 import { computeChaseRightIndices, computeNonControlledDirection } from './teamAI';
+import { computeMarkAssignments } from './marking';
 import { isTeamAInPossession, resolveCursor } from './cursor';
 import { quantizeToDirection8 } from './steering';
 import {
@@ -118,6 +119,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       lastTouchTeam: null,
       linePossessionTeam: null,
       linePossessionSwitchTicks: 0,
+      lastTouchPlayerIndex: null,
+      prevTouchPlayerIndex: null,
       difficulty: state.difficulty,
       offsideEnabled: state.offsideEnabled,
     };
@@ -126,6 +129,15 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   const touchPriorityIndex = findTouchPriorityPlayer(state.players, state.ball.pos);
   const teamAInPossession = isTeamAInPossession(touchPriorityIndex);
   let lastTouchTeam = state.lastTouchTeam;
+
+  // 保持者の履歴 (Phase 4、CPUの「直前に自分へ渡した選手へは返さない」判定に使う)。
+  // ドリブル中の一時的な touch=null では変化せず、別の選手が touch を取った時だけ進む。
+  let lastTouchPlayerIndex = state.lastTouchPlayerIndex;
+  let prevTouchPlayerIndex = state.prevTouchPlayerIndex;
+  if (touchPriorityIndex !== null && touchPriorityIndex !== lastTouchPlayerIndex) {
+    prevTouchPlayerIndex = lastTouchPlayerIndex;
+    lastTouchPlayerIndex = touchPriorityIndex;
+  }
 
   const teamAGoalkeeper = state.players[TEAM_A_GK_INDEX];
   const currentControlled = state.players[state.controlledPlayerIndex];
@@ -189,13 +201,25 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   }
   const cpuDecision =
     touchPriorityIndex !== null && touchPlayerForCpu && !isTeamAInPossession(touchPriorityIndex)
-      ? decideCpuAttack(touchPriorityIndex, state.players, half, state.difficulty, state.rngState)
+      ? decideCpuAttack(touchPriorityIndex, state.players, half, state.difficulty, state.rngState, prevTouchPlayerIndex)
       : null;
   let rngState = cpuDecision ? cpuDecision.rngState : state.rngState;
 
   // 「団子サッカー」防止: 守備側は最寄り2人(プレス+カバー)、保持側は最寄り1人(受け手)だけが
   // ボール引力をフルに使う (バグ修正、実プレイ+観戦シミュレーターで発覚)。毎tick1回だけ計算する。
   const chaseRightIndices = computeChaseRightIndices(state.players, state.ball.pos, possessionTeam);
+
+  // マーク割り当て (Phase 4): 守備側のDFライン(追跡権なし)に相手侵入者を1:1で割り当てる。
+  // 追跡権(プレス、生のpossessionTeamで即応)と違い、マークは陣形挙動なのでライン押し引きと
+  // 同じヒステリシス付き linePossessionTeam を使う (キック/パンチの瞬間の保持スイングで
+  // 割り当てが毎回崩壊するのを防ぐ)。毎tick1回だけ計算する。
+  const markAssignments = computeMarkAssignments(
+    state.players,
+    linePossessionTeam,
+    half,
+    state.teamFormations,
+    state.ball.pos,
+  );
 
   const effectiveInputs: Inputs[] = state.players.map((player, index) => {
     if (index === controlledPlayerIndex) return inputs;
@@ -218,6 +242,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       half,
       linePossessionTeam,
       chaseRightIndices.get(index) ?? null,
+      markAssignments.get(index) ?? null,
     );
     return { direction, buttons: NO_BUTTONS };
   });
@@ -389,6 +414,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       lastTouchTeam: null,
       linePossessionTeam: null,
       linePossessionSwitchTicks: 0,
+      lastTouchPlayerIndex: null,
+      prevTouchPlayerIndex: null,
       difficulty: state.difficulty,
       offsideEnabled: state.offsideEnabled,
     };
@@ -470,6 +497,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     lastTouchTeam,
     linePossessionTeam,
     linePossessionSwitchTicks,
+    lastTouchPlayerIndex,
+    prevTouchPlayerIndex,
     difficulty: state.difficulty,
     offsideEnabled: state.offsideEnabled,
   };

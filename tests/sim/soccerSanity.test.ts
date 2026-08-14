@@ -21,6 +21,15 @@ import { formatMatchSummary, runSimulatedMatch, type MatchStats } from './matchS
  * 6. 人間(Team A)も攻撃できる (攻撃的スクリプト vs easy でシュート≥3本、ボックス侵入≥1回)
  * 7. 支配率が一方的すぎない (能動的なパターンで両チーム15〜85%)
  * 8. ゴールが決まりうる (マトリクス全体で合計1点以上)
+ * 9. サポートランが機能している (Phase 4): 能動的パターンで、保持中にボールより前方50px超に
+ *    いる非GK・非キャリア選手の時間平均が Team A ≥ 0.9 / Team B ≥ 0.3 (サンプル≥1000時)。
+ *    実装前のベースラインは A ≤ 0.85 / B ≤ 0.23、実装後の実測は A 1.10〜1.75 / B 0.50〜0.85。
+ *    「非キャリア≥2人がサポートに来る」というユーザー要求は瞬時値だとフレーキーなため
+ *    時間平均でエンコードした (ランナー3枠のうち前方に定着済みの人数の平均)。
+ * 10. マークが機能している (Phase 4): マーカー↔マーク対象の平均距離が 30〜150px
+ *    (サンプル≥1000の試合のみ)。下限=対象に密着しすぎない (団子ガード)、
+ *    上限=実際に追従している (移動中tickが平均を押し上げるため定常値50〜90pxより緩め)。
+ *    実装後の実測は 66〜97px。
  */
 
 const MATRIX = [
@@ -28,6 +37,11 @@ const MATRIX = [
   { pattern: 'aggressive', difficulty: 'easy', seed: 3, scriptSeed: 5 },
   { pattern: 'aggressive', difficulty: 'easy', seed: 5, scriptSeed: 13 },
   { pattern: 'passHeavy', difficulty: 'easy', seed: 1, scriptSeed: 42 },
+  // Phase 4 追加 (マーク/サポートランは創発挙動のため、パターン×シードのカバレッジを増強):
+  // passHeavy 2本目 = サポートランナーがパス先として機能するかの追加サンプル、
+  // defensive 2本目 = CPUの長期保持下で Team A のマークが働き続けるかの追加サンプル。
+  { pattern: 'passHeavy', difficulty: 'easy', seed: 7, scriptSeed: 21 },
+  { pattern: 'defensive', difficulty: 'medium', seed: 3, scriptSeed: 9 },
   { pattern: 'defensive', difficulty: 'medium', seed: 1, scriptSeed: 42 },
   { pattern: 'idle', difficulty: 'medium', seed: 1, scriptSeed: 42 },
 ] as const;
@@ -110,6 +124,31 @@ describe('soccer sanity criteria (観戦シミュレーター全基準)', () => 
   it('criterion 8: goals are possible (>= 1 goal across the whole matrix)', () => {
     const totalGoals = RESULTS.reduce((sum, r) => sum + r.finalScore[0] + r.finalScore[1], 0);
     expect(totalGoals).toBeGreaterThanOrEqual(1);
+  });
+
+  it('criterion 9: support runs work — runners settle ahead of the ball while possessing (Phase 4)', () => {
+    for (const stats of RESULTS.filter((r) => r.pattern === 'aggressive' || r.pattern === 'passHeavy')) {
+      const a = stats.teams[0];
+      if (a.supportSamples >= 1000) {
+        expect(a.supportRunnersAvgAhead, `${label(stats)} A supportAhead`).toBeGreaterThanOrEqual(0.9);
+      }
+      const b = stats.teams[1];
+      if (b.supportSamples >= 1000) {
+        expect(b.supportRunnersAvgAhead, `${label(stats)} B supportAhead`).toBeGreaterThanOrEqual(0.3);
+      }
+    }
+  });
+
+  it('criterion 10: marking works — marker-to-target average distance stays in a sane band (Phase 4)', () => {
+    for (const stats of RESULTS) {
+      for (const team of [0, 1] as const) {
+        const t = stats.teams[team];
+        if (t.markSamples >= 1000) {
+          expect(t.markDistanceAvgPx, `${label(stats)} team${team} markDist`).toBeGreaterThanOrEqual(30);
+          expect(t.markDistanceAvgPx, `${label(stats)} team${team} markDist`).toBeLessThanOrEqual(150);
+        }
+      }
+    }
   });
 
   it('prints the full summary for human review', () => {
