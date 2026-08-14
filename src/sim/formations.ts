@@ -156,3 +156,8 @@ export function attackingIsUpward(team: TeamId, half: Half): boolean {
 export function depthFromOwnGoal(team: TeamId, half: Half, y: Fixed): Fixed {
   return teamDefendsNorth(team, half) ? y : fixedSub(toFixed(PITCH_HEIGHT), y);
 }
+
+/** 相手チームを返す共通ヘルパー (teamAI.ts / offsideRule.ts / update.ts で共有)。 */
+export function opponentOf(team: TeamId): TeamId {
+  return team === TeamId.A ? TeamId.B : TeamId.A;
+}

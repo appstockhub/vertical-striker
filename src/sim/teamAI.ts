@@ -3,7 +3,15 @@ import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8 } from '../input/types';
 import { DIRECTION_VECTORS } from './constants';
 import { quantizeToDirection8 } from './steering';
-import { attackingIsUpward, depthFromOwnGoal, getHomePosition, TeamId, type FormationId, type Half } from './formations';
+import {
+  attackingIsUpward,
+  depthFromOwnGoal,
+  getHomePosition,
+  opponentOf,
+  TeamId,
+  type FormationId,
+  type Half,
+} from './formations';
 import type { PlayerState } from './state';
 import {
   AI_BALL_DEADZONE_SQ_FIXED,
@@ -13,10 +21,6 @@ import {
   HOME_PULL_WEIGHT_FIXED,
   OFFSIDE_BIAS_WEIGHT_FIXED,
 } from './teamAIConstants';
-
-function opponentOf(team: TeamId): TeamId {
-  return team === TeamId.A ? TeamId.B : TeamId.A;
-}
 
 /**
  * 指定チームのオフサイドライン Y 座標 (自陣ゴールから2番目に深い選手のY、GK含む11人中)。

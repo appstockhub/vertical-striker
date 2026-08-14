@@ -420,3 +420,50 @@ describe('simulate — Phase 3: boundary detection (goals, throw-in/goal-kick/co
     expect(stateA).toEqual(stateB);
   });
 });
+
+/** テスト用: 操作選手/オフサイド対象選手/ボールの位置だけを差し替えた GameState を作る。 */
+function withOffsideSetup(seed: number, offsideEnabled: boolean): GameState {
+  const base = createInitialState(seed, { offsideEnabled });
+  const kickerIdx = base.controlledPlayerIndex; // Team A
+  const offsideIdx = 1; // Team A の別の選手 (DFスロット) を、この場面限りの攻撃選手に見立てる
+  return {
+    ...base,
+    players: base.players.map((p, i) => {
+      if (i === kickerIdx) return { ...p, pos: { x: toFixed(100), y: toFixed(500) } };
+      if (i === offsideIdx) return { ...p, pos: { x: toFixed(200), y: toFixed(50) } }; // 相手陣内、DFラインより前
+      return p;
+    }),
+    ball: { ...base.ball, pos: { x: toFixed(100), y: toFixed(505) } },
+  };
+}
+
+describe('simulate — Phase 3: offside rule (milestone 5)', () => {
+  it('blocks a charge-kick release when a teammate is offside, awarding an indirect free kick to the opponent', () => {
+    let state = withOffsideSetup(1, true);
+    const offsideIdx = 1;
+
+    state = simulate(state, inputsWithButtons(Direction8.None, { B: true })); // キック溜め開始
+    expect(controlled(state).kickChargeFrames).toBeGreaterThan(0);
+
+    const offsidePlayerBeforeRelease = state.players[offsideIdx];
+    const next = simulate(state, inputsWithButtons(Direction8.Right, {})); // 解放 -> オフサイド判定
+
+    expect(controlled(next).kickChargeFrames).toBe(0);
+    expect(toFloat(next.ball.vel.x)).toBe(0);
+    expect(toFloat(next.ball.vel.y)).toBe(0);
+    expect(toFloat(next.ball.zVel)).toBe(0);
+    expect(next.ball.pos).toEqual(offsidePlayerBeforeRelease?.pos);
+    expect(next.lastTouchTeam).toBe(TeamId.B);
+  });
+
+  it('does not check offside when offsideEnabled is false: the kick fires normally', () => {
+    let state = withOffsideSetup(1, false);
+
+    state = simulate(state, inputsWithButtons(Direction8.None, { B: true }));
+    const next = simulate(state, inputsWithButtons(Direction8.Right, {}));
+
+    const ballMoved =
+      toFloat(next.ball.vel.x) !== 0 || toFloat(next.ball.vel.y) !== 0 || toFloat(next.ball.zVel) !== 0;
+    expect(ballMoved).toBe(true);
+  });
+});

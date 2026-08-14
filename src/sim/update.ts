@@ -1,8 +1,10 @@
 import { fixedMul, vAdd, vSub, vZero, ZERO_FIXED } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, emptyButtonState, type ButtonState } from '../input/types';
-import type { GameState, PlayerState } from './state';
+import type { BallState, GameState, PlayerState } from './state';
 import { TacklePhase, TeamId } from './state';
+import { opponentOf } from './formations';
+import { checkOffside } from './offsideRule';
 import { DIRECTION_VECTORS, PLAYER_RADIUS_FIXED, PLAYER_SPEED_FIXED } from './constants';
 import { KICK_MIN_CHARGE_FRAMES, LONG_DRIBBLE_PLAYER_SPEED_FIXED } from './ballConstants';
 import { applyDribbleTouch, isLongDribbleActive } from './dribble';
@@ -47,6 +49,11 @@ const NO_BUTTONS = emptyButtonState();
 const TEAM_A_GK_INDEX = 0;
 const NO_TACKLE: TackleAdvance = { tacklePhase: TacklePhase.None, tackleFrames: 0, tackleDirection: Direction8.None };
 
+/** オフサイド成立時のリスタート用ボール状態 (該当選手の位置へ速度0で置く、間接FK相当)。 */
+function offsideRestartBall(offsidePlayer: PlayerState): BallState {
+  return { pos: offsidePlayer.pos, vel: vZero(), height: ZERO_FIXED, zVel: ZERO_FIXED };
+}
+
 /**
  * 純関数: 現在の状態と1tick分の入力から次の状態を返す。
  * 既存オブジェクトを変更せず、常に新しいプレーンオブジェクトを返す。
@@ -63,6 +70,9 @@ const NO_TACKLE: TackleAdvance = { tacklePhase: TacklePhase.None, tackleFrames: 
  *   3. 各選手の実効入力 (操作選手=人間入力、非操作GK=専用ステアリング、その他=チームAI)。
  *   4. touch-priority選手のドリブルタッチ (この時点で lastTouchTeam を更新)。
  *   5. Bボタンの文脈分岐 (GKセーブ最優先 → カーソルパス/チャージキック → タックル)。
+ *      マイルストーン5: カーソルパス発火/チャージキック解放の直前でオフサイド判定
+ *      (state.offsideEnabled時のみ)。成立時はapplyKickを実行させず、間接FK相当の
+ *      リスタート(該当選手の位置へ速度0でボールを置く)にする。
  *   6. ボール物理 (マイルストーン3-4: クランプ前の仮位置で境界越えを検出する)。
  *      6a. 得点なら、その場でミラー配置のキックオフへリセットして早期returnする
  *          (後続の選手移動処理を古いボール位置のまま進めてしまわないため、計画セクションD)。
@@ -172,10 +182,21 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     if (cursor.passTriggered && cursor.passTargetIndex !== null && controlledPlayer) {
       const receiver = state.players[cursor.passTargetIndex];
       if (receiver) {
-        // 確定パス: 溜め不要・低い弾道の速いグラウンダー。方向だけ受け手に向けて上書きする
-        // (既存applyKickの速度軸/弾道軸をそのまま再利用、新しい物理モデルは作らない)。
-        const passDirection = quantizeToDirection8(vSub(receiver.pos, controlledPlayer.pos), ZERO_FIXED);
-        ball = applyKick(ball, controlledPlayer, KICK_MIN_CHARGE_FRAMES, passDirection);
+        const offside = state.offsideEnabled
+          ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
+          : { offside: false, offsidePlayerIndex: null };
+        const offsidePlayer =
+          offside.offside && offside.offsidePlayerIndex !== null ? state.players[offside.offsidePlayerIndex] : undefined;
+        if (offsidePlayer) {
+          // オフサイド成立: パスを実行させず、間接FK相当のリスタートにする。
+          ball = offsideRestartBall(offsidePlayer);
+          lastTouchTeam = opponentOf(controlledPlayer.team);
+        } else {
+          // 確定パス: 溜め不要・低い弾道の速いグラウンダー。方向だけ受け手に向けて上書きする
+          // (既存applyKickの速度軸/弾道軸をそのまま再利用、新しい物理モデルは作らない)。
+          const passDirection = quantizeToDirection8(vSub(receiver.pos, controlledPlayer.pos), ZERO_FIXED);
+          ball = applyKick(ball, controlledPlayer, KICK_MIN_CHARGE_FRAMES, passDirection);
+        }
       }
     }
 
@@ -187,7 +208,17 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         const charge = updateKickCharge(controlledPlayer.kickChargeFrames, inputs.buttons.B);
         nextControlledKickChargeFrames = charge.nextFrames;
         if (charge.releasedFrames > 0) {
-          ball = applyKick(ball, controlledPlayer, charge.releasedFrames, inputs.direction);
+          const offside = state.offsideEnabled
+            ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
+            : { offside: false, offsidePlayerIndex: null };
+          const offsidePlayer =
+            offside.offside && offside.offsidePlayerIndex !== null ? state.players[offside.offsidePlayerIndex] : undefined;
+          if (offsidePlayer) {
+            ball = offsideRestartBall(offsidePlayer);
+            lastTouchTeam = opponentOf(controlledPlayer.team);
+          } else {
+            ball = applyKick(ball, controlledPlayer, charge.releasedFrames, inputs.direction);
+          }
         }
         tackleAdvance = advanceTacklePhase(controlledPlayer, false, Direction8.None);
       } else {
