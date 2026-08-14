@@ -14,6 +14,7 @@ import { isTeamAInPossession, selectPassTarget } from '../sim/cursor';
 import { toFloat } from '../core/fixed';
 import { GOAL_WIDTH_FIXED } from '../sim/goalkeeperConstants';
 import { formatClockText, formatScoreText } from './scoreboard';
+import { ReplayRecorder } from '../replay/ReplayRecorder';
 import {
   PITCH_HEIGHT,
   PITCH_WIDTH,
@@ -72,6 +73,10 @@ export class PitchScene extends Phaser.Scene {
   private radarCamera!: Phaser.Cameras.Scene2D.Camera;
   private cameraY = 0;
 
+  // リプレイ記録 (マイルストーン7)。設定UI(マイルストーン0)が無いため、現時点では
+  // createInitialState() と同じ既定値 (difficulty='medium', offsideEnabled=true) を渡す。
+  private replayRecorder = new ReplayRecorder();
+
   constructor() {
     super('Pitch');
   }
@@ -83,6 +88,8 @@ export class PitchScene extends Phaser.Scene {
     if (overlayEl) {
       this.overlay = new GamepadOverlay(overlayEl);
     }
+
+    this.replayRecorder.start(DETERMINISTIC_SEED, this.state.difficulty, this.state.offsideEnabled);
 
     this.buildPitch();
     this.buildEntities();
@@ -250,6 +257,9 @@ export class PitchScene extends Phaser.Scene {
     if (Object.values(inputs.buttons).some(Boolean)) {
       this.overlay?.notifyButtonPressed();
     }
+    // リプレイ記録: simulate()が呼ばれるたびに必ず1回、ここ(fixedUpdate側)で記録する
+    // (update()側=実フレーム単位で記録すると、catch-upでの複数回呼び出し時に記録漏れが起きるため)。
+    this.replayRecorder.record(inputs);
     this.state = simulate(this.state, inputs);
   }
 
