@@ -66,6 +66,53 @@ export interface TeamMatchStats {
   markSamples: number;
   /** 守備側だったtickのうちマーク割り当てが1件以上あったtickの割合 (レポート用、ゲート無し)。 */
   markedTicksShare: number;
+  /** 第2層 (挙動仕様書 docs/soccer-behavior-spec.md に基づく詳細メトリクス)。 */
+  behavior: BehaviorMetrics;
+}
+
+/**
+ * 挙動仕様書 (docs/soccer-behavior-spec.md) の各項目を定量化した第2層メトリクス。
+ * 既存の10基準 (soccerSanity.test.ts) が「サッカーとして崩壊していないか」の粗い網なのに対し、
+ * こちらは「あるべき動きに近いか」を測る細かい網。tests/sim/behaviorSpec.test.ts が判定する。
+ */
+export interface BehaviorMetrics {
+  /**
+   * 仕様P1 (ボールサイドシフト): このチームが守備側の時の、非GK重心Xの「ボール側への寄り」。
+   * mean( sign(ballX-中央) * (重心X-中央) )、ボールが中央から60px以上離れているtickのみ。
+   * 正=ボールサイドへ寄っている、0近傍=横シフトなし、負=逆サイドへ寄る。
+   */
+  defXShiftTowardBallAvgPx: number;
+  defXShiftSamples: number;
+  /**
+   * 仕様1.2 (近接サポート/三角形): このチームが保持側で、キャリア(touch priority)がいる時の、
+   * キャリアから120〜250px圏内にいる味方(非GK)数の平均。パスの選択肢の数に相当。
+   */
+  nearSupportAvg: number;
+  nearSupportSamples: number;
+  /**
+   * 仕様1.3 (レストディフェンス): このチームが保持側でボールが敵陣側1/3にある時の、
+   * ボール深度より300px以上後方にいる非GK味方数の平均。カウンター保険の人数。
+   */
+  restDefendersAvg: number;
+  restDefendersSamples: number;
+  /**
+   * 仕様2.2 (ゴール側の遮蔽): このチームが守備側の時の、ボールより自ゴール側(深度が浅い側)に
+   * いる非GK味方数の平均。守備ブロックの基本量。
+   */
+  goalSideDefendersAvg: number;
+  goalSideDefendersSamples: number;
+  /**
+   * 仕様4 (リスタート保護): このチームのリスタート(スローイン/ゴールキック/コーナー)のうち、
+   * 再開後最初のタッチを自チームが取れた割合 (0..1)。「ゴールキックなのに奪われる」の直接測定。
+   */
+  restartFirstTouchRate: number;
+  restartCount: number;
+  /**
+   * 仕様P3 (縦レーン過密の禁止): このチームが保持側の時、ピッチを4レーン(横120px)に分けた際の
+   * 最混雑レーンの非GK人数の平均。理想は3以下 (縦レーン最大2人+移動中の重なり許容)。
+   */
+  laneMaxOccupancyAvg: number;
+  laneMaxOccupancySamples: number;
 }
 
 export interface PlayerDistribution {
@@ -111,6 +158,21 @@ const GOAL_CENTER_X = PITCH_WIDTH / 2;
 const SUPPORT_AHEAD_METRIC_PX = 50;
 /** サポートラン測定: ボールがこの深度(自陣側1/3)を出ている時だけサンプルする。 */
 const SUPPORT_DEPTH_THRESHOLD = PITCH_HEIGHT / 3;
+
+// --- 第2層 (BehaviorMetrics) 用の定数。しきい値の根拠は docs/soccer-behavior-spec.md 参照 ---
+/** ボールサイドシフト測定: ボールが中央からこのpx以上離れているtickのみサンプルする。 */
+const XSHIFT_BALL_OFFSET_MIN = 60;
+/** 近接サポート測定: キャリアからこの距離帯 [min,max] にいる味方を「パスの選択肢」と数える。 */
+const NEAR_SUPPORT_MIN = 120;
+const NEAR_SUPPORT_MAX = 250;
+/** レストディフェンス測定: ボール深度よりこのpx以上後方を「保険の位置」と数える。 */
+const REST_DEFENDER_BEHIND_PX = 300;
+/** リスタート保護測定: 再開からこのtick以内の最初のタッチを判定対象にする。 */
+const RESTART_FIRST_TOUCH_WINDOW = 600;
+/** ゴール側遮蔽測定: ボールが自ゴールからこの深度以上にある時のみサンプルする (ゴール際の幾何的制約を除外)。 */
+const GOAL_SIDE_MIN_BALL_DEPTH = 400;
+/** 縦レーン過密測定: ピッチをこの本数の縦レーンに等分する。 */
+const LANE_COUNT = 4;
 
 /**
  * マーク割り当ての取得 (update.ts が毎tick計算しているものと同じ純関数を同じ引数で再計算する。
@@ -506,6 +568,23 @@ export function runSimulatedMatch(opts: RunMatchOptions): MatchStats {
   const markedTicks: [number, number] = [0, 0];
   const defendingTicks: [number, number] = [0, 0];
 
+  // 第2層 (BehaviorMetrics) の集計器
+  const xShiftSum: [number, number] = [0, 0];
+  const xShiftCount: [number, number] = [0, 0];
+  const nearSupportSum: [number, number] = [0, 0];
+  const nearSupportCount: [number, number] = [0, 0];
+  const restDefSum: [number, number] = [0, 0];
+  const restDefCount: [number, number] = [0, 0];
+  const goalSideSum: [number, number] = [0, 0];
+  const goalSideCount: [number, number] = [0, 0];
+  const restartWon: [number, number] = [0, 0];
+  const restartTotal: [number, number] = [0, 0];
+  const laneMaxSum: [number, number] = [0, 0];
+  const laneMaxCount: [number, number] = [0, 0];
+  /** 判定待ちのリスタート (lastEventで検出、最初のタッチで解決する)。 */
+  let pendingRestart: { team: TeamId; atFrame: number } | null = null;
+  let prevLastEventFrame = -1;
+
   // 選手分布
   const posSumX = new Array<number>(22).fill(0);
   const posSumY = new Array<number>(22).fill(0);
@@ -675,6 +754,111 @@ export function runSimulatedMatch(opts: RunMatchOptions): MatchStats {
       }
     }
 
+    // --- 第2層: リスタート保護 (仕様4) ---
+    // lastEvent (throwIn/goalKick/corner) の新規発生を検出し、その後の最初のタッチが
+    // 再開チームか相手かを記録する。gkCatchはリスタートではないため対象外。
+    if (
+      state.lastEvent &&
+      state.lastEvent.kind !== 'gkCatch' &&
+      state.lastEvent.atFrame === state.frame &&
+      state.lastEvent.atFrame !== prevLastEventFrame
+    ) {
+      pendingRestart = { team: state.lastEvent.team, atFrame: state.frame };
+      prevLastEventFrame = state.lastEvent.atFrame;
+    }
+    if (pendingRestart) {
+      const firstTouchIdx = findTouchPriorityPlayer(state.players, state.ball.pos);
+      if (firstTouchIdx !== null) {
+        const touchTeam = state.players[firstTouchIdx]!.team;
+        restartTotal[pendingRestart.team]++;
+        if (touchTeam === pendingRestart.team) restartWon[pendingRestart.team]++;
+        pendingRestart = null;
+      } else if (state.frame - pendingRestart.atFrame > RESTART_FIRST_TOUCH_WINDOW) {
+        pendingRestart = null; // 誰も触らないまま時間切れ (別のリスタートで上書きされた等)
+      }
+    }
+
+    // --- 第2層: ボールサイドシフト / ゴール側遮蔽 (守備側) と 近接サポート / レスト / レーン (保持側) ---
+    if (state.linePossessionTeam !== null) {
+      const behPossTeam = state.linePossessionTeam;
+      const behDefTeam = opponentOf(behPossTeam);
+
+      // 守備側: Xシフト (仕様P1) — ボールが中央から十分離れている時のみ
+      const ballOffsetX = ballX - GOAL_CENTER_X;
+      if (Math.abs(ballOffsetX) >= XSHIFT_BALL_OFFSET_MIN) {
+        let cxSum = 0;
+        let cxN = 0;
+        for (const p of state.players) {
+          if (p.team !== behDefTeam || p.isGoalkeeper) continue;
+          cxSum += toFloat(p.pos.x);
+          cxN++;
+        }
+        if (cxN > 0) {
+          const centroidOffset = cxSum / cxN - GOAL_CENTER_X;
+          xShiftSum[behDefTeam] += Math.sign(ballOffsetX) * centroidOffset;
+          xShiftCount[behDefTeam]++;
+        }
+      }
+
+      // 守備側: ゴール側遮蔽 (仕様2.2) — ボールより自ゴール側にいる非GK人数。
+      // ボールが自ゴールに近すぎる時(深度<400px)はサンプルしない: ゴール際の守備では
+      // 「ボールとゴールの間」の空間自体が幾何的に狭く、人数が少なくても正常なため、
+      // 状況(ボール位置)と挙動(位置取り)を混同しないようにする。
+      {
+        const ballDepthDef = toFloat(depthFromOwnGoal(behDefTeam, half, state.ball.pos.y));
+        if (ballDepthDef >= GOAL_SIDE_MIN_BALL_DEPTH) {
+          let goalSide = 0;
+          for (const p of state.players) {
+            if (p.team !== behDefTeam || p.isGoalkeeper) continue;
+            if (toFloat(depthFromOwnGoal(behDefTeam, half, p.pos.y)) < ballDepthDef) goalSide++;
+          }
+          goalSideSum[behDefTeam] += goalSide;
+          goalSideCount[behDefTeam]++;
+        }
+      }
+
+      // 保持側: 近接サポート (仕様1.2) — キャリアがいる時のみ
+      const behTouchIdx = findTouchPriorityPlayer(state.players, state.ball.pos);
+      if (behTouchIdx !== null && state.players[behTouchIdx]!.team === behPossTeam) {
+        const carrier = state.players[behTouchIdx]!;
+        let near = 0;
+        state.players.forEach((p, idx) => {
+          if (idx === behTouchIdx || p.team !== behPossTeam || p.isGoalkeeper) return;
+          const distPx = Math.sqrt(distSqFixed(p.pos, carrier.pos) as number) / 16;
+          if (distPx >= NEAR_SUPPORT_MIN && distPx <= NEAR_SUPPORT_MAX) near++;
+        });
+        nearSupportSum[behPossTeam] += near;
+        nearSupportCount[behPossTeam]++;
+      }
+
+      // 保持側: レストディフェンス (仕様1.3) — ボールが敵陣側1/3にある時のみ
+      {
+        const ballDepthPoss = toFloat(depthFromOwnGoal(behPossTeam, half, state.ball.pos.y));
+        if (ballDepthPoss > PRESS_DEPTH_THRESHOLD) {
+          let rest = 0;
+          for (const p of state.players) {
+            if (p.team !== behPossTeam || p.isGoalkeeper) continue;
+            if (toFloat(depthFromOwnGoal(behPossTeam, half, p.pos.y)) < ballDepthPoss - REST_DEFENDER_BEHIND_PX) rest++;
+          }
+          restDefSum[behPossTeam] += rest;
+          restDefCount[behPossTeam]++;
+        }
+      }
+
+      // 保持側: 縦レーン過密 (仕様P3)
+      {
+        const laneWidth = PITCH_WIDTH / LANE_COUNT;
+        const lanes = new Array<number>(LANE_COUNT).fill(0);
+        for (const p of state.players) {
+          if (p.team !== behPossTeam || p.isGoalkeeper) continue;
+          const lane = Math.min(LANE_COUNT - 1, Math.max(0, Math.floor(toFloat(p.pos.x) / laneWidth)));
+          lanes[lane]!++;
+        }
+        laneMaxSum[behPossTeam] += Math.max(...lanes);
+        laneMaxCount[behPossTeam]++;
+      }
+    }
+
     // --- サポートラン / マーク測定 (linePossessionTeamベース: 陣形挙動と同じシグナル) ---
     if (state.linePossessionTeam !== null) {
       const possTeam = state.linePossessionTeam;
@@ -777,6 +961,20 @@ export function runSimulatedMatch(opts: RunMatchOptions): MatchStats {
     markDistanceAvgPx: markCount[team] > 0 ? markDistSum[team] / markCount[team] : 0,
     markSamples: markCount[team],
     markedTicksShare: defendingTicks[team] > 0 ? markedTicks[team] / defendingTicks[team] : 0,
+    behavior: {
+      defXShiftTowardBallAvgPx: xShiftCount[team] > 0 ? xShiftSum[team] / xShiftCount[team] : 0,
+      defXShiftSamples: xShiftCount[team],
+      nearSupportAvg: nearSupportCount[team] > 0 ? nearSupportSum[team] / nearSupportCount[team] : 0,
+      nearSupportSamples: nearSupportCount[team],
+      restDefendersAvg: restDefCount[team] > 0 ? restDefSum[team] / restDefCount[team] : 0,
+      restDefendersSamples: restDefCount[team],
+      goalSideDefendersAvg: goalSideCount[team] > 0 ? goalSideSum[team] / goalSideCount[team] : 0,
+      goalSideDefendersSamples: goalSideCount[team],
+      restartFirstTouchRate: restartTotal[team] > 0 ? restartWon[team] / restartTotal[team] : 0,
+      restartCount: restartTotal[team],
+      laneMaxOccupancyAvg: laneMaxCount[team] > 0 ? laneMaxSum[team] / laneMaxCount[team] : 0,
+      laneMaxOccupancySamples: laneMaxCount[team],
+    },
   });
 
   return {
@@ -814,5 +1012,14 @@ export function formatMatchSummary(stats: MatchStats): string {
   }
   lines.push(`dango: avg=${stats.dangoAvg.toFixed(2)} max=${stats.dangoMax}`);
   lines.push(`oscillating players: [${stats.oscillatingPlayers.join(', ')}]`);
+  for (const team of [0, 1] as const) {
+    const b = stats.teams[team].behavior;
+    lines.push(
+      `Team${team === 0 ? 'A' : 'B'} behavior: xShift=${b.defXShiftTowardBallAvgPx.toFixed(1)}px(n=${b.defXShiftSamples}) ` +
+        `nearSupport=${b.nearSupportAvg.toFixed(2)}(n=${b.nearSupportSamples}) restDef=${b.restDefendersAvg.toFixed(2)}(n=${b.restDefendersSamples}) ` +
+        `goalSide=${b.goalSideDefendersAvg.toFixed(2)}(n=${b.goalSideDefendersSamples}) restartWin=${(b.restartFirstTouchRate * 100).toFixed(0)}%(n=${b.restartCount}) ` +
+        `laneMax=${b.laneMaxOccupancyAvg.toFixed(2)}(n=${b.laneMaxOccupancySamples})`,
+    );
+  }
   return lines.join('\n');
 }
