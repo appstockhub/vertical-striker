@@ -208,3 +208,74 @@ describe('simulate — Phase 1/2: dribble + kick integration (controlled player 
     expect(toFloat(released.ball.vel.x)).toBeGreaterThan(0);
   });
 });
+
+describe('simulate — Phase 2: full 22-player determinism regression (milestone 6)', () => {
+  // カーソル切替(L/Y)・キック溜め・タックル(B)・GK自動交代(L)など、Phase 2で追加した
+  // 全メカニクスに触れ得る、変化に富んだ入力列。狙った通りに各メカニクスが必ず発火するとは
+  // 限らないが (状況依存のため)、目的は「同一seed+同一入力列なら22人分の状態が
+  // 何tick経っても完全に一致する」という決定論の維持を確認すること。
+  const sequence: Array<{ direction: Direction8; held: Partial<Record<LogicalButton, boolean>> }> = [
+    { direction: Direction8.Up, held: {} },
+    { direction: Direction8.Up, held: {} },
+    { direction: Direction8.UpRight, held: { L: true } },
+    { direction: Direction8.Right, held: {} },
+    { direction: Direction8.None, held: { B: true } },
+    { direction: Direction8.None, held: { B: true } },
+    { direction: Direction8.None, held: { B: true } },
+    { direction: Direction8.Up, held: {} },
+    { direction: Direction8.Up, held: {} },
+    { direction: Direction8.Right, held: { Y: true } },
+    { direction: Direction8.Right, held: {} },
+    { direction: Direction8.Down, held: {} },
+    { direction: Direction8.Down, held: {} },
+    { direction: Direction8.DownLeft, held: { B: true } },
+    { direction: Direction8.DownLeft, held: {} },
+    { direction: Direction8.Left, held: { L: true } },
+    { direction: Direction8.Left, held: { L: true } },
+    { direction: Direction8.None, held: {} },
+    { direction: Direction8.Up, held: { Y: true } },
+    { direction: Direction8.None, held: {} },
+  ];
+
+  it('is deterministic across many ticks touching cursor/GK/tackle/kick mechanics', () => {
+    let stateA = createInitialState(2026);
+    let stateB = createInitialState(2026);
+
+    for (const { direction, held } of sequence) {
+      stateA = simulate(stateA, inputsWithButtons(direction, held));
+      stateB = simulate(stateB, inputsWithButtons(direction, held));
+    }
+
+    expect(stateA).toEqual(stateB);
+  });
+
+  it('never mutates the previous-tick state object across the sequence', () => {
+    let state = createInitialState(2026);
+    for (const { direction, held } of sequence) {
+      const snapshotBefore = JSON.parse(JSON.stringify(state));
+      const next = simulate(state, inputsWithButtons(direction, held));
+      expect(state).toEqual(snapshotBefore);
+      state = next;
+    }
+  });
+
+  it('keeps all 22 players within pitch bounds throughout the sequence', () => {
+    let state = createInitialState(2026);
+    for (const { direction, held } of sequence) {
+      state = simulate(state, inputsWithButtons(direction, held));
+    }
+    for (const player of state.players) {
+      expect(toFloat(player.pos.x)).toBeGreaterThanOrEqual(0);
+      expect(toFloat(player.pos.y)).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('keeps controlledPlayerIndex within the valid 0..21 range throughout the sequence', () => {
+    let state = createInitialState(2026);
+    for (const { direction, held } of sequence) {
+      state = simulate(state, inputsWithButtons(direction, held));
+      expect(state.controlledPlayerIndex).toBeGreaterThanOrEqual(0);
+      expect(state.controlledPlayerIndex).toBeLessThan(22);
+    }
+  });
+});

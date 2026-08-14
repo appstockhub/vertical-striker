@@ -3,6 +3,7 @@ import { FixedTimestepLoop } from '../core/loop';
 import { createInitialState, type GameState, type PlayerState } from '../sim/state';
 import { simulate } from '../sim/update';
 import { InputManager } from '../input/inputManager';
+import type { InputFrame } from '../input/types';
 import { GamepadOverlay } from '../input/overlay';
 import { ballLiftPx, vecToPx } from './fixedToPixel';
 import { computeCameraY, type CameraConfig } from './camera';
@@ -40,6 +41,16 @@ export class PitchScene extends Phaser.Scene {
   private loop!: FixedTimestepLoop;
   private inputManager!: InputManager;
   private overlay: GamepadOverlay | null = null;
+  /**
+   * 実フレームにつき1回だけサンプルした InputFrame。固定タイムステップの catch-up で
+   * 1フレーム内に fixedUpdate() が複数回呼ばれても、それらは同じ入力を使い回す
+   * (InputManager.sample() 自体を複数回呼ぶと、KeyboardSource/GamepadSource が
+   * 内部で保持する prevButtons がその都度更新され、2回目以降の呼び出しで
+   * 立ち上がりedgeを取りこぼす恐れがあるため。Phase 1/2 のキック溜め・カーソル切替は
+   * すべて GameState 側で edge を導出する設計なので実害は無かったが、
+   * 将来 InputFrame.buttonsPressed に依存するコードが増えた時のための地雷を塞ぐ)。
+   */
+  private cachedInputs: InputFrame | null = null;
 
   // プール化された表示オブジェクト。生成は buildEntities()/buildRadar() で1回だけ行い、
   // render() では setPosition()/setVisible() のみを呼ぶ (60fps維持のガードレール、
@@ -204,7 +215,8 @@ export class PitchScene extends Phaser.Scene {
   }
 
   private fixedUpdate(): void {
-    const inputs = this.inputManager.sample();
+    const inputs = this.cachedInputs;
+    if (!inputs) return; // update() が必ず先にサンプルするため通常発生しない
     if (Object.values(inputs.buttons).some(Boolean)) {
       this.overlay?.notifyButtonPressed();
     }
@@ -212,6 +224,7 @@ export class PitchScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number): void {
+    this.cachedInputs = this.inputManager.sample();
     this.loop.tick(delta);
     this.overlay?.pollConnectionState(this.inputManager.isGamepadConnected());
     this.render();
