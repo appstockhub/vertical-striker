@@ -3,7 +3,6 @@ import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, type ButtonState } from '../input/types';
 import { teamDefendsNorth, type Half } from './formations';
 import type { BallState, PlayerState } from './state';
-import { PITCH_WIDTH } from '../config/pitch';
 import { quantizeToDirection8 } from './steering';
 import {
   CATCH_MAX_SPEED_FIXED,
@@ -11,10 +10,11 @@ import {
   GK_AUTO_TAKEOVER_RADIUS_SQ_FIXED,
   GK_COVERAGE_RADIUS_FIXED,
   GK_SAVE_RANGE_SQ_FIXED,
+  GOAL_CENTER_X_FIXED,
   PUNCH_RANGE_SQ_FIXED,
 } from './goalkeeperConstants';
 
-const GOAL_CENTER_X: Fixed = toFixed(PITCH_WIDTH / 2);
+const GOAL_CENTER_X: Fixed = GOAL_CENTER_X_FIXED;
 // 0 だと「ちょうど目標位置にいる (差ベクトル=(0,0))」場合に quantizeToDirection8 の
 // デッドゾーン判定が `magSq(0) < deadzoneSq(0)` = false になって素通りし、8方向タイブレークの
 // 先頭 (Up) にフォールバックしてしまう (実際にテストで踏んだ回帰)。ごく小さい正の値にする。

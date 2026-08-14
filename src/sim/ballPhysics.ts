@@ -4,6 +4,14 @@ import type { BallState } from './state';
 import { PITCH_BOUNDS } from './constants';
 import { BALL_RADIUS_FIXED, BOUNCE_DAMPING_FIXED, BOUNCE_MIN_VEL_FIXED, GRAVITY_FIXED, ROLLING_FRICTION_FIXED } from './ballConstants';
 
+/** stepBallPhysicsDetailed() の戻り値。tentativePos はピッチ境界クランプ「前」の位置。 */
+export interface BallPhysicsStep {
+  readonly ball: BallState;
+  /** クランプ前の仮位置。sim/bounds.ts の境界越え検出はこちらを見る必要がある
+   * (クランプ後の位置は既に境界内に丸められているため、越えた事実そのものが消えてしまう)。 */
+  readonly tentativePos: Vec2Fixed;
+}
+
 /**
  * ボールの1tick分の物理更新 (重力・バウンド・転がり摩擦・ピッチ境界クランプ)。
  * ドリブルタッチ/キックが ball.vel / ball.zVel を書き換えた「後」に毎tick必ず呼ぶ。
@@ -12,7 +20,7 @@ import { BALL_RADIUS_FIXED, BOUNCE_DAMPING_FIXED, BOUNCE_MIN_VEL_FIXED, GRAVITY_
  * 静止しているボール (初期状態や着地後) が毎tick沈み込んで跳ね返る挙動を永久に繰り返し、
  * 見た目上振動し続けてしまう。着地速度が BOUNCE_MIN_VEL_FIXED 未満なら跳ねさせず静止させる。
  */
-export function stepBallPhysics(ball: BallState): BallState {
+export function stepBallPhysicsDetailed(ball: BallState): BallPhysicsStep {
   let height: Fixed = ball.height;
   let zVel: Fixed = ball.zVel;
 
@@ -37,9 +45,18 @@ export function stepBallPhysics(ball: BallState): BallState {
 
   const grounded = (height as number) <= (ZERO_FIXED as number);
   const vel: Vec2Fixed = grounded ? vScaleFixed(ball.vel, ROLLING_FRICTION_FIXED) : ball.vel; // 空中は摩擦なし
-  const pos = clampToPitchBounds(vAdd(ball.pos, vel), BALL_RADIUS_FIXED);
+  const tentativePos = vAdd(ball.pos, vel);
+  const pos = clampToPitchBounds(tentativePos, BALL_RADIUS_FIXED);
 
-  return { pos, vel, height, zVel };
+  return { ball: { pos, vel, height, zVel }, tentativePos };
+}
+
+/**
+ * stepBallPhysicsDetailed() の薄いラッパー。境界越え検出が不要な既存の呼び出し元
+ * (テスト等) 向けに Phase 2 までと同じシグネチャを維持する。
+ */
+export function stepBallPhysics(ball: BallState): BallState {
+  return stepBallPhysicsDetailed(ball).ball;
 }
 
 /**

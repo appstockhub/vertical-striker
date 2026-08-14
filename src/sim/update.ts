@@ -1,13 +1,13 @@
-import { fixedMul, vAdd, vSub, ZERO_FIXED } from '../core/fixed';
+import { fixedMul, vAdd, vSub, vZero, ZERO_FIXED } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, emptyButtonState, type ButtonState } from '../input/types';
 import type { GameState, PlayerState } from './state';
-import { TacklePhase } from './state';
+import { TacklePhase, TeamId } from './state';
 import { DIRECTION_VECTORS, PLAYER_RADIUS_FIXED, PLAYER_SPEED_FIXED } from './constants';
 import { KICK_MIN_CHARGE_FRAMES, LONG_DRIBBLE_PLAYER_SPEED_FIXED } from './ballConstants';
 import { applyDribbleTouch, isLongDribbleActive } from './dribble';
 import { applyKick, updateKickCharge } from './kick';
-import { clampToPitchBounds, stepBallPhysics } from './ballPhysics';
+import { clampToPitchBounds, stepBallPhysicsDetailed } from './ballPhysics';
 import { findTouchPriorityPlayer } from './ballTouch';
 import { computeNonControlledDirection } from './teamAI';
 import { isTeamAInPossession, resolveCursor } from './cursor';
@@ -31,6 +31,7 @@ import {
 import { TACKLE_RECOVERY_FRAMES } from './tackleConstants';
 import { getHalf, isFulltime } from './matchClock';
 import { placeKickoffFormation } from './kickoff';
+import { detectBoundaryEvent } from './bounds';
 
 /**
  * 1tick分の入力。InputFrame のサブセット (sim/ は入力の生成元を知らない)。
@@ -55,15 +56,23 @@ const NO_TACKLE: TackleAdvance = { tacklePhase: TacklePhase.None, tackleFrames: 
  * Phase 3 (マイルストーン1-2: 半分対応+試合時計) で追加した先頭の早期return:
  *   0a. フルタイム到達済みなら frame だけ進めて他は素通しする (試合終了、入力は実質無効)。
  *   0b. このtickで前半→後半の境界を跨ぐなら、全員をミラー配置のキックオフにリセットする。
- * それ以外は通常通り Phase 2 のパイプラインを進める (境界越え検出・得点・オフサイド・
- * CPU攻撃AIは後続マイルストーンで追加、現時点ではまだ無い)。
+ * それ以外は通常通り Phase 2 のパイプラインを進める (オフサイド・CPU攻撃AIは後続マイルストーンで
+ * 追加、現時点ではまだ無い)。
  *   1. touch-priority を決定する。
  *   2. GK自動交代判定 (最優先、キック溜め中/タックル中はガード)。無ければ通常のカーソル解決。
  *   3. 各選手の実効入力 (操作選手=人間入力、非操作GK=専用ステアリング、その他=チームAI)。
  *   4. touch-priority選手のドリブルタッチ (この時点で lastTouchTeam を更新)。
  *   5. Bボタンの文脈分岐 (GKセーブ最優先 → カーソルパス/チャージキック → タックル)。
- *   6. ボール物理。
+ *   6. ボール物理 (マイルストーン3-4: クランプ前の仮位置で境界越えを検出する)。
+ *      6a. 得点なら、その場でミラー配置のキックオフへリセットして早期returnする
+ *          (後続の選手移動処理を古いボール位置のまま進めてしまわないため、計画セクションD)。
+ *      6b. スローイン/ゴールキック/コーナーなら、ボールを復帰位置へ即座にテレポートし
+ *          (速度・高さ0)、選手移動処理はそのまま続ける (計画セクションC、試合停止の演出は無し)。
  *   7. 全選手の移動。
+ *
+ * 既知の割り切り (仮定5): 得点判定はこの関数の中盤、前後半切替の早期return判定より「後」に
+ * 行うため、半分境界とちょうど同じtickで得点が起きた場合は半分切替が優先され、その得点は
+ * 記録されない (1/10800tickの極小確率、Phase 3ではこのまま許容する)。
  */
 export function simulate(state: GameState, inputs: Inputs): GameState {
   if (isFulltime(state.frame)) {
@@ -206,7 +215,41 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     }
   }
 
-  ball = stepBallPhysics(ball);
+  const ballStep = stepBallPhysicsDetailed(ball);
+  const boundaryEvent = detectBoundaryEvent(ballStep.tentativePos, ballStep.ball.height, half, lastTouchTeam);
+
+  if (boundaryEvent?.type === 'goal') {
+    // 得点: 選手移動処理まで進めず、その場でミラー配置のキックオフへリセットして完結させる
+    // (計画セクションD。古いボール位置ベースのAI目標が1tickだけ混ざるのを防ぐ)。
+    const reset = placeKickoffFormation(half, state.teamFormations);
+    const score: readonly [number, number] =
+      boundaryEvent.scoringTeam === TeamId.A
+        ? [state.score[0] + 1, state.score[1]]
+        : [state.score[0], state.score[1] + 1];
+    return {
+      frame: nextFrame,
+      rngState: state.rngState,
+      players: reset.players,
+      ball: reset.ball,
+      controlledPlayerIndex: state.controlledPlayerIndex,
+      prevButtons: inputs.buttons,
+      teamFormations: state.teamFormations,
+      score,
+      lastTouchTeam: null,
+      difficulty: state.difficulty,
+      offsideEnabled: state.offsideEnabled,
+    };
+  }
+
+  if (boundaryEvent) {
+    // スローイン/ゴールキック/コーナー: 即座にテレポートするのみ (試合停止の演出は無し)。
+    // 選手移動処理はこのまま続ける (Team Aはカーソルスナップ、Team Bはボール引力AIが
+    // 自然にリスタート位置へ収束する、計画セクションC)。
+    ball = { pos: boundaryEvent.pos, vel: vZero(), height: ZERO_FIXED, zVel: ZERO_FIXED };
+    lastTouchTeam = null;
+  } else {
+    ball = ballStep.ball;
+  }
 
   const players = state.players.map((player, index) => {
     const playerInputs = effectiveInputs[index] ?? { direction: Direction8.None, buttons: NO_BUTTONS };

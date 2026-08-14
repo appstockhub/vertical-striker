@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { toFixed, toFloat } from '../../src/core/fixed';
-import { createInitialState, type GameState, type PlayerState } from '../../src/sim/state';
+import { toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
+import { createInitialState, TeamId, type GameState, type PlayerState } from '../../src/sim/state';
 import { simulate } from '../../src/sim/update';
 import { Direction8, emptyButtonState, LogicalButton, type ButtonState } from '../../src/input/types';
 import { FULL_MATCH_DURATION_FRAMES, HALF_DURATION_FRAMES } from '../../src/sim/matchClock';
+import { PITCH_HEIGHT } from '../../src/config/pitch';
 
 function inputs(direction: Direction8) {
   return { direction, buttons: emptyButtonState() };
@@ -339,5 +340,83 @@ describe('simulate — Phase 3: match clock (half-swap + fulltime freeze)', () =
     };
     const next = simulate(near, inputs(Direction8.Up));
     expect(next.lastTouchTeam).toBe(near.players[idx]?.team);
+  });
+});
+
+/** テスト用: ボールの位置/速度/高さだけを差し替えた GameState を作る (境界越えシナリオ用)。 */
+function withBall(
+  seed: number,
+  ballPos: { x: number; y: number },
+  ballVel: { x: number; y: number },
+  height = 0,
+): GameState {
+  const base = createInitialState(seed);
+  return {
+    ...base,
+    ball: {
+      pos: { x: toFixed(ballPos.x), y: toFixed(ballPos.y) },
+      vel: { x: toFixed(ballVel.x), y: toFixed(ballVel.y) },
+      height: toFixed(height),
+      zVel: ZERO_FIXED,
+    },
+  };
+}
+
+describe('simulate — Phase 3: boundary detection (goals, throw-in/goal-kick/corner restarts, milestones 3-4)', () => {
+  it('scores a goal for Team A, resets to kickoff, and clears lastTouchTeam (half 1: Team A attacks the north/y=0 line)', () => {
+    // ボール中心をゴール中央、クロスバー以下の高さで、北ライン(y=0)を割る速度で置く。
+    const state = withBall(1, { x: 240, y: 3 }, { x: 0, y: -10 }, 0);
+    const next = simulate(state, inputs(Direction8.None));
+    expect(next.score).toEqual([1, 0]);
+    expect(next.lastTouchTeam).toBeNull();
+    // キックオフ配置へリセットされ、ボールはピッチ中央付近に戻る
+    expect(toFloat(next.ball.pos.y)).toBeCloseTo(PITCH_HEIGHT * 0.5, 0);
+    expect(next.ball.vel.x).toBe(ZERO_FIXED);
+    expect(next.ball.vel.y).toBe(ZERO_FIXED);
+  });
+
+  it('scores a goal for Team B when the ball crosses the south/y=PITCH_HEIGHT line (half 1: Team B attacks south)', () => {
+    const state = withBall(1, { x: 240, y: PITCH_HEIGHT - 3 }, { x: 0, y: 10 }, 0);
+    const next = simulate(state, inputs(Direction8.None));
+    expect(next.score).toEqual([0, 1]);
+  });
+
+  it('does NOT score when the ball crosses the goal line above crossbar height', () => {
+    const state = withBall(1, { x: 240, y: 3 }, { x: 0, y: -10 }, 50); // 高い弾道、クロスバーを大きく超える
+    const next = simulate(state, inputs(Direction8.None));
+    expect(next.score).toEqual([0, 0]);
+  });
+
+  it('awards a goal kick (no score change) when the ball goes out wide of the goal, last touched by the attacker', () => {
+    // Team A (attacker for the north goal) が最後に触れた状態で、ゴール幅の外に出す。
+    const base = withBall(1, { x: 20, y: 3 }, { x: 0, y: -10 }, 0);
+    const state = { ...base, lastTouchTeam: TeamId.A };
+    const next = simulate(state, inputs(Direction8.None));
+    expect(next.score).toEqual([0, 0]);
+    expect(next.lastTouchTeam).toBeNull(); // リスタート発生でクリアされる
+    expect(toFloat(next.ball.vel.x)).toBe(0);
+    expect(toFloat(next.ball.vel.y)).toBe(0);
+  });
+
+  it('teleports the ball out-of-bounds on the sideline to a throw-in position and keeps the match running (no score, no half reset)', () => {
+    const base = withBall(1, { x: -2, y: 900 }, { x: -10, y: 0 }, 0);
+    const state = { ...base, lastTouchTeam: TeamId.A };
+    const next = simulate(state, inputs(Direction8.None));
+    expect(next.score).toEqual([0, 0]);
+    expect(toFloat(next.ball.pos.x)).toBeGreaterThan(0);
+    expect(toFloat(next.ball.pos.x)).toBeLessThan(50);
+    expect(next.ball.vel.x).toBe(ZERO_FIXED);
+    // 選手移動処理はそのまま続く (試合停止の演出は無い): frameは通常通り+1される
+    expect(next.frame).toBe(state.frame + 1);
+  });
+
+  it('is deterministic across a sequence that scores a goal', () => {
+    let stateA = withBall(7, { x: 240, y: 3 }, { x: 0, y: -10 }, 0);
+    let stateB = withBall(7, { x: 240, y: 3 }, { x: 0, y: -10 }, 0);
+    for (let i = 0; i < 5; i++) {
+      stateA = simulate(stateA, inputs(Direction8.Up));
+      stateB = simulate(stateB, inputs(Direction8.Up));
+    }
+    expect(stateA).toEqual(stateB);
   });
 });

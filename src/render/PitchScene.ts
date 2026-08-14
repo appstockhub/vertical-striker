@@ -13,6 +13,7 @@ import { findTouchPriorityPlayer } from '../sim/ballTouch';
 import { isTeamAInPossession, selectPassTarget } from '../sim/cursor';
 import { toFloat } from '../core/fixed';
 import { GOAL_WIDTH_FIXED } from '../sim/goalkeeperConstants';
+import { formatClockText, formatScoreText } from './scoreboard';
 import {
   PITCH_HEIGHT,
   PITCH_WIDTH,
@@ -60,6 +61,10 @@ export class PitchScene extends Phaser.Scene {
   private cursorRing!: Phaser.GameObjects.Arc;
   private passMarker!: Phaser.GameObjects.Text;
 
+  // スコアボードHUD (画面固定表示、カメラスクロールの影響を受けない setScrollFactor(0))。
+  private scoreText!: Phaser.GameObjects.Text;
+  private clockText!: Phaser.GameObjects.Text;
+
   private ballMain!: Phaser.GameObjects.Arc;
   private ballShadow!: Phaser.GameObjects.Ellipse;
   private ballRadarDot!: Phaser.GameObjects.Arc;
@@ -82,6 +87,7 @@ export class PitchScene extends Phaser.Scene {
     this.buildPitch();
     this.buildEntities();
     this.buildRadar();
+    this.buildHud();
 
     this.loop = new FixedTimestepLoop({
       onFixedUpdate: () => this.fixedUpdate(),
@@ -214,6 +220,30 @@ export class PitchScene extends Phaser.Scene {
     ]);
   }
 
+  /**
+   * スコアボードHUD (得点・前後半/経過分)。他のプール化オブジェクトと同じく1回だけ生成し、
+   * render() では setText() のみで更新する。setScrollFactor(0) で画面固定表示にし、
+   * レーダーカメラには映さない (メインカメラのUI)。
+   */
+  private buildHud(): void {
+    const textStyle: Phaser.Types.GameObjects.Text.TextStyle = {
+      fontSize: '20px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      backgroundColor: '#00000080',
+      padding: { x: 6, y: 3 },
+    };
+    this.scoreText = this.add.text(VIEWPORT_WIDTH / 2, 6, '0 - 0', textStyle);
+    this.scoreText.setOrigin(0.5, 0);
+    this.scoreText.setScrollFactor(0);
+
+    this.clockText = this.add.text(VIEWPORT_WIDTH / 2, 32, "H1  0'", textStyle);
+    this.clockText.setOrigin(0.5, 0);
+    this.clockText.setScrollFactor(0);
+
+    this.radarCamera.ignore([this.scoreText, this.clockText]);
+  }
+
   private fixedUpdate(): void {
     const inputs = this.cachedInputs;
     if (!inputs) return; // update() が必ず先にサンプルするため通常発生しない
@@ -244,6 +274,9 @@ export class PitchScene extends Phaser.Scene {
     }
 
     this.renderPassMarker();
+
+    this.scoreText.setText(formatScoreText(this.state));
+    this.clockText.setText(formatClockText(this.state));
 
     const groundPx = vecToPx(this.state.ball.pos); // ボールの「地面位置」(影・レーダーはこちらを使う)
     const lift = ballLiftPx(this.state.ball.height);

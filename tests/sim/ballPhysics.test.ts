@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
-import { clampToPitchBounds, stepBallPhysics } from '../../src/sim/ballPhysics';
+import { clampToPitchBounds, stepBallPhysics, stepBallPhysicsDetailed } from '../../src/sim/ballPhysics';
 import type { BallState } from '../../src/sim/state';
 import { BALL_RADIUS_FIXED, GRAVITY_FIXED } from '../../src/sim/ballConstants';
 import { PITCH_BOUNDS } from '../../src/sim/constants';
@@ -87,6 +87,20 @@ describe('stepBallPhysics', () => {
       state = stepBallPhysics(state);
     }
     expect(toFloat(state.pos.x)).toBeLessThanOrEqual(toFloat(PITCH_BOUNDS.maxX));
+  });
+});
+
+describe('stepBallPhysicsDetailed', () => {
+  it('reports a tentativePos that goes beyond the pitch edge, unlike the clamped ball.pos (Phase 3 milestone 3: bounds detection needs the pre-clamp position)', () => {
+    const b = ball({ pos: { x: PITCH_BOUNDS.maxX, y: ZERO_FIXED }, vel: { x: toFixed(20), y: ZERO_FIXED } });
+    const step = stepBallPhysicsDetailed(b);
+    expect(toFloat(step.tentativePos.x)).toBeGreaterThan(toFloat(PITCH_BOUNDS.maxX));
+    expect(toFloat(step.ball.pos.x)).toBeLessThanOrEqual(toFloat(PITCH_BOUNDS.maxX));
+  });
+
+  it('stepBallPhysics is a thin wrapper returning the same ball as stepBallPhysicsDetailed().ball', () => {
+    const b = ball({ height: toFixed(10), vel: { x: toFixed(3), y: toFixed(-2) } });
+    expect(stepBallPhysics(b)).toEqual(stepBallPhysicsDetailed(b).ball);
   });
 });
 

@@ -1,12 +1,16 @@
 import { fixedMul, toFixed } from '../core/fixed';
 import type { Fixed } from '../core/types';
+import { PITCH_WIDTH } from '../config/pitch';
 
 /**
  * キーパーAI関連の定数。すべて仮値 (要プレイテスト調整)。
- * 得点処理を伴わない最小限のゴールマウス幾何参照 (Phase 3のルール実装を前倒ししない、
- * GKの位置取り判定にのみ使う座標参照)。
+ * ゴールマウス幾何参照 (GKの位置取り判定・sim/bounds.tsの得点判定の両方から使う)。
  */
 export const GOAL_WIDTH_FIXED: Fixed = toFixed(80);
+export const GOAL_HALF_WIDTH_FIXED: Fixed = fixedMul(GOAL_WIDTH_FIXED, toFixed(0.5));
+
+/** ゴールマウス中心のx座標 (ピッチ幅の中央、両ゴール共通)。 */
+export const GOAL_CENTER_X_FIXED: Fixed = toFixed(PITCH_WIDTH / 2);
 
 /** 自動モードでのゴールライン上の左右可動範囲 (px, 仮値。ゴール幅の半分よりやや広め)。 */
 export const GK_COVERAGE_RADIUS_FIXED: Fixed = toFixed(45);

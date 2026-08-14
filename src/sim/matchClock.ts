@@ -25,3 +25,16 @@ export function secondsElapsedInHalf(frame: number): number {
   const framesIntoHalf = half === 1 ? frame : frame - HALF_DURATION_FRAMES;
   return Math.floor(framesIntoHalf / 60);
 }
+
+/** スコアボードの「0〜90分」表示用に、実経過時間を圧縮した表示分を返す (演出のみ、
+ * ゲームロジックには影響しない。計画セクションB/仮定2)。前半0〜45分、後半45〜90分。
+ * フルタイム後もそれ以上増やさず90分で固定表示する。 */
+const DISPLAY_MINUTES_PER_HALF = 45;
+
+export function displayMinute(frame: number): number {
+  const half = getHalf(frame);
+  const framesIntoHalf = half === 1 ? frame : frame - HALF_DURATION_FRAMES;
+  const fraction = Math.min(framesIntoHalf / HALF_DURATION_FRAMES, 1);
+  const base = half === 1 ? 0 : DISPLAY_MINUTES_PER_HALF;
+  return Math.floor(base + fraction * DISPLAY_MINUTES_PER_HALF);
+}
