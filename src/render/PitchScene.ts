@@ -7,7 +7,9 @@ import { GamepadOverlay } from '../input/overlay';
 import { ballLiftPx, vecToPx } from './fixedToPixel';
 import { computeCameraY, type CameraConfig } from './camera';
 import { computeRadarLayout } from './radar';
-import { TEAM_COLORS, BALL_COLOR, CURSOR_RING_COLOR } from './teamColors';
+import { TEAM_COLORS, BALL_COLOR, CURSOR_RING_COLOR, PASS_MARKER_COLOR } from './teamColors';
+import { findTouchPriorityPlayer } from '../sim/ballTouch';
+import { isTeamAInPossession, selectPassTarget } from '../sim/cursor';
 import {
   PITCH_HEIGHT,
   PITCH_WIDTH,
@@ -43,6 +45,7 @@ export class PitchScene extends Phaser.Scene {
   private playerArcs: Phaser.GameObjects.Arc[] = [];
   private playerRadarDots: Phaser.GameObjects.Arc[] = [];
   private cursorRing!: Phaser.GameObjects.Arc;
+  private passMarker!: Phaser.GameObjects.Text;
 
   private ballMain!: Phaser.GameObjects.Arc;
   private ballShadow!: Phaser.GameObjects.Ellipse;
@@ -109,6 +112,15 @@ export class PitchScene extends Phaser.Scene {
     this.cursorRing = this.add.circle(0, 0, OUTFIELD_RADIUS + 5, 0x000000, 0);
     this.cursorRing.setStrokeStyle(3, CURSOR_RING_COLOR, 0.9);
 
+    // カーソルパスの受け手マーカー (「↓」、Team Aがボール保持中かつ受け手がいる時だけ表示)
+    this.passMarker = this.add.text(0, 0, '↓', {
+      fontSize: '22px',
+      color: '#' + PASS_MARKER_COLOR.toString(16).padStart(6, '0'),
+      fontStyle: 'bold',
+    });
+    this.passMarker.setOrigin(0.5, 1);
+    this.passMarker.setVisible(false);
+
     // ボール (視認性のため実物より大きめ、縁取りでピッチの緑との境界を明確にする)
     this.ballMain = this.add.circle(0, 0, BALL_RADIUS_PX, BALL_COLOR);
     this.ballMain.setStrokeStyle(2, 0x1a1a1a, 0.8);
@@ -151,7 +163,13 @@ export class PitchScene extends Phaser.Scene {
     // メイン/レーダーの出し分けはプール配列から機械的に構築する (手書き列挙は
     // オブジェクト数が増えるほど漏れの元になるため)。
     this.cameras.main.ignore([...this.playerRadarDots, this.ballRadarDot]);
-    this.radarCamera.ignore([...this.playerArcs, this.ballMain, this.ballShadow, this.cursorRing]);
+    this.radarCamera.ignore([
+      ...this.playerArcs,
+      this.ballMain,
+      this.ballShadow,
+      this.cursorRing,
+      this.passMarker,
+    ]);
   }
 
   private fixedUpdate(): void {
@@ -181,6 +199,8 @@ export class PitchScene extends Phaser.Scene {
       this.cursorRing.setPosition(px.x, px.y);
     }
 
+    this.renderPassMarker();
+
     const groundPx = vecToPx(this.state.ball.pos); // ボールの「地面位置」(影・レーダーはこちらを使う)
     const lift = ballLiftPx(this.state.ball.height);
 
@@ -192,5 +212,27 @@ export class PitchScene extends Phaser.Scene {
     const targetVelY = this.state.ball.vel.y / 256;
     this.cameraY = computeCameraY(groundPx.y, targetVelY, this.cameraY, CAMERA_CONFIG);
     this.cameras.main.scrollY = this.cameraY;
+  }
+
+  /**
+   * カーソルパスの受け手マーカー ("↓")。Team Aがボールを保持しており、かつ前方コーン内に
+   * 受け手候補がいる時だけ表示する。simulate() 内の判定と同じ純関数 (findTouchPriorityPlayer /
+   * selectPassTarget) を描画側でも呼び直すことで、GameStateに派生情報を持たせずに済む。
+   */
+  private renderPassMarker(): void {
+    const touchPriorityIndex = findTouchPriorityPlayer(this.state.players, this.state.ball.pos);
+    if (!isTeamAInPossession(touchPriorityIndex) || touchPriorityIndex === null) {
+      this.passMarker.setVisible(false);
+      return;
+    }
+    const targetIndex = selectPassTarget(touchPriorityIndex, this.state.players);
+    const receiver = targetIndex !== null ? this.state.players[targetIndex] : undefined;
+    if (!receiver) {
+      this.passMarker.setVisible(false);
+      return;
+    }
+    const px = vecToPx(receiver.pos);
+    this.passMarker.setPosition(px.x, px.y - OUTFIELD_RADIUS - 6);
+    this.passMarker.setVisible(true);
   }
 }
