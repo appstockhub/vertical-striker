@@ -2,7 +2,7 @@ import { distSqFixed, dotFixed, fixedMul, fixedSub } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import type { ButtonState } from '../input/types';
 import { DIRECTION_VECTORS } from './constants';
-import type { PlayerState } from './state';
+import { TacklePhase, type PlayerState } from './state';
 import { PLAYERS_PER_TEAM } from './state';
 import {
   CURSOR_HYSTERESIS_MARGIN_SQ_FIXED,
@@ -124,10 +124,10 @@ export function resolveCursor(
     passTargetIndex: null,
   };
 
-  // 操作選手がキック溜め中 (将来的にはタックル中も) は、いかなる自動/手動カーソル変更も
-  // 発火させない。この tick はカーソル的には何もしない (溜めているBはそのまま継続する)。
+  // 操作選手がキック溜め中またはタックル中は、いかなる自動/手動カーソル変更も
+  // 発火させない。この tick はカーソル的には何もしない (進行中の動作を継続する)。
   const currentPlayer = players[currentControlledIndex];
-  const locked = (currentPlayer?.kickChargeFrames ?? 0) > 0;
+  const locked = (currentPlayer?.kickChargeFrames ?? 0) > 0 || (currentPlayer?.tacklePhase ?? TacklePhase.None) !== TacklePhase.None;
   if (locked) {
     return noSwitch;
   }
