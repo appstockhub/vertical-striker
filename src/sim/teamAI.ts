@@ -31,6 +31,7 @@ import type { PlayerState } from './state';
 import { computeMarkHomePosition } from './marking';
 import { computeSupportHomePosition, isSupportRunner } from './supportRun';
 import {
+  AI_BALL_DEADZONE_PRIMARY_SQ_FIXED,
   AI_BALL_DEADZONE_SQ_FIXED,
   AI_FINAL_DEADZONE_SQ_FIXED,
   AI_HOME_DEADZONE_SQ_FIXED,
@@ -107,22 +108,46 @@ export type ChaseRole = 'primary' | 'cover';
  * primary/coverを分けるのは観戦シミュレーターでの団子度測定に基づく調整: 2人とも
  * 全力でボール座標へ直行させると同じ点に折り重なるため、カバーは中間の引力で
  * 付かず離れずの距離を保たせる (プレス+カバーの読み合い構造は維持)。
+ *
+ * suppressedTeam (Phase 5、リスタート猶予): このチームには追跡権を一切割り当てない
+ * (holders算出前にスキップ)。possessionTeamによる保持/守備の人数振り分け(1人/2人)とは
+ * 完全に独立した抑制軸である点が重要: primaryの引力weight(3.0)は保持/守備の区別と
+ * 無関係に同じ値のため、「相手を守備側(2人)に振り分ける」だけでは相手の追跡権を
+ * 弱めることができない(むしろ2人目cover分だけ強めてしまう) — 実際、4周目に追加された
+ * ゴールキック時の`lastTouchTeam = restartTeam`という振り分けはこの理由で効果が薄く、
+ * 実プレイで「ゴールキックなのにボールを奪われる」報告が続いた。そのため
+ * 「そのチームには追跡権を与えない」という別軸を新設する。デフォルト値nullは
+ * 既存の全呼び出し箇所(update.ts含む)を無変更のまま動作させる。
  */
 export function computeChaseRightIndices(
   players: readonly PlayerState[],
   ballPos: Vec2Fixed,
   possessionTeam: TeamId | null,
+  suppressedTeam: TeamId | null = null,
 ): ReadonlyMap<number, ChaseRole> {
   const result = new Map<number, ChaseRole>();
 
-  // 距離は48px相当のバケットに量子化してから順位付けする (メンバーシップの安定化):
+  // 距離はバケットに量子化してから順位付けする (メンバーシップの安定化):
   // 生の距離で毎tickソートすると、ほぼ等距離の2人が互いに1歩動くたびに追跡権の
   // メンバー自体が入れ替わり、片方が「追跡権あり(ボールへ)/なし(ホームへ)」を毎tick
   // 往復して足踏みし続ける (観戦シミュレーターの振動検出で発覚)。同バケット内は
   // 小さいindexが常に勝つため、近接した2人の順位は完全に安定する。
-  const DIST_BUCKET = toFixed(48 * 48) as number; // 48px の距離二乗 (Fixedスケール)
+  //
+  // バケット幅は元48pxから64pxへ拡大した (Phase 5): リスタート猶予導入のバタフライ効果で
+  // 以前踏んでいなかった経路が変わり、ゴール前の混戦(ボール・touch priorityが数tickごとに
+  // 入れ替わる)でcover役のメンバーシップ(2位候補)がバケット境界をわずかに跨いで
+  // 入れ替わり続ける振動が新たに発覚した。48pxでは境界付近のタイに対するマージンが
+  // 薄かったため、64pxへ広げて再発を防いだ (観戦シミュレーター全マトリクスで団子度等の
+  // 副作用が無いことを確認済み)。
+  //
+  // 注記: touch priority(実際にボールに触れている選手)を優先するタイブレークも検討したが、
+  // ルーズボールの競り合いでtouchPriorityIndex自体がtickごとに入れ替わりうる
+  // (DRIBBLE_RADIUS=20pxという狭い判定のため)ことが原因で、むしろ広範囲の新たな振動を
+  // 誘発することが判明し不採用にした。indexという不変属性のみに紐付けた現行方式を維持する。
+  const DIST_BUCKET = toFixed(64 * 64) as number; // 64px の距離二乗 (Fixedスケール)
 
   for (const team of [TeamId.A, TeamId.B]) {
+    if (team === suppressedTeam) continue; // リスタート猶予中: このチームは追跡権ゼロ
     const holders =
       possessionTeam === team ? CHASE_RIGHT_HOLDERS_POSSESSING : CHASE_RIGHT_HOLDERS_DEFENDING;
     const candidates: Array<{ index: number; bucket: number }> = [];
@@ -316,7 +341,13 @@ export function computeNonControlledDirection(
   const homeDir = quantizeToDirection8(homeDiff, AI_HOME_DEADZONE_SQ_FIXED);
   const ballDiff = vSub(ballPos, player.pos);
 
-  const ballDir = quantizeToDirection8(ballDiff, AI_BALL_DEADZONE_SQ_FIXED);
+  // primary追跡者は引力weightが圧倒的(3.0)なため、通常のデッドゾーン(4px)では1tick移動量
+  // (3px)に対するマージンが薄く、既にボールを保持している味方へ無意味に収束しようとして
+  // 極小距離で往復する振動が実プレイ相当のテストで発覚した (Phase 5、リスタート猶予導入の
+  // バタフライ効果で新たに踏んだ経路)。primaryだけデッドゾーンを広げて再発を防ぐ
+  // (cover/非追跡権は元の4pxのまま — 広げるとdango等の全体挙動に副作用が出るため)。
+  const ballDeadzone = chaseRole === 'primary' ? AI_BALL_DEADZONE_PRIMARY_SQ_FIXED : AI_BALL_DEADZONE_SQ_FIXED;
+  const ballDir = quantizeToDirection8(ballDiff, ballDeadzone);
 
   // near半径以内は0、far半径以遠は1、間は距離の二乗に対して線形に遷移する比率
   // (チャタリング防止のため、単一しきい値での瞬時切替をやめて滑らかな帯にした)。

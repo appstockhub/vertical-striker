@@ -15,6 +15,7 @@ import { isTeamAInPossession, selectPassTarget } from '../sim/cursor';
 import { toFloat } from '../core/fixed';
 import { GOAL_WIDTH_FIXED } from '../sim/goalkeeperConstants';
 import { formatClockText, formatScoreText } from './scoreboard';
+import { formatEventBannerText } from './eventBanner';
 import { ReplayRecorder } from '../replay/ReplayRecorder';
 import { detectSoundEvents } from './soundEvents';
 import { SoundPlayer } from './SoundPlayer';
@@ -68,6 +69,8 @@ export class PitchScene extends Phaser.Scene {
   // スコアボードHUD (画面固定表示、カメラスクロールの影響を受けない setScrollFactor(0))。
   private scoreText!: Phaser.GameObjects.Text;
   private clockText!: Phaser.GameObjects.Text;
+  /** スローイン/GKキャッチ等の一時バナー (Phase 5)。試合は止めず、HUD文言のみで視認性を上げる。 */
+  private eventBannerText!: Phaser.GameObjects.Text;
 
   private ballMain!: Phaser.GameObjects.Arc;
   private ballShadow!: Phaser.GameObjects.Ellipse;
@@ -275,7 +278,12 @@ export class PitchScene extends Phaser.Scene {
     this.clockText.setOrigin(0.5, 0);
     this.clockText.setScrollFactor(0);
 
-    this.radarCamera.ignore([this.scoreText, this.clockText]);
+    this.eventBannerText = this.add.text(VIEWPORT_WIDTH / 2, 58, '', textStyle);
+    this.eventBannerText.setOrigin(0.5, 0);
+    this.eventBannerText.setScrollFactor(0);
+    this.eventBannerText.setVisible(false);
+
+    this.radarCamera.ignore([this.scoreText, this.clockText, this.eventBannerText]);
   }
 
   private fixedUpdate(): void {
@@ -317,6 +325,10 @@ export class PitchScene extends Phaser.Scene {
 
     this.scoreText.setText(formatScoreText(this.state));
     this.clockText.setText(formatClockText(this.state));
+
+    const bannerText = formatEventBannerText(this.state);
+    this.eventBannerText.setText(bannerText ?? '');
+    this.eventBannerText.setVisible(bannerText !== null);
 
     const groundPx = vecToPx(this.state.ball.pos); // ボールの「地面位置」(影・レーダーはこちらを使う)
     const lift = ballLiftPx(this.state.ball.height);

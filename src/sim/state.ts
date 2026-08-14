@@ -4,6 +4,7 @@ import { emptyButtonState, type ButtonState, type Direction8 } from '../input/ty
 import { FormationId, PLAYERS_PER_TEAM, TeamId } from './formations';
 import { TacklePhase } from './tacklePhase';
 import { placeKickoffFormation } from './kickoff';
+import { KICKOFF_GRACE_TICKS } from './teamAIConstants';
 
 export { TeamId, PLAYERS_PER_TEAM };
 export { TacklePhase };
@@ -87,6 +88,40 @@ export interface GameState {
   readonly difficulty: Difficulty;
   /** オフサイドルールのON/OFF。試合開始時に決定、以後不変。 */
   readonly offsideEnabled: boolean;
+  /**
+   * リスタート直後の追跡権フェアネス猶予 (Phase 5)。再開してから restartGraceTicksLeft の間、
+   * computeChaseRightIndices(teamAI.ts) がこのチームの相手の追跡権をゼロにする。
+   *
+   * 実プレイで発覚したバグの修正: キックオフはFW同士がボールから完全に対称な距離
+   * (F442で153px) に位置するが、lastTouchTeam/linePossessionTeamがnull(競り合い扱い)になるため
+   * 両チームに全く同じ強さ(weight 3.0、リーシュ免除)の追跡権が与えられる。AIは反応レイテンシが
+   * ゼロだが人間には現実的な反応時間(9〜18tick)があるため、対称なはずの距離が実質AI有利に
+   * 倒れ「なぜか敵側が先に蹴れる」という不公平が生じていた。ゴールキックについても、既存の
+   * GOAL_KICK_EXCLUSION_DEPTH_FIXED(一発ティーポート押し出し)だけでは再開後の継続的な保護が
+   * 無かったため、この猶予機構で補強する。
+   * null = 猶予なし (通常のpossessionTeam判定のまま)。
+   */
+  readonly restartGraceTeam: TeamId | null;
+  /** 上記の残りtick数。0になったら restartGraceTeam は事実上無効 (update.tsがnullへ戻す)。 */
+  readonly restartGraceTicksLeft: number;
+  /**
+   * 直近の「知覚可能にすべき」イベント (Phase 5)。スローイン/GKキャッチは実装上は正しく
+   * 動作しているが、画面上・音声上、他の瞬間と見分ける手がかりが無いため実プレイで
+   * 「起きていない」ように見える、という報告への対応。lastTouchTeam等と同じ
+   * 「読み返すだけ、物理/AIには影響しない echo フィールド」。既存の「非得点の境界復帰は
+   * 試合停止の演出を持たない」(Phase 3) 方針は維持し、一時的なHUD表示のみで対応する。
+   * null = 表示すべき直近イベント無し。
+   */
+  readonly lastEvent: NotableEvent | null;
+}
+
+/** GameState.lastEvent の種別。goalはscoreの変化で既に検出可能なため対象外。 */
+export type NotableEventKind = 'throwIn' | 'goalKick' | 'corner' | 'gkCatch';
+
+export interface NotableEvent {
+  readonly kind: NotableEventKind;
+  readonly team: TeamId;
+  readonly atFrame: number;
 }
 
 export interface CreateInitialStateOptions {
@@ -122,5 +157,9 @@ export function createInitialState(seed: number, options: CreateInitialStateOpti
     prevTouchPlayerIndex: null,
     difficulty: options.difficulty ?? 'medium',
     offsideEnabled: options.offsideEnabled ?? true,
+    // 試合開始キックオフはTeam Aが行う前提 (既存のcontrolledPlayerIndex初期値と同じ前提の踏襲)。
+    restartGraceTeam: TeamId.A,
+    restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
+    lastEvent: null,
   };
 }

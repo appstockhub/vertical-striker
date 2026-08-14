@@ -14,6 +14,8 @@ export enum SoundEventId {
   HalfTimeWhistle = 'halfTimeWhistle',
   FullTimeWhistle = 'fullTimeWhistle',
   RestartWhistle = 'restartWhistle',
+  /** GKの真のキャッチ (secured) の効果音 (Phase 5)。視認性向上の一環、eventBanner.tsと対。 */
+  GkCatch = 'gkCatch',
 }
 
 /** この距離を1tickで超えて動いたら「テレポートされた」とみなす (px、仮値)。
@@ -31,12 +33,19 @@ const TELEPORT_DISTANCE_SQ_FIXED: Fixed = fixedMul(TELEPORT_DISTANCE_FIXED, TELE
  * - リスタートの笛: ボールの1tickあたり移動距離が通常物理では絶対に出ない大きさを超えた場合
  *   (テレポート、計画セクションC)。得点/前後半のリセットも大きなテレポートを伴うため、
  *   それらと重複する場合は二重に鳴らさない (得点/前後半のイベントを優先する)。
+ * - GKキャッチ: GameState.lastEvent.kind==='gkCatch' がこのtickで新規発生した場合のみ (Phase 5)。
+ *   実アセットは未調達 (SoundPlayer.tsが未ロードキーを無音でno-opする) だが、フックとして
+ *   一貫性を保つ。eventBanner.ts (視覚) と対になる、実プレイでのキャッチ視認性向上の一環。
  */
 export function detectSoundEvents(prev: GameState, next: GameState): SoundEventId[] {
   const events: SoundEventId[] = [];
 
   const scored = next.score[0] > prev.score[0] || next.score[1] > prev.score[1];
   if (scored) events.push(SoundEventId.Goal);
+
+  if (next.lastEvent?.kind === 'gkCatch' && next.lastEvent.atFrame === next.frame) {
+    events.push(SoundEventId.GkCatch);
+  }
 
   const halfChanged = getHalf(next.frame) !== getHalf(prev.frame);
   if (halfChanged) events.push(SoundEventId.HalfTimeWhistle);

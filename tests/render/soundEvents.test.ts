@@ -92,4 +92,23 @@ describe('detectSoundEvents', () => {
     expect(events).toContain(SoundEventId.HalfTimeWhistle);
     expect(events).not.toContain(SoundEventId.RestartWhistle);
   });
+
+  // Phase 5: GKキャッチの視認性向上 (eventBanner.tsと対の効果音フック)。
+  it('fires GkCatch when lastEvent.kind is gkCatch on this exact frame', () => {
+    const prev = base();
+    const next: GameState = { ...prev, frame: prev.frame + 1, lastEvent: { kind: 'gkCatch', team: TeamId.A, atFrame: prev.frame + 1 } };
+    expect(detectSoundEvents(prev, next)).toContain(SoundEventId.GkCatch);
+  });
+
+  it('does not fire GkCatch for a stale lastEvent from an earlier frame', () => {
+    const prev = base();
+    const next: GameState = { ...prev, lastEvent: { kind: 'gkCatch', team: TeamId.A, atFrame: prev.frame - 10 } };
+    expect(detectSoundEvents(prev, next)).not.toContain(SoundEventId.GkCatch);
+  });
+
+  it('does not fire GkCatch for a non-catch lastEvent (throwIn) even on this exact frame', () => {
+    const prev = base();
+    const next: GameState = { ...prev, frame: prev.frame + 1, lastEvent: { kind: 'throwIn', team: TeamId.A, atFrame: prev.frame + 1 } };
+    expect(detectSoundEvents(prev, next)).not.toContain(SoundEventId.GkCatch);
+  });
 });

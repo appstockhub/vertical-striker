@@ -29,7 +29,7 @@ import {
   SAVE_CONTEXT_MIN_BALL_SPEED_SQ_FIXED,
 } from './goalkeeperConstants';
 import { GOAL_KICK_EXCLUSION_DEPTH_FIXED } from './boundsConstants';
-import { LINE_POSSESSION_SWITCH_TICKS } from './teamAIConstants';
+import { KICKOFF_GRACE_TICKS, LINE_POSSESSION_SWITCH_TICKS, RESTART_GRACE_TICKS } from './teamAIConstants';
 import {
   advanceTacklePhase,
   applyTackleWin,
@@ -123,6 +123,12 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       prevTouchPlayerIndex: null,
       difficulty: state.difficulty,
       offsideEnabled: state.offsideEnabled,
+      // 前後半キックオフの猶予チームは半分で交代する (実サッカーの「前半にキックオフした
+      // チームは後半にキックオフしない」ルールと同じ。前半はTeam Aが既にcreateInitialStateで
+      // 猶予を得ているため、後半はTeam B)。
+      restartGraceTeam: getHalf(nextFrame) === 1 ? TeamId.A : TeamId.B,
+      restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
+      lastEvent: null,
     };
   }
 
@@ -205,9 +211,17 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       : null;
   let rngState = cpuDecision ? cpuDecision.rngState : state.rngState;
 
+  // リスタート猶予のカウントダウン (Phase 5、linePossessionSwitchTicksと同じ毎tick減衰の流儀)。
+  // 猶予中は restartGraceTeam の相手チームの追跡権をゼロにする (下記 chaseRightIndices 参照)。
+  let restartGraceTicksLeft = Math.max(0, state.restartGraceTicksLeft - 1);
+  let restartGraceTeam = restartGraceTicksLeft > 0 ? state.restartGraceTeam : null;
+  const suppressedTeam =
+    restartGraceTicksLeft > 0 && restartGraceTeam !== null ? opponentOf(restartGraceTeam) : null;
+
   // 「団子サッカー」防止: 守備側は最寄り2人(プレス+カバー)、保持側は最寄り1人(受け手)だけが
   // ボール引力をフルに使う (バグ修正、実プレイ+観戦シミュレーターで発覚)。毎tick1回だけ計算する。
-  const chaseRightIndices = computeChaseRightIndices(state.players, state.ball.pos, possessionTeam);
+  // 第4引数 suppressedTeam: リスタート猶予中はこのチームの追跡権を丸ごとゼロにする。
+  const chaseRightIndices = computeChaseRightIndices(state.players, state.ball.pos, possessionTeam, suppressedTeam);
 
   // マーク割り当て (Phase 4): 守備側のDFライン(追跡権なし)に相手侵入者を1:1で割り当てる。
   // 追跡権(プレス、生のpossessionTeamで即応)と違い、マークは陣形挙動なのでライン押し引きと
@@ -250,6 +264,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   let ball = state.ball;
   let nextControlledKickChargeFrames = controlledPlayer?.kickChargeFrames ?? 0;
   let tackleAdvance: TackleAdvance = NO_TACKLE;
+  // 直近の知覚可能イベント (Phase 5)。物理/AIには影響しない echo (state.ts参照)。
+  let lastEvent = state.lastEvent;
 
   const touchInputs = touchPriorityIndex !== null ? effectiveInputs[touchPriorityIndex] : undefined;
   if (touchInputs) {
@@ -266,6 +282,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       const outcome = resolveSaveOutcome(controlledPlayer, ball, 'catch');
       ball = applySave(ball, controlledPlayer, outcome, half);
       if (outcome !== 'missed') lastTouchTeam = controlledPlayer.team;
+      // secured (真のキャッチ) のみ知覚可能イベントとして記録する (視認性向上、実プレイ報告への対応)。
+      if (outcome === 'secured') lastEvent = { kind: 'gkCatch', team: controlledPlayer.team, atFrame: nextFrame };
     } else if (bEdge) {
       const outcome = resolveSaveOutcome(controlledPlayer, ball, 'punch');
       ball = applySave(ball, controlledPlayer, outcome, half);
@@ -368,6 +386,9 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     if (outcome !== 'missed') {
       ball = applySave(ball, gk, outcome, half);
       lastTouchTeam = gk.team;
+      // secured (真のキャッチ) のみ知覚可能イベントとして記録する。これにより
+      // CPU/非操作GKのキャッチも人間の目に見えるようになる (視認性向上、実プレイ報告への対応)。
+      if (outcome === 'secured') lastEvent = { kind: 'gkCatch', team: gk.team, atFrame: nextFrame };
     }
   }
 
@@ -418,6 +439,10 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       prevTouchPlayerIndex: null,
       difficulty: state.difficulty,
       offsideEnabled: state.offsideEnabled,
+      // 得点後キックオフの猶予チームは「得点されたチームの相手」(実サッカーのルールと同じ)。
+      restartGraceTeam: opponentOf(boundaryEvent.scoringTeam),
+      restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
+      lastEvent: null,
     };
   }
 
@@ -438,6 +463,14 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         northEnd: (boundaryEvent.pos.y as number) < (toFixed(PITCH_HEIGHT / 2) as number),
       };
     }
+    // リスタート猶予 (Phase 5): この再開チームの相手の追跡権をRESTART_GRACE_TICKSの間ゼロにする
+    // (既存のgoalKickExclusion一発押し出しと併用、後退させない)。同じtickで上の
+    // 通常減衰(restartGraceTicksLeft--)を上書きする — 新しいリスタートが最優先。
+    restartGraceTeam = boundaryEvent.restartTeam;
+    restartGraceTicksLeft = RESTART_GRACE_TICKS;
+    // 知覚可能イベントとして記録する (スローイン/ゴールキック/コーナーの視認性向上、
+    // 実プレイ報告への対応。goalは既にscoreの変化で検出可能なため対象外)。
+    lastEvent = { kind: boundaryEvent.type, team: boundaryEvent.restartTeam, atFrame: nextFrame };
   } else {
     ball = ballStep.ball;
   }
@@ -501,6 +534,9 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     prevTouchPlayerIndex,
     difficulty: state.difficulty,
     offsideEnabled: state.offsideEnabled,
+    restartGraceTeam,
+    restartGraceTicksLeft,
+    lastEvent,
   };
 }
 

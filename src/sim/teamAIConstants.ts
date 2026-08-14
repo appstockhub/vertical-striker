@@ -156,6 +156,14 @@ export const AI_HOME_DEADZONE_SQ_FIXED: Fixed = fixedMul(toFixed(28), toFixed(28
  * 「デッドゾーンは1tickの移動量より大きくする」原則に合わせて4pxへ拡大。 */
 export const AI_BALL_DEADZONE_SQ_FIXED: Fixed = fixedMul(toFixed(4), toFixed(4));
 /**
+ * primary追跡者専用のボールデッドゾーン (px、仮値、二乗)。cover/非追跡権はAI_BALL_DEADZONE_SQ_FIXED
+ * (4px)のまま。primaryは引力weightが圧倒的(3.0)なため、4pxでは1tick移動量(3px)に対する
+ * マージンが薄く(1px)、既にボールを保持している味方へ無意味に収束しようとして極小距離で
+ * 往復する振動が実プレイ相当のテストで発覚した (Phase 5、リスタート猶予導入のバタフライ効果で
+ * 新たに踏んだ経路)。1tick移動量の約3倍(9px)にマージンを広げ、cover/非追跡権には影響させない
+ * (デッドゾーンを全体で広げるとdango等の全体挙動に副作用が出ることを確認済みのため)。 */
+export const AI_BALL_DEADZONE_PRIMARY_SQ_FIXED: Fixed = fixedMul(toFixed(9), toFixed(9));
+/**
  * 合成後ベクトルの最終量子化デッドゾーン (仮値、二乗)。
  *
  * 設計ルール (観戦シミュレーターの振動検出で全22選手が振動判定になった事象を受けて確立):
@@ -267,3 +275,28 @@ export const SUPPORT_SPREAD_OFFSET_FIXED: Fixed = toFixed(64);
 
 /** サポートランの目標Xの量子化グリッド (px)。MARK_TARGET_GRIDと同じ理由 (< ホームdeadzone 28px)。 */
 export const SUPPORT_X_GRID_FIXED: Fixed = toFixed(24);
+
+// ============================================================================
+// リスタート猶予 (Phase 5、GameState.restartGraceTeam/restartGraceTicksLeft、
+// computeChaseRightIndices の suppressedTeam 引数) 用の定数。すべて仮値。
+// ============================================================================
+
+/**
+ * キックオフ猶予tick数 (仮値、要プレイテスト調整)。キックオフの153px対称タイ
+ * (F442 FW depthFrac=0.85 → 両チーム同じ距離) は、AIの反応レイテンシがゼロなため、
+ * 人間の現実的な反応時間(~9-18tick、入力を目視して押すまでの遅延の概算)の間だけ
+ * 相手側の追跡権を止めれば、対称な取り合いを人間側にも成立させられる。
+ * 大きすぎると「キックオフ直後、数十tick誰も動かない」不自然さが出るため、
+ * 上限寄りの18tickではなく中間の15tickを初期値にする。
+ */
+export const KICKOFF_GRACE_TICKS = 15;
+
+/**
+ * ゴールキック/スローイン/コーナー再開時の猶予tick数 (仮値)。ゴールキックの
+ * GOAL_KICK_EXCLUSION_DEPTH_FIXED(250px)と再開位置GOAL_KICK_DEPTH_FIXED(60px)の
+ * 差分190pxを、相手フィールドプレイヤーがPLAYER_SPEED_FIXED(3px/tick)で詰めるのに
+ * 必要な最短tick数(190/3≈63)と揃える。この間、追跡権ゼロで一発テレポート復帰を
+ * 邪魔されずに済ませられる。スローイン/コーナーはこの押し出しルール自体が無いため
+ * (goal-kick専用)、同じ猶予tick数を流用する — 妥当性は要プレイテスト確認。
+ */
+export const RESTART_GRACE_TICKS = 63;

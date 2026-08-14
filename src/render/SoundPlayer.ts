@@ -12,6 +12,7 @@ const SOUND_KEYS: Readonly<Record<SoundEventId, string>> = {
   [SoundEventId.HalfTimeWhistle]: 'sfx-whistle-long',
   [SoundEventId.FullTimeWhistle]: 'sfx-whistle-long',
   [SoundEventId.RestartWhistle]: 'sfx-whistle-short',
+  [SoundEventId.GkCatch]: 'sfx-catch',
 };
 
 /**

@@ -401,4 +401,38 @@ describe('computeChaseRightIndices', () => {
     const state = createInitialState(1);
     expect(() => computeChaseRightIndices(state.players, state.ball.pos, null)).not.toThrow();
   });
+
+  // Phase 5 (リスタート猶予): suppressedTeam のテスト。
+  it('a suppressed team gets zero holders even if it would otherwise be the nearest', () => {
+    const nearB = makePlayer(240, 910, TeamId.B, 1); // ボールに最も近い(通常ならprimary)
+    const farA = makePlayer(240, 1400, TeamId.A, 1); // 遠いが抑制対象ではないので候補になる
+    const roster = [farA, nearB];
+    const ballPos = { x: toFixed(240), y: toFixed(900) };
+    const chasers = computeChaseRightIndices(roster, ballPos, null, TeamId.B);
+    expect(chasers.has(1)).toBe(false); // nearB (Team B, index1) は抑制されゼロ
+    expect(chasers.get(0)).toBe('primary'); // farA (Team A, index0) は抑制対象外なので通常通り割り当てられる
+  });
+
+  it('suppressing a team does not affect the other team holder counts based on possessionTeam', () => {
+    const a1 = makePlayer(240, 900, TeamId.A, 1);
+    const a2 = makePlayer(240, 950, TeamId.A, 2);
+    const b1 = makePlayer(240, 910, TeamId.B, 1);
+    const roster = [a1, a2, b1];
+    const ballPos = { x: toFixed(240), y: toFixed(905) };
+    // Team Aが保持側(1人)、Team Bは抑制対象(通常なら守備側2人だが今回は0人になるはず)。
+    const chasers = computeChaseRightIndices(roster, ballPos, TeamId.A, TeamId.B);
+    expect(chasers.get(0)).toBe('primary'); // a1: Team Aの保持側1人
+    expect(chasers.has(1)).toBe(false); // a2: Team Aは保持側なので1人だけ
+    expect(chasers.has(2)).toBe(false); // b1: 抑制対象で追跡権ゼロ
+  });
+
+  it('suppressedTeam defaults to null (existing call sites remain unaffected)', () => {
+    const gkA = makePlayer(240, 1764, TeamId.A, 0);
+    const nearA = makePlayer(240, 900, TeamId.A, 1);
+    const roster = [gkA, nearA];
+    const ballPos = { x: toFixed(240), y: toFixed(905) };
+    const withDefault = computeChaseRightIndices(roster, ballPos, null);
+    const withExplicitNull = computeChaseRightIndices(roster, ballPos, null, null);
+    expect([...withDefault.entries()]).toEqual([...withExplicitNull.entries()]);
+  });
 });
