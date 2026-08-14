@@ -14,7 +14,7 @@ import {
   BALL_COLOR,
   CURSOR_RING_COLOR,
   PASS_MARKER_COLOR,
-  FACING_PIP_COLOR,
+  PLAYER_HEAD_COLOR,
   GOAL_NET_COLOR,
 } from './teamColors';
 import { findTouchPriorityPlayer } from '../sim/ballTouch';
@@ -49,9 +49,16 @@ const CAMERA_CONFIG: CameraConfig = {
 const OUTFIELD_RADIUS = 14;
 const GK_RADIUS = 15;
 const BALL_RADIUS_PX = 10;
-/** 選手の向き表示(facing pip、正体は小さな三角形)。「上下の向きが分かる形状」の最小実装。 */
-const FACING_PIP_LENGTH = 9;
-const FACING_PIP_HALF_WIDTH = 4;
+/**
+ * 選手の「頭」(人型シルエットの最小表現): 胴体(既存の円)の前面に、向いている方向へ
+ * 少しオフセットした小さな円を重ねる。「〇だけでは人に見えず、上下の向きも分からない」
+ * という指摘への対応。頭がある方向 = 向いている方向、という一目で読める表現にする
+ * (三角形の矢羽根より「人」として直感的に読めるという判断で、旧実装のpipから変更した)。
+ */
+const PLAYER_HEAD_RADIUS_OUTFIELD = 6;
+const PLAYER_HEAD_RADIUS_GK = 7;
+/** 頭を胴体の中心からどれだけオフセットするか (胴体半径に対する比率、仮値)。 */
+const PLAYER_HEAD_OFFSET_FRAC = 0.72;
 /** ボールの見た目回転(仮の視覚効果、速度に比例。実際の物理スピンは追跡していない)の係数。 */
 const BALL_VISUAL_SPIN_PER_PX = 0.09;
 /** ゴールネットの奥行き(px、仮値)。ピッチ境界内側に収める(境界外はカメラに映らないため)。 */
@@ -77,8 +84,9 @@ export class PitchScene extends Phaser.Scene {
   // render() では setPosition()/setVisible() のみを呼ぶ (60fps維持のガードレール、
   // 毎フレーム Arc/Text を生成/破棄しない)。
   private playerArcs: Phaser.GameObjects.Arc[] = [];
-  /** 選手の向き表示(facing pip)。playerArcsと1:1対応、player.facingに応じて毎フレーム回転する。 */
-  private playerFacingPips: Phaser.GameObjects.Triangle[] = [];
+  /** 選手の「頭」(人型シルエットの最小表現)。playerArcsと1:1対応、player.facingに応じて
+   * 毎フレーム胴体前面へオフセットする(向き表示も兼ねる)。 */
+  private playerHeads: Phaser.GameObjects.Arc[] = [];
   private playerRadarDots: Phaser.GameObjects.Arc[] = [];
   private cursorRing!: Phaser.GameObjects.Arc;
   private passMarker!: Phaser.GameObjects.Text;
@@ -290,22 +298,13 @@ export class PitchScene extends Phaser.Scene {
       arc.setStrokeStyle(2, 0x1a1a1a, 0.8);
       this.playerArcs.push(arc);
 
-      // 向き表示(facing pip): 選手が向いている方向(player.facing)を示す小さな三角形。
-      // 「〇だけでは上下の向きが分からない」を解消する最小実装 (人型シルエットの代替)。
-      const pip = this.add.triangle(
-        0,
-        0,
-        0,
-        -FACING_PIP_LENGTH,
-        -FACING_PIP_HALF_WIDTH,
-        FACING_PIP_LENGTH * 0.5,
-        FACING_PIP_HALF_WIDTH,
-        FACING_PIP_LENGTH * 0.5,
-        FACING_PIP_COLOR,
-        1,
-      );
-      pip.setStrokeStyle(1, 0x1a1a1a, 0.6);
-      this.playerFacingPips.push(pip);
+      // 頭 (人型シルエットの最小表現): 胴体の前面(向いている方向)に重ねる小さな円。
+      // 「〇だけでは人に見えず、上下の向きも分からない」への対応 (旧実装は三角形のpipだったが、
+      // 「頭」の方が一目で人だと分かるという判断で置き換えた)。
+      const headRadius = player.isGoalkeeper ? PLAYER_HEAD_RADIUS_GK : PLAYER_HEAD_RADIUS_OUTFIELD;
+      const head = this.add.circle(0, 0, headRadius, PLAYER_HEAD_COLOR);
+      head.setStrokeStyle(1, 0x1a1a1a, 0.7);
+      this.playerHeads.push(head);
     }
 
     // カーソルハイライト (縁取りのみのリング、常に操作選手の位置に表示)。太めのストロークにして
@@ -365,7 +364,7 @@ export class PitchScene extends Phaser.Scene {
     this.cameras.main.ignore([...this.playerRadarDots, this.ballRadarDot]);
     this.radarCamera.ignore([
       ...this.playerArcs,
-      ...this.playerFacingPips,
+      ...this.playerHeads,
       ...this.goalNets,
       this.ballMain,
       this.ballShadow,
@@ -431,17 +430,16 @@ export class PitchScene extends Phaser.Scene {
       this.playerArcs[index]?.setPosition(px.x, px.y);
       this.playerRadarDots[index]?.setPosition(px.x, px.y);
 
-      // 向き表示(facing pip): player.facingのベクトルをそのまま向きに使う (sim/の決定論的
-      // DIRECTION_VECTORSを描画側で読むだけで、simulate()の入出力には一切影響しない)。
-      const pip = this.playerFacingPips[index];
-      if (pip) {
+      // 頭: player.facingのベクトルをそのまま向きに使う (sim/の決定論的DIRECTION_VECTORSを
+      // 描画側で読むだけで、simulate()の入出力には一切影響しない)。胴体前面へオフセットする
+      // ことで「頭がある方向 = 向いている方向」を一目で読めるようにする。
+      const head = this.playerHeads[index];
+      if (head) {
         const dir = DIRECTION_VECTORS[player.facing];
         const dx = toFloat(dir.x);
         const dy = toFloat(dir.y);
-        // pipの初期形状は上(-Y)を向いているため、atan2(dy,dx)+90°で目的の向きに合わせる。
-        pip.setRotation(Math.atan2(dy, dx) + Math.PI / 2);
         const radius = player.isGoalkeeper ? GK_RADIUS : OUTFIELD_RADIUS;
-        pip.setPosition(px.x + dx * (radius * 0.55), px.y + dy * (radius * 0.55));
+        head.setPosition(px.x + dx * (radius * PLAYER_HEAD_OFFSET_FRAC), px.y + dy * (radius * PLAYER_HEAD_OFFSET_FRAC));
       }
     });
 
