@@ -83,6 +83,13 @@ describe('selectPassTarget', () => {
     const roster = makeRoster({ 1: carrier, 2: sideways });
     expect(selectPassTarget(1, roster)).toBeNull();
   });
+
+  it('works for Team B carriers too (Phase 3 milestone 6: search range derives from carrier.team)', () => {
+    const carrier = makePlayer(0, 0, TeamId.B, 1, { facing: Direction8.Up }); // index 12
+    const near = makePlayer(0, -50, TeamId.B, 2); // index 13、同じTeam B、前方、近い
+    const roster = makeRoster({ 12: carrier, 13: near });
+    expect(selectPassTarget(12, roster)).toBe(13);
+  });
 });
 
 describe('resolveCursor', () => {

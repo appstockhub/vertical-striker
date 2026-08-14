@@ -467,3 +467,60 @@ describe('simulate — Phase 3: offside rule (milestone 5)', () => {
     expect(ballMoved).toBe(true);
   });
 });
+
+/** テスト用: Team B の1選手をボール保持者として、相手ゴール(y=PITCH_HEIGHT側)のすぐ手前に置く。 */
+function withCpuCarrier(
+  seed: number,
+  difficulty: 'easy' | 'medium' | 'hard',
+  offsideEnabled: boolean,
+): GameState {
+  const base = createInitialState(seed, { difficulty, offsideEnabled });
+  const carrierIdx = TeamId.B * 11 + 9; // Team B の FW スロット
+  return {
+    ...base,
+    players: base.players.map((p, i) =>
+      i === carrierIdx ? { ...p, pos: { x: toFixed(240), y: toFixed(1750) } } : p,
+    ),
+    ball: { ...base.ball, pos: { x: toFixed(240), y: toFixed(1755) } },
+  };
+}
+
+describe('simulate — Phase 3: CPU (Team B) attack AI (milestone 6)', () => {
+  it('shoots without any human input when the Team B carrier is close to the opponent goal', () => {
+    const state = withCpuCarrier(1, 'hard', false);
+    const next = simulate(state, inputs(Direction8.None));
+    const ballMoved =
+      toFloat(next.ball.vel.x) !== 0 || toFloat(next.ball.vel.y) !== 0 || toFloat(next.ball.zVel) !== 0;
+    expect(ballMoved).toBe(true);
+    expect(next.lastTouchTeam).toBe(TeamId.B);
+  });
+
+  it('is deterministic across a sequence where Team B carries and shoots (including RNG-consuming aim noise)', () => {
+    let stateA = withCpuCarrier(1, 'easy', false);
+    let stateB = withCpuCarrier(1, 'easy', false);
+    for (let i = 0; i < 3; i++) {
+      stateA = simulate(stateA, inputs(Direction8.None));
+      stateB = simulate(stateB, inputs(Direction8.None));
+    }
+    expect(stateA).toEqual(stateB);
+  });
+
+  it('threads RNG consumption from a CPU shot aim-noise draw into the returned rngState', () => {
+    const state = withCpuCarrier(1, 'easy', false);
+    const next = simulate(state, inputs(Direction8.None));
+    expect(next.rngState).not.toBe(state.rngState);
+  });
+
+  it('offside also blocks a CPU shot, awarding the restart to Team A', () => {
+    const base = withCpuCarrier(1, 'hard', true);
+    const advancedTeammateIdx = TeamId.B * 11 + 1; // 別のTeam B選手をオフサイドポジションに置く
+    const state: GameState = {
+      ...base,
+      players: base.players.map((p, i) =>
+        i === advancedTeammateIdx ? { ...p, pos: { x: toFixed(240), y: toFixed(1795) } } : p,
+      ),
+    };
+    const next = simulate(state, inputs(Direction8.None));
+    expect(next.lastTouchTeam).toBe(TeamId.A);
+  });
+});

@@ -48,10 +48,14 @@ function findNearestTeamAOutfield(
 
 /**
  * カーソルパスの受け手選択。操作選手(carrier)の前方コーン内 かつ PASS_MAX_RANGE 以内の
- * Team A 選手のうち最も近い1人。sqrtを使わず、dot^2 とのしきい値比較でコーン判定する
- * (dot(facing,toReceiver) > 0 で背後を除外した上で、
+ * 「carrierと同じチーム」の選手のうち最も近い1人。sqrtを使わず、dot^2 とのしきい値比較で
+ * コーン判定する (dot(facing,toReceiver) > 0 で背後を除外した上で、
  *  dot^2 >= cosThresholdSq * |facing|^2 * |toReceiver|^2 で角度をチェック)。
  * 該当者が無ければ null。
+ *
+ * 検索範囲は carrier.team から導出する (Phase 3 マイルストーン6: CPU(Team B)の
+ * パス判断にも同じ関数を使い回すための汎用化)。Team A では teamStart=0 になり、
+ * Phase 2 までの挙動と完全に同一のまま変わらない。
  */
 export function selectPassTarget(carrierIndex: number, players: readonly PlayerState[]): number | null {
   const carrier = players[carrierIndex];
@@ -59,9 +63,12 @@ export function selectPassTarget(carrierIndex: number, players: readonly PlayerS
   const facingVec = DIRECTION_VECTORS[carrier.facing];
   const facingMagSq = dotFixed(facingVec, facingVec);
 
+  const teamStart = carrier.team * PLAYERS_PER_TEAM;
+  const teamEnd = teamStart + PLAYERS_PER_TEAM;
+
   let bestIndex: number | null = null;
   let bestDistSq = 0;
-  for (let i = 0; i < PLAYERS_PER_TEAM; i++) {
+  for (let i = teamStart; i < teamEnd; i++) {
     if (i === carrierIndex) continue;
     const receiver = players[i];
     if (!receiver) continue;

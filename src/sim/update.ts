@@ -34,6 +34,7 @@ import { TACKLE_RECOVERY_FRAMES } from './tackleConstants';
 import { getHalf, isFulltime } from './matchClock';
 import { placeKickoffFormation } from './kickoff';
 import { detectBoundaryEvent } from './bounds';
+import { decideCpuAttack } from './cpuAttackAI';
 
 /**
  * 1tick分の入力。InputFrame のサブセット (sim/ は入力の生成元を知らない)。
@@ -73,6 +74,10 @@ function offsideRestartBall(offsidePlayer: PlayerState): BallState {
  *      マイルストーン5: カーソルパス発火/チャージキック解放の直前でオフサイド判定
  *      (state.offsideEnabled時のみ)。成立時はapplyKickを実行させず、間接FK相当の
  *      リスタート(該当選手の位置へ速度0でボールを置く)にする。
+ *   5a. マイルストーン6: touch-priorityをTeam B(CPU)が保持している時だけ、cpuAttackAI.ts の
+ *      判断(シュート/パス/ドリブル)を3で移動方向に、ここでシュート/パスの実行に使う
+ *      (Team Aは必ず人間操作のため、この分岐は事実上Team B専用)。オフサイド判定はTeam Aの
+ *      2箇所と同じロジックを適用する。シュート照準ノイズでRNGを消費した場合はrngStateに反映する。
  *   6. ボール物理 (マイルストーン3-4: クランプ前の仮位置で境界越えを検出する)。
  *      6a. 得点なら、その場でミラー配置のキックオフへリセットして早期returnする
  *          (後続の選手移動処理を古いボール位置のまま進めてしまわないため、計画セクションD)。
@@ -139,10 +144,24 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   const inSaveRange =
     !!controlledPlayer && controlledPlayer.isGoalkeeper && isInSaveRange(controlledPlayer, state.ball.pos);
 
+  // マイルストーン6: touch-priorityをTeam B(CPU)が保持している時だけ攻撃AIの判断を1回だけ計算する。
+  // resolveCursorの設計上、Team Aの誰かがtouch-priorityを持てば操作対象は即座にそちらへ
+  // スナップされるため (計画セクションFの前提)、Team Aがtouch-priorityを持ちながらAI操作の
+  // ままになることは無い。よってこの分岐は事実上「Team Bがボールを持っている時のみ」発火する。
+  const touchPlayerForCpu = touchPriorityIndex !== null ? state.players[touchPriorityIndex] : undefined;
+  const cpuDecision =
+    touchPriorityIndex !== null && touchPlayerForCpu && !isTeamAInPossession(touchPriorityIndex)
+      ? decideCpuAttack(touchPriorityIndex, state.players, half, state.difficulty, state.rngState)
+      : null;
+  let rngState = cpuDecision ? cpuDecision.rngState : state.rngState;
+
   const effectiveInputs: Inputs[] = state.players.map((player, index) => {
     if (index === controlledPlayerIndex) return inputs;
     if (player.isGoalkeeper) {
       return { direction: computeGoalkeeperAutoDirection(player, state.ball.pos), buttons: NO_BUTTONS };
+    }
+    if (cpuDecision && index === touchPriorityIndex) {
+      return { direction: cpuDecision.direction, buttons: NO_BUTTONS };
     }
     const direction = computeNonControlledDirection(
       player,
@@ -246,6 +265,26 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     }
   }
 
+  if (cpuDecision && touchPriorityIndex !== null && (cpuDecision.action === 'shoot' || cpuDecision.action === 'pass')) {
+    // CPU(Team B)のシュート/パス実行。オフサイド判定はTeam Aの2箇所(カーソルパス/チャージキック)と
+    // 同じ扱いにする (計画セクションF、offsideフックをCPUのキックにも適用)。溜め無し・
+    // 即座グラウンダー固定 (計画の仮定8、弾道バリエーションはPhase 4に先送り)。
+    const carrier = state.players[touchPriorityIndex];
+    if (carrier) {
+      const offside = state.offsideEnabled
+        ? checkOffside(touchPriorityIndex, carrier.team, state.players, half)
+        : { offside: false, offsidePlayerIndex: null };
+      const offsidePlayer =
+        offside.offside && offside.offsidePlayerIndex !== null ? state.players[offside.offsidePlayerIndex] : undefined;
+      if (offsidePlayer) {
+        ball = offsideRestartBall(offsidePlayer);
+        lastTouchTeam = opponentOf(carrier.team);
+      } else {
+        ball = applyKick(ball, carrier, KICK_MIN_CHARGE_FRAMES, cpuDecision.direction);
+      }
+    }
+  }
+
   const ballStep = stepBallPhysicsDetailed(ball);
   const boundaryEvent = detectBoundaryEvent(ballStep.tentativePos, ballStep.ball.height, half, lastTouchTeam);
 
@@ -259,7 +298,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         : [state.score[0], state.score[1] + 1];
     return {
       frame: nextFrame,
-      rngState: state.rngState,
+      rngState,
       players: reset.players,
       ball: reset.ball,
       controlledPlayerIndex: state.controlledPlayerIndex,
@@ -311,7 +350,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
 
   return {
     frame: nextFrame,
-    rngState: state.rngState,
+    rngState,
     players,
     ball,
     controlledPlayerIndex,
