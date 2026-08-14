@@ -73,3 +73,12 @@ export function vZero(): Vec2Fixed {
 export function lerpFixed(a: Fixed, b: Fixed, t: Fixed): Fixed {
   return fixedAdd(a, fixedMul(fixedSub(b, a), t));
 }
+
+/**
+ * ベクトル内積。乗加算のみ (超越関数ではない)。
+ * Phase 2 の AI ステアリングで「8方向のうちどれが最も近い角度か」を sqrt/正規化なしで
+ * argmax(内積) により判定するために使う (sim/steering.ts 参照)。
+ */
+export function dotFixed(a: Vec2Fixed, b: Vec2Fixed): Fixed {
+  return fixedAdd(fixedMul(a.x, b.x), fixedMul(a.y, b.y));
+}

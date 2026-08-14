@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { toFixed, toFloat } from '../../src/core/fixed';
-import { createInitialState, type GameState } from '../../src/sim/state';
+import { createInitialState, type GameState, type PlayerState } from '../../src/sim/state';
 import { simulate } from '../../src/sim/update';
 import { Direction8, emptyButtonState, LogicalButton, type ButtonState } from '../../src/input/types';
 
@@ -13,16 +13,27 @@ function inputsWithButtons(direction: Direction8, held: Partial<Record<LogicalBu
   return { direction, buttons };
 }
 
-/** テスト用: プレイヤー/ボールの初期位置だけを差し替えた GameState を作る。 */
+/** 現在の操作選手 (Phase 2 では players[] の一要素)。テストの可読性のためのヘルパー。 */
+function controlled(state: GameState): PlayerState {
+  const player = state.players[state.controlledPlayerIndex];
+  if (!player) throw new Error('no controlled player');
+  return player;
+}
+
+/** テスト用: 操作選手/ボールの初期位置だけを差し替えた GameState を作る。 */
 function withPositions(
   seed: number,
   playerPos: { x: number; y: number },
   ballPos: { x: number; y: number },
 ): GameState {
   const base = createInitialState(seed);
+  const idx = base.controlledPlayerIndex;
+  const players = base.players.map((p, i) =>
+    i === idx ? { ...p, pos: { x: toFixed(playerPos.x), y: toFixed(playerPos.y) } } : p,
+  );
   return {
     ...base,
-    player: { ...base.player, pos: { x: toFixed(playerPos.x), y: toFixed(playerPos.y) } },
+    players,
     ball: { ...base.ball, pos: { x: toFixed(ballPos.x), y: toFixed(ballPos.y) } },
   };
 }
@@ -56,11 +67,25 @@ describe('simulate (pure state transition)', () => {
     expect(state).toEqual(snapshotBefore);
   });
 
-  it('moves the player up when Direction8.Up is held', () => {
+  it('moves the controlled player up when Direction8.Up is held', () => {
     const state = createInitialState(1);
     const next = simulate(state, inputs(Direction8.Up));
-    expect(next.player.pos.y).toBeLessThan(state.player.pos.y);
-    expect(next.player.pos.x).toBe(state.player.pos.x);
+    expect(controlled(next).pos.y).toBeLessThan(controlled(state).pos.y);
+    expect(controlled(next).pos.x).toBe(controlled(state).pos.x);
+  });
+
+  it('non-controlled players are steered by team AI, not left frozen', () => {
+    // キックオフ直後は誰もホームポジションから動いていないため、AIは基本的に静止か
+    // ごく小さな補正のみを行う。ここでは「AIが例外を投げず、22人ぶんの新しい状態を
+    // 返す」ことと「非操作選手のkickChargeFramesが常に0のまま」を確認する
+    // (自律的にキックしない、というPhase 2のスコープ外指定の回帰チェック)。
+    const state = createInitialState(1);
+    const next = simulate(state, inputs(Direction8.Up));
+    expect(next.players).toHaveLength(22);
+    for (let i = 0; i < next.players.length; i++) {
+      if (i === state.controlledPlayerIndex) continue;
+      expect(next.players[i]?.kickChargeFrames).toBe(0);
+    }
   });
 
   it('diagonal movement has the same speed as cardinal movement', () => {
@@ -68,9 +93,9 @@ describe('simulate (pure state transition)', () => {
     const up = simulate(state, inputs(Direction8.Up));
     const upRight = simulate(state, inputs(Direction8.UpRight));
 
-    const upDist = Math.abs(state.player.pos.y - up.player.pos.y);
-    const upRightDx = Math.abs(state.player.pos.x - upRight.player.pos.x);
-    const upRightDy = Math.abs(state.player.pos.y - upRight.player.pos.y);
+    const upDist = Math.abs(controlled(state).pos.y - controlled(up).pos.y);
+    const upRightDx = Math.abs(controlled(state).pos.x - controlled(upRight).pos.x);
+    const upRightDy = Math.abs(controlled(state).pos.y - controlled(upRight).pos.y);
     const upRightDist = Math.sqrt(upRightDx ** 2 + upRightDy ** 2);
 
     // 事前正規化された対角ベクトルにより、誤差1程度で速度が一致する
@@ -83,16 +108,33 @@ describe('simulate (pure state transition)', () => {
     expect(next.frame).toBe(state.frame + 1);
   });
 
-  it('keeps the player within pitch bounds', () => {
+  it('keeps the controlled player within pitch bounds', () => {
     let state = createInitialState(1);
     for (let i = 0; i < 1000; i++) {
       state = simulate(state, inputs(Direction8.Up));
     }
-    expect(state.player.pos.y).toBeGreaterThanOrEqual(0);
+    expect(controlled(state).pos.y).toBeGreaterThanOrEqual(0);
+  });
+
+  it('has exactly 22 players with the documented index convention', () => {
+    const state = createInitialState(1);
+    expect(state.players).toHaveLength(22);
+    expect(state.players[0]?.isGoalkeeper).toBe(true);
+    expect(state.players[0]?.team).toBe(0); // TeamId.A
+    expect(state.players[11]?.isGoalkeeper).toBe(true);
+    expect(state.players[11]?.team).toBe(1); // TeamId.B
+    for (let i = 1; i <= 10; i++) {
+      expect(state.players[i]?.isGoalkeeper).toBe(false);
+      expect(state.players[i]?.team).toBe(0);
+    }
+    for (let i = 12; i <= 21; i++) {
+      expect(state.players[i]?.isGoalkeeper).toBe(false);
+      expect(state.players[i]?.team).toBe(1);
+    }
   });
 });
 
-describe('simulate — Phase 1: dribble + kick integration', () => {
+describe('simulate — Phase 1/2: dribble + kick integration (controlled player only)', () => {
   it('is deterministic across a sequence including a charged kick and long dribble', () => {
     const sequence: Array<{ direction: Direction8; held: Partial<Record<LogicalButton, boolean>> }> = [
       { direction: Direction8.Up, held: {} },
@@ -138,8 +180,8 @@ describe('simulate — Phase 1: dribble + kick integration', () => {
     const longDelta = toFloat(long.ball.pos.x) - toFloat(base.ball.pos.x);
     expect(longDelta).toBeGreaterThan(plainDelta);
 
-    const plainPlayerDelta = toFloat(plain.player.pos.x) - toFloat(base.player.pos.x);
-    const longPlayerDelta = toFloat(long.player.pos.x) - toFloat(base.player.pos.x);
+    const plainPlayerDelta = toFloat(controlled(plain).pos.x) - toFloat(controlled(base).pos.x);
+    const longPlayerDelta = toFloat(controlled(long).pos.x) - toFloat(controlled(base).pos.x);
     expect(longPlayerDelta).toBeGreaterThan(plainPlayerDelta);
   });
 
@@ -150,10 +192,10 @@ describe('simulate — Phase 1: dribble + kick integration', () => {
     for (let i = 0; i < chargeTicks; i++) {
       state = simulate(state, inputsWithButtons(Direction8.None, { B: true }));
     }
-    expect(state.player.kickChargeFrames).toBe(chargeTicks);
+    expect(controlled(state).kickChargeFrames).toBe(chargeTicks);
 
     const afterKick = simulate(state, inputsWithButtons(Direction8.Right, {}));
-    expect(afterKick.player.kickChargeFrames).toBe(0);
+    expect(controlled(afterKick).kickChargeFrames).toBe(0);
     expect(toFloat(afterKick.ball.zVel)).toBeGreaterThan(0);
     expect(toFloat(afterKick.ball.vel.x)).toBeGreaterThan(0);
   });

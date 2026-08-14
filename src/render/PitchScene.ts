@@ -1,12 +1,13 @@
 import Phaser from 'phaser';
 import { FixedTimestepLoop } from '../core/loop';
-import { createInitialState, type GameState } from '../sim/state';
+import { createInitialState, type GameState, type PlayerState } from '../sim/state';
 import { simulate } from '../sim/update';
 import { InputManager } from '../input/inputManager';
 import { GamepadOverlay } from '../input/overlay';
 import { ballLiftPx, vecToPx } from './fixedToPixel';
 import { computeCameraY, type CameraConfig } from './camera';
 import { computeRadarLayout } from './radar';
+import { TEAM_COLORS, BALL_COLOR, CURSOR_RING_COLOR } from './teamColors';
 import {
   PITCH_HEIGHT,
   PITCH_WIDTH,
@@ -26,17 +27,27 @@ const CAMERA_CONFIG: CameraConfig = {
   smoothing: 0.12,
 };
 
+const OUTFIELD_RADIUS = 14;
+const GK_RADIUS = 15;
+const BALL_RADIUS_PX = 10;
+
 export class PitchScene extends Phaser.Scene {
   private state: GameState = createInitialState(DETERMINISTIC_SEED);
   private loop!: FixedTimestepLoop;
   private inputManager!: InputManager;
   private overlay: GamepadOverlay | null = null;
 
-  private playerMain!: Phaser.GameObjects.Arc;
+  // プール化された表示オブジェクト。生成は buildEntities()/buildRadar() で1回だけ行い、
+  // render() では setPosition()/setVisible() のみを呼ぶ (60fps維持のガードレール、
+  // 毎フレーム Arc/Text を生成/破棄しない)。
+  private playerArcs: Phaser.GameObjects.Arc[] = [];
+  private playerRadarDots: Phaser.GameObjects.Arc[] = [];
+  private cursorRing!: Phaser.GameObjects.Arc;
+
   private ballMain!: Phaser.GameObjects.Arc;
   private ballShadow!: Phaser.GameObjects.Ellipse;
-  private playerRadarDot!: Phaser.GameObjects.Arc;
   private ballRadarDot!: Phaser.GameObjects.Arc;
+
   private radarCamera!: Phaser.Cameras.Scene2D.Camera;
   private cameraY = 0;
 
@@ -77,16 +88,30 @@ export class PitchScene extends Phaser.Scene {
     }
   }
 
+  private colorFor(player: PlayerState): number {
+    const palette = TEAM_COLORS[player.team];
+    return player.isGoalkeeper ? palette.goalkeeper : palette.outfield;
+  }
+
   private buildEntities(): void {
     // 影 (地面位置に描画、疑似3D高さの手がかり)。ボール本体より先に描画して下に敷く。
     this.ballShadow = this.add.ellipse(0, 0, 20, 10, 0x000000, 0.35);
 
-    // 視認性のため実物より大きめのサイズにし、縁取りでピッチの緑との境界を明確にする。
-    this.ballMain = this.add.circle(0, 0, 10, 0xffffff);
-    this.ballMain.setStrokeStyle(2, 0x1a1a1a, 0.8);
+    // 選手22人ぶんを1回だけ生成してプールする。
+    for (const player of this.state.players) {
+      const radius = player.isGoalkeeper ? GK_RADIUS : OUTFIELD_RADIUS;
+      const arc = this.add.circle(0, 0, radius, this.colorFor(player));
+      arc.setStrokeStyle(2, 0x1a1a1a, 0.8);
+      this.playerArcs.push(arc);
+    }
 
-    this.playerMain = this.add.circle(0, 0, 16, 0xff5a1f); // ボール(白)と紛れない鮮やかな橙赤
-    this.playerMain.setStrokeStyle(2, 0x1a1a1a, 0.8);
+    // カーソルハイライト (縁取りのみのリング、常に操作選手の位置に表示)
+    this.cursorRing = this.add.circle(0, 0, OUTFIELD_RADIUS + 5, 0x000000, 0);
+    this.cursorRing.setStrokeStyle(3, CURSOR_RING_COLOR, 0.9);
+
+    // ボール (視認性のため実物より大きめ、縁取りでピッチの緑との境界を明確にする)
+    this.ballMain = this.add.circle(0, 0, BALL_RADIUS_PX, BALL_COLOR);
+    this.ballMain.setStrokeStyle(2, 0x1a1a1a, 0.8);
   }
 
   private buildRadar(): void {
@@ -116,12 +141,17 @@ export class PitchScene extends Phaser.Scene {
     this.radarCamera.ignore(frame);
 
     // レーダー用の点 (実寸より大きい固定サイズにして視認性を確保。色はメイン表示と揃える)
-    this.ballRadarDot = this.add.circle(0, 0, 4 / layout.zoom, 0xffffff);
-    this.playerRadarDot = this.add.circle(0, 0, 6 / layout.zoom, 0xff5a1f);
+    for (const player of this.state.players) {
+      const radius = (player.isGoalkeeper ? 6 : 5) / layout.zoom;
+      const dot = this.add.circle(0, 0, radius, this.colorFor(player));
+      this.playerRadarDots.push(dot);
+    }
+    this.ballRadarDot = this.add.circle(0, 0, 4 / layout.zoom, BALL_COLOR);
 
-    // メインカメラにはレーダー専用オブジェクトを映さない / レーダーカメラにはメイン専用オブジェクトを映さない
-    this.cameras.main.ignore([this.ballRadarDot, this.playerRadarDot]);
-    this.radarCamera.ignore([this.ballMain, this.playerMain, this.ballShadow]);
+    // メイン/レーダーの出し分けはプール配列から機械的に構築する (手書き列挙は
+    // オブジェクト数が増えるほど漏れの元になるため)。
+    this.cameras.main.ignore([...this.playerRadarDots, this.ballRadarDot]);
+    this.radarCamera.ignore([...this.playerArcs, this.ballMain, this.ballShadow, this.cursorRing]);
   }
 
   private fixedUpdate(): void {
@@ -139,17 +169,26 @@ export class PitchScene extends Phaser.Scene {
   }
 
   private render(): void {
-    const playerPx = vecToPx(this.state.player.pos);
+    this.state.players.forEach((player, index) => {
+      const px = vecToPx(player.pos);
+      this.playerArcs[index]?.setPosition(px.x, px.y);
+      this.playerRadarDots[index]?.setPosition(px.x, px.y);
+    });
+
+    const controlled = this.state.players[this.state.controlledPlayerIndex];
+    if (controlled) {
+      const px = vecToPx(controlled.pos);
+      this.cursorRing.setPosition(px.x, px.y);
+    }
+
     const groundPx = vecToPx(this.state.ball.pos); // ボールの「地面位置」(影・レーダーはこちらを使う)
     const lift = ballLiftPx(this.state.ball.height);
 
-    this.playerMain.setPosition(playerPx.x, playerPx.y);
     this.ballShadow.setPosition(groundPx.x, groundPx.y);
     this.ballMain.setPosition(groundPx.x, groundPx.y - lift); // 疑似3D: 高さ分だけ見た目を持ち上げる
-    this.playerRadarDot.setPosition(playerPx.x, playerPx.y);
     this.ballRadarDot.setPosition(groundPx.x, groundPx.y);
 
-    // Phase 1: カメラ追従先をプレイヤーからボールに切替 (computeCameraY のシグネチャは不変)
+    // カメラ追従先はボール (Phase 1から変更なし。computeCameraY のシグネチャは不変)
     const targetVelY = this.state.ball.vel.y / 256;
     this.cameraY = computeCameraY(groundPx.y, targetVelY, this.cameraY, CAMERA_CONFIG);
     this.cameras.main.scrollY = this.cameraY;
