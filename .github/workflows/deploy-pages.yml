@@ -1,0 +1,68 @@
+# main への push で自動ビルドし、GitHub Pages へ公開するワークフロー。
+#
+# 前提 (リポジトリのSettings画面で事前に設定が必要、コードでは自動化できない):
+# - リポジトリを public 化する (無料プランでは private リポジトリのPages公開は不可)
+# - Settings > Pages > Build and deployment > Source を "GitHub Actions" に設定する
+# 詳細はユーザー向け手順として HANDOFF.md / チャット回答を参照。
+#
+# vite.config.ts の base: './' により相対パスでビルドされるため、
+# https://appstockhub.github.io/vertical-striker/ のようなサブパス配信でもそのまま動く。
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# actions/deploy-pages が要求する最小権限。
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同時に複数のデプロイが走らないようにする (GitHub公式推奨設定)。
+# 進行中のデプロイを取り消さない (Pages公開の途中状態を作らないため)。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check determinism (src/sim/ に禁止パターンが無いことの静的チェック)
+        run: npm run check:determinism
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
