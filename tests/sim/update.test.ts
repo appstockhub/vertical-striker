@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
+import { distSqFixed, toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
 import { createInitialState, TeamId, type GameState, type PlayerState } from '../../src/sim/state';
 import { simulate } from '../../src/sim/update';
 import { Direction8, emptyButtonState, LogicalButton, type ButtonState } from '../../src/input/types';
@@ -522,6 +522,58 @@ describe('simulate — Phase 3: CPU (Team B) attack AI (milestone 6)', () => {
     };
     const next = simulate(state, inputs(Direction8.None));
     expect(next.lastTouchTeam).toBe(TeamId.A);
+  });
+});
+
+describe('simulate — bug regression: non-controlled AI actually chases the ball through the full pipeline (found via manual playtest, not caught by isolated unit tests)', () => {
+  // ユニットテスト(teamAI.test.ts)ではcomputeNonControlledDirection単体の出力を確認できても、
+  // 「実際にsimulate()を何tickも回した結果、選手が本当にボールへ近づくか」という統合的な
+  // 挙動までは検証できていなかった。ホームの復元力が距離によらず常にフル強度だった旧実装は、
+  // 単体のcomputeNonControlledDirectionの出力自体は「もっともらしい」方向を返すため単体テストは
+  // 通過してしまうが、simulate()を連続で回すと選手がホーム位置のすぐ外側で往復するだけで
+  // 実質的に凍結し、何十tick経ってもボールに近づけない、という統合レベルでのみ顕在化する
+  // バグだった (実際のブラウザプレイで発見)。同じ穴を二度掘らないよう、multi-tick統合テストとして
+  // 明示的に固定する。
+  it('a Team B outfield player left alone near a stationary ball gets meaningfully closer to it over 300 ticks', () => {
+    const seed = 1;
+    let state = createInitialState(seed);
+    const defenderIdx = TeamId.B * 11 + 4; // Team Bのある非操作フィールドプレイヤー
+    const defender = state.players[defenderIdx]!;
+    // ボールを、その選手のホーム位置から少し離れた場所に静止させる (試合中によくある配置)。
+    const ballPos = { x: toFixed(toFloat(defender.pos.x) + 60), y: defender.pos.y };
+    state = { ...state, ball: { ...state.ball, pos: ballPos } };
+
+    const initialDistSq = distSqFixed(defender.pos, state.ball.pos) as number;
+    let minDistSq = initialDistSq;
+
+    for (let i = 0; i < 300; i++) {
+      state = simulate(state, inputs(Direction8.None));
+      const distSq = distSqFixed(state.players[defenderIdx]!.pos, state.ball.pos) as number;
+      if (distSq < minDistSq) minDistSq = distSq;
+    }
+
+    // 「最終tickでの距離」ではなく「300tickの間に到達した最小距離」で判定する:
+    // 一度ボールに追いつくとドリブルで運び始め、その後は選手とボールの距離が再び
+    // 変動する(=近づいたり離れたりする)のは正常な挙動なので、単調減少や最終値の
+    // 小ささでは判定できない。旧実装ではホームのdeadzone境界付近で凍結し、
+    // 300tick経っても最小距離すら縮まらなかった(実測: 60px -> 最小54pxで頭打ち)。
+    // 修正後は明確に接近(ドリブルタッチ半径20px程度まで)できるはず。
+    expect(minDistSq).toBeLessThan(initialDistSq * 0.3);
+  });
+
+  it('over a long stretch of real kickoff play with no human input, Team B eventually touches the ball at least once', () => {
+    let state = createInitialState(1, { difficulty: 'medium' });
+    let teamBEverTouched = false;
+    for (let i = 0; i < 3000; i++) {
+      state = simulate(state, inputs(Direction8.None));
+      if (state.lastTouchTeam === TeamId.B) {
+        teamBEverTouched = true;
+        break;
+      }
+    }
+    // 旧実装ではTeam Bの誰もホームからほぼ動けず、3000tick(50秒)経ってもTeam Bが一度も
+    // ボールに触れなかった (人間側も無操作なのでボールはキックオフ位置に静止したまま)。
+    expect(teamBEverTouched).toBe(true);
   });
 });
 

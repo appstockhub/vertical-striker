@@ -1,4 +1,4 @@
-import { vAdd, vScaleFixed, vSub, ZERO_FIXED } from '../core/fixed';
+import { dotFixed, vAdd, vScaleFixed, vSub, ZERO_FIXED } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8 } from '../input/types';
 import { DIRECTION_VECTORS } from './constants';
@@ -17,8 +17,10 @@ import {
   AI_BALL_DEADZONE_SQ_FIXED,
   AI_FINAL_DEADZONE_SQ_FIXED,
   AI_HOME_DEADZONE_SQ_FIXED,
+  AI_HOME_LEASH_SQ_FIXED,
   BALL_ATTRACTION_WEIGHT_FIXED,
-  HOME_PULL_WEIGHT_FIXED,
+  HOME_PULL_WEIGHT_FAR_FIXED,
+  HOME_PULL_WEIGHT_NEAR_FIXED,
   OFFSIDE_BIAS_WEIGHT_FIXED,
 } from './teamAIConstants';
 
@@ -62,6 +64,12 @@ export function computeOffsideLine(allPlayers: readonly PlayerState[], team: Tea
  * 生ベクトルのまま重み付けすると、ピクセル距離が大きい項が重みを無視して支配して
  * しまうため、量子化してから重みを掛けるのが必須 (Phase 2 実装計画参照)。
  *
+ * ホームの復元力はホームからの距離に応じた2段階 (near/far、AI_HOME_LEASH_SQ_FIXED が閾値)。
+ * ホーム近傍では弱く (ボール引力を優位にして追跡を許可)、リーシュを越えて離れた場合のみ
+ * 強く (呼び戻す) する。距離によらず常にフル強度だった旧実装は、ボールがホームと反対方向に
+ * ある場合ほぼ常にホーム項が勝ってしまい、非操作選手がホームのすぐ外側で実質的に凍結して
+ * ボールを追いかけられない不具合があった (実プレイで発覚、Phase 3で修正)。
+ *
  * 出力は既存の Direction8 語彙のため、そのまま updatePlayer/applyDribbleTouch に渡せる
  * (Phase 1 のシグネチャ変更が本当に不要だった、という設計判断の実例)。
  */
@@ -73,7 +81,9 @@ export function computeNonControlledDirection(
   half: Half,
 ): Direction8 {
   const home = getHomePosition(player.team, player.slotIndex, teamFormations[player.team], half);
-  const homeDir = quantizeToDirection8(vSub(home, player.pos), AI_HOME_DEADZONE_SQ_FIXED);
+  const homeDiff = vSub(home, player.pos);
+  const homeDistSq = dotFixed(homeDiff, homeDiff);
+  const homeDir = quantizeToDirection8(homeDiff, AI_HOME_DEADZONE_SQ_FIXED);
   const ballDir = quantizeToDirection8(vSub(ballPos, player.pos), AI_BALL_DEADZONE_SQ_FIXED);
 
   const offsideLineY = computeOffsideLine(allPlayers, opponentOf(player.team), half);
@@ -83,9 +93,14 @@ export function computeNonControlledDirection(
     : (player.pos.y as number) > (offsideLineY as number);
   const offsideDir = beyondLine ? (attacksUp ? Direction8.Down : Direction8.Up) : Direction8.None;
 
+  const homeWeight =
+    (homeDistSq as number) > (AI_HOME_LEASH_SQ_FIXED as number)
+      ? HOME_PULL_WEIGHT_FAR_FIXED
+      : HOME_PULL_WEIGHT_NEAR_FIXED;
+
   const combined = vAdd(
     vAdd(
-      vScaleFixed(DIRECTION_VECTORS[homeDir], HOME_PULL_WEIGHT_FIXED),
+      vScaleFixed(DIRECTION_VECTORS[homeDir], homeWeight),
       vScaleFixed(DIRECTION_VECTORS[ballDir], BALL_ATTRACTION_WEIGHT_FIXED),
     ),
     vScaleFixed(DIRECTION_VECTORS[offsideDir], OFFSIDE_BIAS_WEIGHT_FIXED),

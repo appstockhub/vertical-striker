@@ -96,9 +96,11 @@ describe('computeNonControlledDirection', () => {
   });
 
   it('combines home-pull and ball-attraction into a direction leaning toward both influences', () => {
-    // home が右(Right)方向、ボールが上(Up)方向にあるケース。
-    // HOME_WEIGHT(1.0) > BALL_WEIGHT(0.6) なので、水平成分(Right由来)が優勢になり、
-    // 結果は Right 寄り (Right か UpRight のいずれか) になるはず。
+    // home が右(Right)方向、ボールが上(Up)方向にあるケース。ホームからの距離(72px)は
+    // リーシュ半径(220px)以内のためHOME_PULL_WEIGHT_NEAR(0.5) < BALL_ATTRACTION_WEIGHT(0.9)、
+    // ボール引力がやや優勢になるが、両者の合成方向としてRightかUpRightのどちらかに収まる
+    // (Phase 3で発見したホーム項凍結バグの修正により、Team B含む非操作選手がホーム近傍では
+    // ボールを追いやすくなった。詳細はteamAIConstants.tsのコメント参照)。
     const player = makePlayer(0, 1638, TeamId.A, 1); // home は (72, 1638) = 真右
     const ballPos = { x: ZERO_FIXED, y: toFixed(1438) }; // 真上
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
@@ -113,5 +115,40 @@ describe('computeNonControlledDirection', () => {
         computeNonControlledDirection(player, state.players, state.ball.pos, state.teamFormations, 1),
       ).not.toThrow();
     }
+  });
+
+  // 実プレイで発覚したバグの回帰テスト (Phase 3): ボールがホームと反対方向にある場合でも、
+  // ホーム近傍(リーシュ半径以内)なら非操作選手はボールへ向かって進めるべき。
+  // 修正前はHOME_PULL_WEIGHT(距離によらず常にフル強度)がBALL_ATTRACTION_WEIGHTを
+  // ほぼ常に上回り、ホームのすぐ外側で実質的に凍結していた。
+  it('bug regression: moves toward the ball even when directly at home and the ball is in any direction (does not freeze at home)', () => {
+    const player = makePlayer(72, 1638, TeamId.A, 1); // ちょうどhome
+    const ballPos = { x: toFixed(72), y: toFixed(1638 - 80) }; // 80px真上 (home近傍圏内)
+    const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1);
+    expect(direction).toBe(Direction8.Up);
+  });
+
+  it('bug regression: still makes progress toward a ball that lies in the OPPOSITE direction from home, as long as within the leash radius', () => {
+    // homeの少し外側 (leash半径220pxより十分内側) に立っており、ボールはhomeとは逆方向にある。
+    const home = { x: 72, y: 1638 };
+    const player = makePlayer(home.x, home.y - 40, TeamId.A, 1); // homeより40px北 (=home方向はDown)
+    const ballPos = { x: toFixed(home.x), y: toFixed(home.y - 200) }; // さらに北 (=ボール方向もUp寄り、homeとは逆)
+    const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1);
+    // ボール引力(0.9) > ホーム近傍の復元力(0.5)なので、home方向(Down)ではなくボール方向(Up)寄りになるはず。
+    expect(direction).not.toBe(Direction8.Down);
+    expect([Direction8.Up, Direction8.UpLeft, Direction8.UpRight]).toContain(direction);
+  });
+
+  it('bug regression: gets recalled toward home once far beyond the leash radius, even if the ball is further still', () => {
+    const home = { x: 72, y: 1638 };
+    // homeから300px離れている (リーシュ半径220pxを超える)。ボールはさらに先。
+    const player = makePlayer(home.x, home.y - 300, TeamId.A, 1);
+    const ballPos = { x: toFixed(home.x), y: toFixed(home.y - 500) };
+    const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1);
+    // リーシュ外なのでホームへの復元力(2.5)が優勢になり、Down(home方向)に戻るはず。
+    expect(direction).toBe(Direction8.Down);
   });
 });
