@@ -11,7 +11,7 @@ import { applyDribbleTouch, isLongDribbleActive } from './dribble';
 import { applyKick, updateKickCharge } from './kick';
 import { clampToPitchBounds, stepBallPhysicsDetailed } from './ballPhysics';
 import { findTouchPriorityPlayer } from './ballTouch';
-import { computeNonControlledDirection } from './teamAI';
+import { computeChaseRightIndices, computeNonControlledDirection } from './teamAI';
 import { isTeamAInPossession, resolveCursor } from './cursor';
 import { quantizeToDirection8 } from './steering';
 import {
@@ -158,6 +158,10 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       : null;
   let rngState = cpuDecision ? cpuDecision.rngState : state.rngState;
 
+  // 「団子サッカー」防止: 各チームでボールに最も近い選手+カバー数人だけがボール引力を
+  // フルに使う (バグ修正、実プレイで発覚)。毎tick1回だけ計算する。
+  const chaseRightIndices = computeChaseRightIndices(state.players, state.ball.pos);
+
   const effectiveInputs: Inputs[] = state.players.map((player, index) => {
     if (index === controlledPlayerIndex) return inputs;
     if (player.isGoalkeeper) {
@@ -173,6 +177,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       state.teamFormations,
       half,
       possessionTeam,
+      chaseRightIndices.has(index),
     );
     return { direction, buttons: NO_BUTTONS };
   });
@@ -245,7 +250,14 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         }
         tackleAdvance = advanceTacklePhase(controlledPlayer, false, Direction8.None);
       } else {
-        // 非保持: Bのedgeでタックルを新規発動できる (既にNoneの時のみ)。
+        // 非保持: キック溜め中にボールを失った(奪われた/転がって離れた)場合、溜めを即座に
+        // 破棄する。破棄しないとkickChargeFramesが非ゼロのまま永久に固定され、
+        // resolveCursor/gkTakeoverの「操作選手がキック溜め中は切替禁止」ガードが
+        // 恒久的にtrueになり、ボールを持っていない選手にカーソルが永遠に固定されて
+        // 二度と切り替わらなくなる不具合があった (実プレイで発覚)。
+        nextControlledKickChargeFrames = 0;
+
+        // Bのedgeでタックルを新規発動できる (既にNoneの時のみ)。
         const bEdge = inputs.buttons.B && !state.prevButtons.B;
         const wantsTackle =
           bEdge &&

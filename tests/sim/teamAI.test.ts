@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
-import { computeLineAdjustedHomePosition, computeNonControlledDirection, computeOffsideLine } from '../../src/sim/teamAI';
+import { toFixed, toFloat, vAdd, vScaleFixed, ZERO_FIXED } from '../../src/core/fixed';
+import {
+  computeChaseRightIndices,
+  computeLineAdjustedHomePosition,
+  computeNonControlledDirection,
+  computeOffsideLine,
+} from '../../src/sim/teamAI';
 import { getHomePosition } from '../../src/sim/formations';
 import { createInitialState } from '../../src/sim/state';
 import type { PlayerState } from '../../src/sim/state';
 import { TeamId, FormationId } from '../../src/sim/formations';
 import { Direction8 } from '../../src/input/types';
 import { TacklePhase } from '../../src/sim/state';
+import { DIRECTION_VECTORS, PLAYER_SPEED_FIXED } from '../../src/sim/constants';
 
 function makePlayer(
   x: number,
@@ -131,7 +137,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(72, 1538, TeamId.A, 1);
     const ballPos = player.pos; // 同一座標 -> ballDir は deadzone で None
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null, true);
     expect(direction).toBe(Direction8.Down);
   });
 
@@ -139,7 +145,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(72, 1638, TeamId.A, 1); // 4-4-2 DF1 の home ちょうど
     const ballPos = { x: toFixed(72), y: toFixed(1438) }; // 真上 (小さいy) -> Up
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null, true);
     expect(direction).toBe(Direction8.Up);
   });
 
@@ -151,7 +157,7 @@ describe('computeNonControlledDirection', () => {
     // Team B は実際のキックオフフォーメーションで配置する (現実的なオフサイドライン値にするため)
     const state = createInitialState(1);
     const realTeamB = state.players.slice(11, 22);
-    const direction = computeNonControlledDirection(player, [player, ...realTeamB], ballPos, FORMATIONS, 1, null);
+    const direction = computeNonControlledDirection(player, [player, ...realTeamB], ballPos, FORMATIONS, 1, null, true);
     // home(y=1035, 遠い)・offside、どちらも「自陣方向(y増加=Down)」を向くため Down になる
     expect(direction).toBe(Direction8.Down);
   });
@@ -165,7 +171,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(0, 1638, TeamId.A, 1); // home は (72, 1638) = 真右
     const ballPos = { x: ZERO_FIXED, y: toFixed(1438) }; // 真上
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null, true);
     expect([Direction8.Right, Direction8.UpRight]).toContain(direction);
   });
 
@@ -173,7 +179,7 @@ describe('computeNonControlledDirection', () => {
     const state = createInitialState(1);
     for (const player of state.players) {
       expect(() =>
-        computeNonControlledDirection(player, state.players, state.ball.pos, state.teamFormations, 1, null),
+        computeNonControlledDirection(player, state.players, state.ball.pos, state.teamFormations, 1, null, true),
       ).not.toThrow();
     }
   });
@@ -186,7 +192,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(72, 1638, TeamId.A, 1); // ちょうどhome
     const ballPos = { x: toFixed(72), y: toFixed(1638 - 80) }; // 80px真上 (home近傍圏内)
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null, true);
     expect(direction).toBe(Direction8.Up);
   });
 
@@ -196,7 +202,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(home.x, home.y - 40, TeamId.A, 1); // homeより40px北 (=home方向はDown)
     const ballPos = { x: toFixed(home.x), y: toFixed(home.y - 200) }; // さらに北 (=ボール方向もUp寄り、homeとは逆)
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null, true);
     // ボール引力(0.9) > ホーム近傍の復元力(0.5)なので、home方向(Down)ではなくボール方向(Up)寄りになるはず。
     expect(direction).not.toBe(Direction8.Down);
     expect([Direction8.Up, Direction8.UpLeft, Direction8.UpRight]).toContain(direction);
@@ -208,8 +214,123 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(home.x, home.y - 300, TeamId.A, 1);
     const ballPos = { x: toFixed(home.x), y: toFixed(home.y - 500) };
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null, true);
     // リーシュ外なのでホームへの復元力(2.5)が優勢になり、Down(home方向)に戻るはず。
     expect(direction).toBe(Direction8.Down);
+  });
+
+  // 実プレイで発覚したバグの回帰テスト (Phase 3、2周目): 追跡権を持たない選手は
+  // ボール引力を弱め、ホームポジション優先で「団子サッカー」を防ぐ。
+  it('bug regression: without chase right, home-pull wins even when the ball is nearby in the opposite direction (prevents dogpiling)', () => {
+    const home = { x: 72, y: 1638 };
+    const player = makePlayer(home.x, home.y - 40, TeamId.A, 1); // homeより40px北 (=home方向はDown)
+    const ballPos = { x: toFixed(home.x), y: toFixed(home.y - 200) }; // さらに北 (=ボール方向もUp寄り)
+    const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
+    // hasChaseRight=true では同じ状況でUp寄りになる (上のテストで確認済み) が、
+    // hasChaseRight=false ではBALL_ATTRACTION_WEIGHT_NON_CHASER_FIXED(0.15) <
+    // HOME_PULL_WEIGHT_NEAR_FIXED(0.5) なので、ホームへ戻る方向(Down)が優勢になるはず。
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null, false);
+    expect(direction).toBe(Direction8.Down);
+  });
+
+  // 実プレイで発覚したバグの回帰テスト (Phase 3、3周目): リーシュ境界のちょうど距離に留まる
+  // 選手が「ホームへの1歩→ボールへの1歩」を無限に繰り返すチャタリング (見た目上は凍結と
+  // 見分けがつかない) が起きていた。滑らかな遷移帯 (AI_HOME_LEASH_RAMP_NEAR/FAR) の導入で
+  // 解消したことを確認する: リーシュ境界ちょうどの距離でも、2tick連続で同じ方向へ動くはず。
+  it('bug regression: does not oscillate (chatter) between two directions when sitting exactly at the leash boundary', () => {
+    const home = { x: 168, y: 765 };
+    // 旧実装の単一しきい値(220px)ちょうどの距離に選手を置く。ボールは選手から見て斜め方向。
+    const player = makePlayer(home.x - 83, home.y + 204, TeamId.A, 9);
+    const ballPos = { x: toFixed(home.x - 128), y: toFixed(home.y + 314) }; // さらに斜め奥
+    const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(400, 100 + slot * 5, TeamId.B, slot));
+    const roster = [player, ...teamB];
+
+    const dir1 = computeNonControlledDirection(player, roster, ballPos, FORMATIONS, 1, null, true);
+    // dir1の方向へ1tick分動かした選手で再計算し、dir1と正反対の方向が返らないことを確認する
+    // (正反対=チャタリングの兆候。滑らかな遷移帯なら1tickの位置変化で完全反転はしないはず)。
+    const moved = { ...player, pos: vAdd(player.pos, vScaleFixed(DIRECTION_VECTORS[dir1], PLAYER_SPEED_FIXED)) };
+    const dir2 = computeNonControlledDirection(moved, [moved, ...teamB], ballPos, FORMATIONS, 1, null, true);
+    const opposite: Partial<Record<Direction8, Direction8>> = {
+      [Direction8.Up]: Direction8.Down,
+      [Direction8.Down]: Direction8.Up,
+      [Direction8.Left]: Direction8.Right,
+      [Direction8.Right]: Direction8.Left,
+      [Direction8.UpLeft]: Direction8.DownRight,
+      [Direction8.DownRight]: Direction8.UpLeft,
+      [Direction8.UpRight]: Direction8.DownLeft,
+      [Direction8.DownLeft]: Direction8.UpRight,
+    };
+    expect(dir2).not.toBe(opposite[dir1]);
+  });
+
+  // 実プレイで発覚したバグの回帰テスト (Phase 3、4周目): 8方向への量子化を各項ごとに行って
+  // から合成する方式は、目標が斜め方向にある場合など軸ごとに成分が打ち消し合い、本来
+  // ボールに向かうべきなのに合成方向がそれてしまうことがある (「最終アプローチ」導入前は
+  // ボールの手前20〜30px程度で選手が永久に足踏みする不具合につながっていた)。
+  it('bug regression: ball attraction dominates outright once within final-approach range, even when home pull would otherwise win', () => {
+    const home = { x: 168, y: 765 };
+    const player = makePlayer(home.x - 300, home.y - 300, TeamId.A, 9); // homeから遠い(≈424px、far寄り)
+    // ボールは選手からごく近い(60px)が、斜め方向でホームとも軸が競合する配置。
+    const ballPos = { x: toFixed(home.x - 300 - 40), y: toFixed(home.y - 300 + 45) };
+    const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(400, 100 + slot * 5, TeamId.B, slot));
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null, true);
+    // ボールは選手から見て左下(DownLeft)。最終アプローチが効いていれば、その方向寄りになるはず。
+    expect([Direction8.DownLeft, Direction8.Down, Direction8.Left]).toContain(direction);
+  });
+});
+
+describe('computeChaseRightIndices', () => {
+  it('picks the nearest field player per team, excluding goalkeepers', () => {
+    const gkA = makePlayer(240, 1764, TeamId.A, 0);
+    const nearA = makePlayer(240, 900, TeamId.A, 1); // ボールに最も近いTeam Aのフィールドプレイヤー
+    const farA = makePlayer(0, 0, TeamId.A, 2);
+    const gkB = makePlayer(240, 36, TeamId.B, 0);
+    const nearB = makePlayer(240, 910, TeamId.B, 1);
+    const farB = makePlayer(480, 1800, TeamId.B, 2);
+    const roster = [gkA, nearA, farA, gkB, nearB, farB];
+    const ballPos = { x: toFixed(240), y: toFixed(905) };
+
+    const chasers = computeChaseRightIndices(roster, ballPos, 1);
+    expect(chasers.has(1)).toBe(true); // nearA
+    expect(chasers.has(4)).toBe(true); // nearB
+    expect(chasers.has(0)).toBe(false); // GKは対象外
+    expect(chasers.has(2)).toBe(false); // farA
+    expect(chasers.has(3)).toBe(false); // GKは対象外
+    expect(chasers.has(5)).toBe(false); // farB
+    expect(chasers.size).toBe(2);
+  });
+
+  it('picks the top-N nearest per team when holdersPerTeam > 1 (nearest + cover)', () => {
+    const p0 = makePlayer(240, 900, TeamId.A, 1); // 最寄り
+    const p1 = makePlayer(240, 950, TeamId.A, 2); // 2番目
+    const p2 = makePlayer(240, 1200, TeamId.A, 3); // 3番目 (対象外)
+    const roster = [p0, p1, p2];
+    const ballPos = { x: toFixed(240), y: toFixed(900) };
+    const chasers = computeChaseRightIndices(roster, ballPos, 2);
+    expect(chasers.has(0)).toBe(true);
+    expect(chasers.has(1)).toBe(true);
+    expect(chasers.has(2)).toBe(false);
+  });
+
+  it('breaks exact-distance ties by the lowest index (deterministic)', () => {
+    const tiedA = makePlayer(230, 900, TeamId.A, 1);
+    const tiedB = makePlayer(250, 900, TeamId.A, 2);
+    const roster = [tiedA, tiedB];
+    const ballPos = { x: toFixed(240), y: toFixed(900) };
+    const chasers = computeChaseRightIndices(roster, ballPos, 1);
+    expect(chasers.has(0)).toBe(true); // 同距離なら小さいindex
+    expect(chasers.has(1)).toBe(false);
+  });
+
+  it('is a pure function: identical inputs always produce an equal result', () => {
+    const state = createInitialState(1);
+    const a = computeChaseRightIndices(state.players, state.ball.pos);
+    const b = computeChaseRightIndices(state.players, state.ball.pos);
+    expect(Array.from(a).sort()).toEqual(Array.from(b).sort());
+  });
+
+  it('does not throw against the real 22-player kickoff state', () => {
+    const state = createInitialState(1);
+    expect(() => computeChaseRightIndices(state.players, state.ball.pos)).not.toThrow();
   });
 });

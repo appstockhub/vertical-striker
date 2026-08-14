@@ -711,28 +711,34 @@ describe('simulate — Phase 3: full-match smoke test (milestone 9, determinism/
     return state;
   }
 
-  it('never throws and keeps all invariants over a match spanning a half-swap', () => {
-    let state = createInitialState(1, { difficulty: 'easy', offsideEnabled: true });
-    for (let i = 0; i < TICKS; i++) {
-      const step = CYCLE[i % CYCLE.length];
-      if (!step) continue;
-      state = simulate(state, inputsWithButtons(step.direction, step.held));
+  it(
+    'never throws and keeps all invariants over a match spanning a half-swap',
+    () => {
+      let state = createInitialState(1, { difficulty: 'easy', offsideEnabled: true });
+      for (let i = 0; i < TICKS; i++) {
+        const step = CYCLE[i % CYCLE.length];
+        if (!step) continue;
+        state = simulate(state, inputsWithButtons(step.direction, step.held));
 
-      expect(state.players).toHaveLength(22);
-      expect(state.controlledPlayerIndex).toBeGreaterThanOrEqual(0);
-      expect(state.controlledPlayerIndex).toBeLessThan(11); // 常にTeam A
-      expect(state.score[0]).toBeGreaterThanOrEqual(0);
-      expect(state.score[1]).toBeGreaterThanOrEqual(0);
-      expect(toFloat(state.ball.pos.x)).toBeGreaterThanOrEqual(0);
-      expect(toFloat(state.ball.pos.x)).toBeLessThanOrEqual(PITCH_WIDTH);
-      expect(toFloat(state.ball.pos.y)).toBeGreaterThanOrEqual(0);
-      expect(toFloat(state.ball.pos.y)).toBeLessThanOrEqual(PITCH_HEIGHT);
-      for (const player of state.players) {
-        expect(toFloat(player.pos.x)).toBeGreaterThanOrEqual(0);
-        expect(toFloat(player.pos.y)).toBeGreaterThanOrEqual(0);
+        expect(state.players).toHaveLength(22);
+        expect(state.controlledPlayerIndex).toBeGreaterThanOrEqual(0);
+        expect(state.controlledPlayerIndex).toBeLessThan(11); // 常にTeam A
+        expect(state.score[0]).toBeGreaterThanOrEqual(0);
+        expect(state.score[1]).toBeGreaterThanOrEqual(0);
+        expect(toFloat(state.ball.pos.x)).toBeGreaterThanOrEqual(0);
+        expect(toFloat(state.ball.pos.x)).toBeLessThanOrEqual(PITCH_WIDTH);
+        expect(toFloat(state.ball.pos.y)).toBeGreaterThanOrEqual(0);
+        expect(toFloat(state.ball.pos.y)).toBeLessThanOrEqual(PITCH_HEIGHT);
+        for (const player of state.players) {
+          expect(toFloat(player.pos.x)).toBeGreaterThanOrEqual(0);
+          expect(toFloat(player.pos.y)).toBeGreaterThanOrEqual(0);
+        }
       }
-    }
-  });
+    },
+    // 毎tick複数のexpectを11300tickぶん行う重いテスト。カーソル固定バグの修正で
+    // 切替判定が以前より活発になり、既定の5000msに対して余裕が無くなったため明示的に延長する。
+    15000,
+  );
 
   it('is fully deterministic end-to-end across a match spanning a half-swap (same seed -> identical final state)', () => {
     const stateA = runMatch(2026);
