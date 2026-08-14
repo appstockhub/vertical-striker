@@ -15,12 +15,17 @@ body {
   position: relative;
   width: 100vw;
   height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
+/*
+ * #game-root には明示的なサイズ(100%)を与える。Phaser の Scale.FIT + CENTER_BOTH は
+ * この要素の実測サイズを基準にレターボックス/中央寄せを計算するため、shrink-to-fit な
+ * div (中身のcanvasサイズに合わせて縮む) のままだと計算が狂い、キャンバスが画面中央では
+ * なく左右どちらかに寄って表示されるバグの原因になる (実際に発生した不具合の修正)。
+ */
 #game-root {
+  width: 100%;
+  height: 100%;
   line-height: 0;
 }
 

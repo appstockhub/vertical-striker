@@ -79,9 +79,14 @@ export class PitchScene extends Phaser.Scene {
 
   private buildEntities(): void {
     // 影 (地面位置に描画、疑似3D高さの手がかり)。ボール本体より先に描画して下に敷く。
-    this.ballShadow = this.add.ellipse(0, 0, 14, 7, 0x000000, 0.35);
-    this.ballMain = this.add.circle(0, 0, 7, 0xffffff);
-    this.playerMain = this.add.circle(0, 0, 12, 0xffcc33);
+    this.ballShadow = this.add.ellipse(0, 0, 20, 10, 0x000000, 0.35);
+
+    // 視認性のため実物より大きめのサイズにし、縁取りでピッチの緑との境界を明確にする。
+    this.ballMain = this.add.circle(0, 0, 10, 0xffffff);
+    this.ballMain.setStrokeStyle(2, 0x1a1a1a, 0.8);
+
+    this.playerMain = this.add.circle(0, 0, 16, 0xff5a1f); // ボール(白)と紛れない鮮やかな橙赤
+    this.playerMain.setStrokeStyle(2, 0x1a1a1a, 0.8);
   }
 
   private buildRadar(): void {
@@ -110,9 +115,9 @@ export class PitchScene extends Phaser.Scene {
     frame.setScrollFactor(0);
     this.radarCamera.ignore(frame);
 
-    // レーダー用の点 (実寸より大きい固定サイズにして視認性を確保)
-    this.ballRadarDot = this.add.circle(0, 0, 3 / layout.zoom, 0xffffff);
-    this.playerRadarDot = this.add.circle(0, 0, 4 / layout.zoom, 0xffcc33);
+    // レーダー用の点 (実寸より大きい固定サイズにして視認性を確保。色はメイン表示と揃える)
+    this.ballRadarDot = this.add.circle(0, 0, 4 / layout.zoom, 0xffffff);
+    this.playerRadarDot = this.add.circle(0, 0, 6 / layout.zoom, 0xff5a1f);
 
     // メインカメラにはレーダー専用オブジェクトを映さない / レーダーカメラにはメイン専用オブジェクトを映さない
     this.cameras.main.ignore([this.ballRadarDot, this.playerRadarDot]);
