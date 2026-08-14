@@ -25,6 +25,16 @@ export const OFFSIDE_BIAS_WEIGHT_FIXED: Fixed = toFixed(0.8);
 export const AI_HOME_LEASH_RADIUS_FIXED: Fixed = toFixed(220);
 export const AI_HOME_LEASH_SQ_FIXED: Fixed = fixedMul(AI_HOME_LEASH_RADIUS_FIXED, AI_HOME_LEASH_RADIUS_FIXED);
 
+/**
+ * チームライン引き下げ(相手が保持中のホームポジション後退、computeLineAdjustedHomePosition)の
+ * 追従率に掛ける減衰係数。仮値。1.0(減衰無し)だとAI_HOME_LEASH_SQ_FIXEDによる
+ * 「ホーム近傍でのボール追跡」との相乗効果で、守備側の選手がどれだけホームから離れていても
+ * 常にボールとほぼ同じ深さまで一斉に引き寄せられてしまい、実質的に全員でボールを取り囲む
+ * 過剰収束が起きる (実プレイ相当のテストで発覚)。押し上げ側(自チーム保持中)は減衰させない
+ * (要求どおりの「攻撃時はしっかり押し上げる」を保つため)。
+ */
+export const LINE_RETREAT_DAMPING_FIXED: Fixed = toFixed(0.45);
+
 /** ホームポジションにこの距離以内なら「到着済み」とみなし復元力を0にする (px, 仮値、二乗)。 */
 export const AI_HOME_DEADZONE_SQ_FIXED: Fixed = fixedMul(toFixed(4), toFixed(4));
 /** ボールにこの距離以内なら引力を0にする (px, 仮値、二乗)。 */

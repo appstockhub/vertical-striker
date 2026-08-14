@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
-import { computeNonControlledDirection, computeOffsideLine } from '../../src/sim/teamAI';
+import { computeLineAdjustedHomePosition, computeNonControlledDirection, computeOffsideLine } from '../../src/sim/teamAI';
+import { getHomePosition } from '../../src/sim/formations';
 import { createInitialState } from '../../src/sim/state';
 import type { PlayerState } from '../../src/sim/state';
 import { TeamId, FormationId } from '../../src/sim/formations';
@@ -63,6 +64,66 @@ describe('computeOffsideLine', () => {
   });
 });
 
+// half=1: Team B は北(own goal y=0)を守り、南(y=1800)へ攻める (formations.tsの規約と同じ)。
+describe('computeLineAdjustedHomePosition (team line push/retreat, Phase 3 bug fix: "Team Bがハーフラインを越えて攻めない")', () => {
+  it('returns the exact static home position when the ball is contested (possessionTeam=null)', () => {
+    const home = getHomePosition(TeamId.B, 9, FormationId.F442, 1);
+    const adjusted = computeLineAdjustedHomePosition(TeamId.B, 9, FormationId.F442, 1, { x: toFixed(240), y: toFixed(1600) }, null);
+    expect(adjusted).toEqual(home);
+  });
+
+  it('pushes a forward (high home depth) much further forward than a defender when the team has the ball deep in the attacking third', () => {
+    const ballPos = { x: toFixed(240), y: toFixed(1600) }; // Team Bの攻撃方向(南)に深く進んでいる
+    const fwHome = getHomePosition(TeamId.B, 9, FormationId.F442, 1); // FW, depthFrac 0.85
+    const dfHome = getHomePosition(TeamId.B, 1, FormationId.F442, 1); // DF, depthFrac 0.18
+
+    const fwAdjusted = computeLineAdjustedHomePosition(TeamId.B, 9, FormationId.F442, 1, ballPos, TeamId.B);
+    const dfAdjusted = computeLineAdjustedHomePosition(TeamId.B, 1, FormationId.F442, 1, ballPos, TeamId.B);
+
+    const fwPush = toFloat(fwAdjusted.y) - toFloat(fwHome.y);
+    const dfPush = toFloat(dfAdjusted.y) - toFloat(dfHome.y);
+
+    expect(fwPush).toBeGreaterThan(0); // FWは前進 (南=yが大きい方向)
+    expect(dfPush).toBeGreaterThan(0); // DFも多少は前進する
+    expect(fwPush).toBeGreaterThan(dfPush * 2); // だがFWの方がずっと大きく押し上げられる
+  });
+
+  it('barely moves the goalkeeper regardless of how far the ball has advanced', () => {
+    const ballPos = { x: toFixed(240), y: toFixed(1600) };
+    const gkHome = getHomePosition(TeamId.B, 0, FormationId.F442, 1);
+    const gkAdjusted = computeLineAdjustedHomePosition(TeamId.B, 0, FormationId.F442, 1, ballPos, TeamId.B);
+    expect(Math.abs(toFloat(gkAdjusted.y) - toFloat(gkHome.y))).toBeLessThan(100);
+  });
+
+  it('never pushes a home position behind its static home when attacking (only ever forward)', () => {
+    // ボールが自陣側 (まだホームより後ろ) にある場合、保持中でも後退はしない (maxを取るため)。
+    const ballPos = { x: toFixed(240), y: toFixed(50) }; // Team Bの自陣深く
+    const fwHome = getHomePosition(TeamId.B, 9, FormationId.F442, 1);
+    const fwAdjusted = computeLineAdjustedHomePosition(TeamId.B, 9, FormationId.F442, 1, ballPos, TeamId.B);
+    expect(toFloat(fwAdjusted.y)).toBeGreaterThanOrEqual(toFloat(fwHome.y) - 1);
+  });
+
+  it('retreats a forward toward their own goal when the opponent has the ball deep in defense, but damped (not as strongly as the forward push)', () => {
+    const ballPos = { x: toFixed(240), y: toFixed(50) }; // Team Bの自陣深く (相手が攻めてきている)
+    const fwHome = getHomePosition(TeamId.B, 9, FormationId.F442, 1);
+    const fwAdjustedAttack = computeLineAdjustedHomePosition(TeamId.B, 9, FormationId.F442, 1, { x: toFixed(240), y: toFixed(1600) }, TeamId.B);
+    const fwAdjustedRetreat = computeLineAdjustedHomePosition(TeamId.B, 9, FormationId.F442, 1, ballPos, TeamId.A);
+
+    const pushMagnitude = toFloat(fwAdjustedAttack.y) - toFloat(fwHome.y);
+    const retreatMagnitude = toFloat(fwHome.y) - toFloat(fwAdjustedRetreat.y);
+
+    expect(retreatMagnitude).toBeGreaterThan(0); // 後退はする
+    expect(retreatMagnitude).toBeLessThan(pushMagnitude); // ただし押し上げよりは弱い (LINE_RETREAT_DAMPING)
+  });
+
+  it('does not retreat the goalkeeper further when the ball is not yet deeper than the GK already sits', () => {
+    const ballPos = { x: toFixed(240), y: toFixed(50) }; // GKのホーム(y=36)より浅い
+    const gkHome = getHomePosition(TeamId.B, 0, FormationId.F442, 1);
+    const gkAdjusted = computeLineAdjustedHomePosition(TeamId.B, 0, FormationId.F442, 1, ballPos, TeamId.A);
+    expect(toFloat(gkAdjusted.y)).toBeCloseTo(toFloat(gkHome.y), 1);
+  });
+});
+
 describe('computeNonControlledDirection', () => {
   it('home-pull dominates when the ball is co-located (no ball attraction) and offside is not triggered', () => {
     // Team A DF (slotIndex 1) の home は (72, 1638) 付近。プレイヤーをその真上に置く
@@ -70,7 +131,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(72, 1538, TeamId.A, 1);
     const ballPos = player.pos; // 同一座標 -> ballDir は deadzone で None
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null);
     expect(direction).toBe(Direction8.Down);
   });
 
@@ -78,7 +139,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(72, 1638, TeamId.A, 1); // 4-4-2 DF1 の home ちょうど
     const ballPos = { x: toFixed(72), y: toFixed(1438) }; // 真上 (小さいy) -> Up
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null);
     expect(direction).toBe(Direction8.Up);
   });
 
@@ -90,7 +151,7 @@ describe('computeNonControlledDirection', () => {
     // Team B は実際のキックオフフォーメーションで配置する (現実的なオフサイドライン値にするため)
     const state = createInitialState(1);
     const realTeamB = state.players.slice(11, 22);
-    const direction = computeNonControlledDirection(player, [player, ...realTeamB], ballPos, FORMATIONS, 1);
+    const direction = computeNonControlledDirection(player, [player, ...realTeamB], ballPos, FORMATIONS, 1, null);
     // home(y=1035, 遠い)・offside、どちらも「自陣方向(y増加=Down)」を向くため Down になる
     expect(direction).toBe(Direction8.Down);
   });
@@ -104,7 +165,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(0, 1638, TeamId.A, 1); // home は (72, 1638) = 真右
     const ballPos = { x: ZERO_FIXED, y: toFixed(1438) }; // 真上
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null);
     expect([Direction8.Right, Direction8.UpRight]).toContain(direction);
   });
 
@@ -112,7 +173,7 @@ describe('computeNonControlledDirection', () => {
     const state = createInitialState(1);
     for (const player of state.players) {
       expect(() =>
-        computeNonControlledDirection(player, state.players, state.ball.pos, state.teamFormations, 1),
+        computeNonControlledDirection(player, state.players, state.ball.pos, state.teamFormations, 1, null),
       ).not.toThrow();
     }
   });
@@ -125,7 +186,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(72, 1638, TeamId.A, 1); // ちょうどhome
     const ballPos = { x: toFixed(72), y: toFixed(1638 - 80) }; // 80px真上 (home近傍圏内)
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null);
     expect(direction).toBe(Direction8.Up);
   });
 
@@ -135,7 +196,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(home.x, home.y - 40, TeamId.A, 1); // homeより40px北 (=home方向はDown)
     const ballPos = { x: toFixed(home.x), y: toFixed(home.y - 200) }; // さらに北 (=ボール方向もUp寄り、homeとは逆)
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null);
     // ボール引力(0.9) > ホーム近傍の復元力(0.5)なので、home方向(Down)ではなくボール方向(Up)寄りになるはず。
     expect(direction).not.toBe(Direction8.Down);
     expect([Direction8.Up, Direction8.UpLeft, Direction8.UpRight]).toContain(direction);
@@ -147,7 +208,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(home.x, home.y - 300, TeamId.A, 1);
     const ballPos = { x: toFixed(home.x), y: toFixed(home.y - 500) };
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null);
     // リーシュ外なのでホームへの復元力(2.5)が優勢になり、Down(home方向)に戻るはず。
     expect(direction).toBe(Direction8.Down);
   });

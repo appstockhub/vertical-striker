@@ -517,7 +517,9 @@ describe('simulate — Phase 3: CPU (Team B) attack AI (milestone 6)', () => {
     const state: GameState = {
       ...base,
       players: base.players.map((p, i) =>
-        i === advancedTeammateIdx ? { ...p, pos: { x: toFixed(240), y: toFixed(1795) } } : p,
+        // ゴールライン判定のしきい値(ボール半径7px)より確実に手前に置く
+        // (オフサイドリスタート位置=この選手の位置が、そのまま境界越え判定に引っかからないようにする)。
+        i === advancedTeammateIdx ? { ...p, pos: { x: toFixed(240), y: toFixed(1780) } } : p,
       ),
     };
     const next = simulate(state, inputs(Direction8.None));
@@ -574,6 +576,107 @@ describe('simulate — bug regression: non-controlled AI actually chases the bal
     // 旧実装ではTeam Bの誰もホームからほぼ動けず、3000tick(50秒)経ってもTeam Bが一度も
     // ボールに触れなかった (人間側も無操作なのでボールはキックオフ位置に静止したまま)。
     expect(teamBEverTouched).toBe(true);
+  });
+});
+
+/**
+ * テスト用: Team Bの選手1人を指定Yにボール保持者として置き、Team Aのフィールドプレイヤー
+ * (GK以外)を左右のサイドライン際まで大きく退避させる。「守備の薄いオープンな状況」
+ * (カウンターアタック・数的優位のブレイクアウェイ)を模した、統合テスト用の意図的な設定。
+ *
+ * なぜこの設定が必要か: 無改造の22人フルキックオフ+完全無操作という設定では、
+ * Team A自身の非操作選手(GK以外)も同じball-attraction AIでボールに寄ってくるため、
+ * いずれかがボールに触れて touch-priority を得ると resolveCursor の設計上ただちに
+ * 人間の操作対象がその選手へスナップされる。そのtickの人間入力が(このテストのように)
+ * 常にNoneであれば、その選手は「操作対象だが入力が無い」まま静止し続け、ボールも
+ * 静止したまま止まってしまう。これは既存の(Phase 2で承認済みの)カーソル自動追従の
+ * 設計と「人間側の入力が本当に一度も無い」という統合テスト特有の状況が組み合わさって
+ * 起きる別種の現象であり、今回のチームライン押し上げ/引き下げ修正の対象ではないため、
+ * ここでは「Team Aの守備が及ばない状況」を明示的に作ることでこの現象を回避し、
+ * 修正対象そのもの(チーム全体の押し上げ+ボール保持者の自由な前進)を検証する。
+ */
+function withOpenCounterAttack(carrierStartY: number): GameState {
+  const state = createInitialState(1, { difficulty: 'hard' });
+  const carrierIdx = TeamId.B * 11 + 9; // Team B FW
+  return {
+    ...state,
+    players: state.players.map((p, i) => {
+      if (i === carrierIdx) return { ...p, pos: { x: toFixed(240), y: toFixed(carrierStartY) } };
+      if (p.team === TeamId.A && !p.isGoalkeeper) {
+        return { ...p, pos: { x: toFixed(p.slotIndex % 2 === 0 ? 20 : 460), y: p.pos.y } };
+      }
+      return p;
+    }),
+    ball: { ...state.ball, pos: { x: toFixed(240), y: toFixed(carrierStartY + 5) } },
+    lastTouchTeam: TeamId.B,
+  };
+}
+
+describe('simulate — Phase 3: team line push/retreat fixes "Team B doesn\'t attack past halfway" (bug fix, integration)', () => {
+  it('Team B commits forward as a team and advances substantially into the attacking third when given room to run', () => {
+    let state = withOpenCounterAttack(1300); // 自陣寄り(500px先がゴール)からスタート
+    const startY = toFloat(state.ball.pos.y);
+    for (let i = 0; i < 150; i++) {
+      state = simulate(state, inputs(Direction8.None));
+    }
+    const endY = toFloat(state.ball.pos.y);
+    // 旧実装(チームライン押し上げ無し)ではボールがハーフウェー付近で頭打ちになり、
+    // ホームポジション固定のためチーム全体が追随できなかった。修正後は明確に前進する。
+    expect(endY - startY).toBeGreaterThan(150);
+  });
+
+  it('Team B reaches the penalty box and scores from a realistic attacking-third position, with no human input (regression for both the team-line-push fix and the goal-line dead-zone bug)', () => {
+    let state = withOpenCounterAttack(1550); // ゴールまで250px、攻撃サードからのブレイクアウェイ
+    let scored = false;
+    for (let i = 0; i < 300; i++) {
+      state = simulate(state, inputs(Direction8.None));
+      if (state.score[1] > 0) {
+        scored = true;
+        break;
+      }
+    }
+    expect(scored).toBe(true);
+  });
+
+  it('is deterministic across the scoring sequence', () => {
+    let stateA = withOpenCounterAttack(1550);
+    let stateB = withOpenCounterAttack(1550);
+    for (let i = 0; i < 200; i++) {
+      stateA = simulate(stateA, inputs(Direction8.None));
+      stateB = simulate(stateB, inputs(Direction8.None));
+    }
+    expect(stateA).toEqual(stateB);
+  });
+});
+
+describe('simulate — bug regression: a decelerating rolling shot must still be able to cross the goal line (goal-line dead-zone bug)', () => {
+  // 発見の経緯: ボールが減速しながらゴールラインに近づく実際の物理挙動で、
+  // clampToPitchBounds のクランプ境界(ライン手前ボール半径ぶん)と
+  // detectBoundaryEvent の判定しきい値(旧実装ではライン ちょうど)がズレていたため、
+  // 残り速度がボール半径未満まで減速した時点でクランプに押し戻され続け、
+  // 二度とラインちょうどまで到達できずゴール判定が永久に発火しない「詰み」状態があった。
+  it('a shot that decelerates to a near-stop right at the goal line still registers as a goal', () => {
+    const base = createInitialState(1, { difficulty: 'hard' });
+    const carrierIdx = TeamId.B * 11 + 9;
+    let state: GameState = {
+      ...base,
+      players: base.players.map((p, i) => {
+        if (i === carrierIdx) return { ...p, pos: { x: toFixed(240), y: toFixed(1750) } };
+        if (p.team === TeamId.A && !p.isGoalkeeper) return { ...p, pos: { x: toFixed(20), y: toFixed(20) } };
+        return p; // GKはホームのまま
+      }),
+      ball: { ...base.ball, pos: { x: toFixed(240), y: toFixed(1755) } },
+      lastTouchTeam: TeamId.B,
+    };
+    let scored = false;
+    for (let i = 0; i < 20; i++) {
+      state = simulate(state, inputs(Direction8.None));
+      if (state.score[1] > 0) {
+        scored = true;
+        break;
+      }
+    }
+    expect(scored).toBe(true);
   });
 });
 

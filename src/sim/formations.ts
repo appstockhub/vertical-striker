@@ -151,10 +151,16 @@ export function attackingIsUpward(team: TeamId, half: Half): boolean {
 }
 
 /**
- * 自陣ゴールからの深さ (小さいほど自陣ゴールに近い)。オフサイドライン計算 (teamAI.ts) で使う。
+ * 自陣ゴールからの深さ (小さいほど自陣ゴールに近い)。オフサイドライン計算・チームライン
+ * 押し上げ (teamAI.ts) で使う。
  */
 export function depthFromOwnGoal(team: TeamId, half: Half, y: Fixed): Fixed {
   return teamDefendsNorth(team, half) ? y : fixedSub(toFixed(PITCH_HEIGHT), y);
+}
+
+/** depthFromOwnGoal の逆関数。深さ(自陣ゴールからの距離)をピッチ上のY座標に変換する。 */
+export function depthToY(team: TeamId, half: Half, depth: Fixed): Fixed {
+  return teamDefendsNorth(team, half) ? depth : fixedSub(toFixed(PITCH_HEIGHT), depth);
 }
 
 /** 相手チームを返す共通ヘルパー (teamAI.ts / offsideRule.ts / update.ts で共有)。 */

@@ -103,7 +103,8 @@ describe('detectBoundaryEvent — sideline (throw-in)', () => {
   });
 
   it('clamps the restart y away from the goal line even if the ball went out near a corner', () => {
-    const event = detectBoundaryEvent({ x: toFixed(-1), y: toFixed(2) }, toFixed(0), HALF1, TeamId.A);
+    // y=20はゴールライン判定のしきい値(ボール半径7px)より確実に内側 (=ゴールラインは跨がない)。
+    const event = detectBoundaryEvent({ x: toFixed(-1), y: toFixed(20) }, toFixed(0), HALF1, TeamId.A);
     expect(event?.type).toBe('throwIn');
     if (event?.type === 'throwIn') {
       expect(toFloat(event.pos.y)).toBeGreaterThanOrEqual(40);

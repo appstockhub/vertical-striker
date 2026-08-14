@@ -149,6 +149,9 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // スナップされるため (計画セクションFの前提)、Team Aがtouch-priorityを持ちながらAI操作の
   // ままになることは無い。よってこの分岐は事実上「Team Bがボールを持っている時のみ」発火する。
   const touchPlayerForCpu = touchPriorityIndex !== null ? state.players[touchPriorityIndex] : undefined;
+  // 現在どちらのチームがボールを保持しているか (どちらもtouch-priorityを持たなければnull=競り合い中)。
+  // チームライン押し上げ/引き下げ (computeLineAdjustedHomePosition) の入力として使う。
+  const possessionTeam = touchPlayerForCpu ? touchPlayerForCpu.team : null;
   const cpuDecision =
     touchPriorityIndex !== null && touchPlayerForCpu && !isTeamAInPossession(touchPriorityIndex)
       ? decideCpuAttack(touchPriorityIndex, state.players, half, state.difficulty, state.rngState)
@@ -169,6 +172,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       state.ball.pos,
       state.teamFormations,
       half,
+      possessionTeam,
     );
     return { direction, buttons: NO_BUTTONS };
   });
