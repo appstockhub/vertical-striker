@@ -16,18 +16,26 @@
   - **設計時に発見・修正した重要なバグ**: 重力を無条件適用すると静止球が起動直後から無限バウンドし続ける問題を発見。空中判定(`height>0 || zVel>0`)でゲートし、着地速度が閾値未満なら跳ねずに静止させる形に修正。回帰テストを追加済み
   - テスト: 32件追加（既存30件+新規32件=**62件**）、うち上記バグの回帰テストを含む。`npm run test` / `npm run check:determinism` / `npm run build` すべて成功
   - Browser preview で動作確認: キーボード操作（矢印+Z=B等）でドリブル/長押しキック/ロングドリブルを実行し、コンソールエラー無し・canvasが入力に反応して変化し・キック後は数秒でぴたりと静止（無限バウンド無し）を確認。**このセッションではBrowser paneのスクリーンショット機能が一時的に利用不可**だったため、目視のスクリーンショットではなく、canvas の `toDataURL()` 差分比較（入力に反応して変化→着地後は完全に静止）とコンソール監視で機能確認した
-  - コミット未実施（下記参照）
+  - コミット済み（`fa15a49`）
+
+- **表示不具合の修正**（ユーザーがブラウザで実際に確認して報告、コミット`157b7ca`）
+  - **キャンバスが画面中央ではなく右寄りに表示され、左に黒い余白ができる不具合を修正**: `#game-root`(Phaser のマウント先)にCSSの明示的なサイズ指定が無く、中身のcanvasサイズに合わせて縮む(shrink-to-fit)状態だった。Phaser の `Scale.FIT + CENTER_BOTH` はこの親要素の実測サイズを基準にレターボックス/中央寄せを計算するため、これが原因で中央寄せが崩れていた。`#game-root`に`width:100%;height:100%`を指定して解消。`getBoundingClientRect()`で左右マージンがほぼ等しくなる(141px対142px)ことを直接確認済み
+  - **「ペナルティエリアの白線がピッチ右端からはみ出す」報告**: 上記と同じ根本原因（キャンバスの中央寄せが崩れていたことで、ピッチ自体の境界線が正しい位置に見えなかった）と考えられる。なお現状ペナルティエリアという専用の描画は無く、ユーザーが見ていたのはピッチ全体の境界線＋横の目印線（`buildPitch()`の白いストローク）
+  - **「ゴールが描画されていない」報告**: 不具合ではなく仕様通り。ゴールの描画はCLAUDE.mdの段階開発計画で **Phase 3**（ルール実装: ゴール・スローイン・ゴールキック等）に位置づけられており、Phase 0/1では未実装
+  - 選手・ボールの視認性向上: 半径を拡大（ボール7→10px、プレイヤー12→16px）、プレイヤー色をボール(白)と紛れない橙赤(`0xff5a1f`)に変更、両者に縁取りを追加してピッチの緑との境界を明確化。レーダードットのサイズ・色も追従
+  - **検証について**: このセッション中、Browser paneが終始「非表示/非コンポジット」状態(`document.hidden === true`が新規タブでも解消しない)で、スクリーンショットもcanvasの目視確認も継続的にはできなかった。中央寄せの修正自体は`getBoundingClientRect()`によるDOMレイアウト計算（描画のコンポジットに依存しない、確実な検証手段）で正しさを確認済み。選手・ボールの拡大/配色変更はTypeScript型チェック・既存テストスイート通過・実行時エラー無しまでは確認したが、**見た目の最終確認はできていない**。ユーザーに実際のブラウザでの再確認を依頼したい
 
 ## 2. 進行中の作業と正確な現状
 
-- 実装・自動検証は完了。ローカルの変更はまだコミットしていない（Phase 0と同様「mainに直接コミット」の運用のため、次のアクションとしてコミットが必要）。
+- Phase 1実装・表示不具合修正ともにコミット済み（`main`、`fa15a49`→`157b7ca`）。push/タグは未実施。
 - ゲームパッド実機での目視確認（下記4参照）はユーザー側で未実施。
+- **表示修正の見た目確認をユーザーに依頼中**（上記1参照。センタリングはDOM計算で確認済みだが、実際の見え方は未確認）。
 
 ## 3. 次にやるべきこと（優先順）
 
-1. このセッションの変更を`main`にコミットする（Phase 0と同じ運用）。ユーザーからの明示的な依頼を待って実施する。
-2. コミット後、`phase-1`タグを打ってpushするかはユーザーに確認する（Phase 0では別途明示的に依頼された）。
-3. **ユーザー側での目視確認を推奨**: 実際にBrowser（またはゲームパッド実機）でドリブル・キックの弾道の高さ・バウンドの跳ね返り具合・ロングドリブルの手触りを見て、`src/sim/ballConstants.ts`の仮値（キック速度・重力・摩擦係数等）を調整してほしい。このセッションではスクリーンショットが取得できず、動作ロジックの正しさはテスト+canvas差分で確認したのみで、見た目の「気持ちよさ」は未評価
+1. **ユーザーに表示修正後の見た目を確認してもらう**: 中央寄せが直っているか、選手/ボールが見やすくなっているか
+2. `main`へのpush、`phase-1`タグの作成・pushをユーザーに確認する（Phase 0では別途明示的に依頼された）
+3. ゲームパッド実機でのB/Y/A/X/L/R配置・ドリブル/キックの手触り確認をユーザーに依頼
 4. Phase 1完了後、CLAUDE.mdの段階開発計画に従い Phase 2（11 vs 11とチームAI）に着手。ただしPhase 1で対象外とした精密照準軸・カーブ/バックスピンをPhase 2着手前に追加するかは要相談（CLAUDE.mdの「操作仕様」は確定仕様として明記されているため、いずれかのタイミングで実装が必要）
 
 ## 4. 未解決の課題・ユーザー判断待ち
@@ -48,14 +56,19 @@
 - **壁（ピッチ境界）は位置クランプのみで速度反射は行わない**。上下=地面のみバウンドをモデル化する（水平方向のバウンドは今回対象外）
 - Phase 1の新規定数はすべて仮値（Phase 0の`PLAYER_SPEED_FIXED`等と同じ扱い）
 
-## 6. 変更ファイル一覧（このセッションで作成・変更、未コミット）
+## 6. 変更ファイル一覧
 
-**新規**: `src/sim/ballConstants.ts` / `src/sim/ballPhysics.ts` / `src/sim/dribble.ts` / `src/sim/kick.ts` / `tests/sim/ballPhysics.test.ts` / `tests/sim/dribble.test.ts` / `tests/sim/kick.test.ts`
+**Phase 1実装コミット (`fa15a49`) — 新規**: `src/sim/ballConstants.ts` / `src/sim/ballPhysics.ts` / `src/sim/dribble.ts` / `src/sim/kick.ts` / `tests/sim/ballPhysics.test.ts` / `tests/sim/dribble.test.ts` / `tests/sim/kick.test.ts`
 
-**変更**: `src/sim/state.ts`(BallState/PlayerState拡張) / `src/sim/update.ts`(パイプライン組み込み) / `src/sim/constants.ts`(`ENTITY_RADIUS_FIXED`→`PLAYER_RADIUS_FIXED`改称) / `src/core/fixed.ts`(`lerpFixed`追加) / `src/render/fixedToPixel.ts`(`ballLiftPx`追加) / `src/render/PitchScene.ts`(影描画・高さ反映・カメラ追従先変更) / `tests/core/fixed.test.ts`(`lerpFixed`テスト追加) / `tests/sim/update.test.ts`(Phase 1統合テスト追加) / `HANDOFF.md`(本ファイル)
+**Phase 1実装コミット (`fa15a49`) — 変更**: `src/sim/state.ts`(BallState/PlayerState拡張) / `src/sim/update.ts`(パイプライン組み込み) / `src/sim/constants.ts`(`ENTITY_RADIUS_FIXED`→`PLAYER_RADIUS_FIXED`改称) / `src/core/fixed.ts`(`lerpFixed`追加) / `src/render/fixedToPixel.ts`(`ballLiftPx`追加) / `src/render/PitchScene.ts`(影描画・高さ反映・カメラ追従先変更) / `tests/core/fixed.test.ts`(`lerpFixed`テスト追加) / `tests/sim/update.test.ts`(Phase 1統合テスト追加)
+
+**表示修正コミット (`157b7ca`) — 変更**: `src/style.css`(`#game-root`のサイズ指定でキャンバス中央寄せを修正) / `src/render/PitchScene.ts`(選手/ボール拡大・配色変更)
+
+**本ファイル**: `HANDOFF.md`
 
 ## 申し送り
 
 - モデル設定は opusplan。設計判断を伴うタスクは必ず Plan Mode（Shift+Tab）で開始する。
 - リポジトリ: `origin` = `https://github.com/appstockhub/vertical-striker.git`。`main` ブランチに直接コミットする運用（ユーザー承認済み、Phase 0から継続）。
 - タグ: `phase-0`は作成・push済み。`phase-1`は本セッションではまだ作成していない。
+- **このセッションのBrowser pane（サンドボックス内蔵ブラウザ）は終始コンポジット/表示不可の状態だった**（新規タブでも`document.hidden`が`true`のまま）。スクリーンショットに頼れない場合はDOMレイアウト計算(`getBoundingClientRect`)やcanvasピクセル読み取り(`getImageData`)で代替検証したが、次回セッションでは正常に動作している可能性が高いので、まずスクリーンショットを試すこと。
