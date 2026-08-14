@@ -39,7 +39,7 @@ describe('computeOffsideLine', () => {
       makePlayer(100, 50, TeamId.B, 1),
       makePlayer(200, 300, TeamId.B, 9),
     ];
-    const line = computeOffsideLine(players, TeamId.B);
+    const line = computeOffsideLine(players, TeamId.B, 1);
     expect(toFloat(line)).toBeCloseTo(50, 3);
   });
 
@@ -50,15 +50,16 @@ describe('computeOffsideLine', () => {
       makePlayer(300, 162, TeamId.A, 2),
       makePlayer(200, 900, TeamId.A, 9),
     ];
-    const line = computeOffsideLine(players, TeamId.A);
+    const line = computeOffsideLine(players, TeamId.A, 1);
     // 2番目に深い選手のYは、タイの2人のどちらが選ばれても同じ値になる
     expect(toFloat(line)).toBeCloseTo(162, 3);
   });
 
   it('works against the real 22-player kickoff state without throwing', () => {
     const state = createInitialState(1);
-    expect(() => computeOffsideLine(state.players, TeamId.A)).not.toThrow();
-    expect(() => computeOffsideLine(state.players, TeamId.B)).not.toThrow();
+    expect(() => computeOffsideLine(state.players, TeamId.A, 1)).not.toThrow();
+    expect(() => computeOffsideLine(state.players, TeamId.B, 1)).not.toThrow();
+    expect(() => computeOffsideLine(state.players, TeamId.A, 2)).not.toThrow();
   });
 });
 
@@ -69,7 +70,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(72, 1538, TeamId.A, 1);
     const ballPos = player.pos; // 同一座標 -> ballDir は deadzone で None
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1);
     expect(direction).toBe(Direction8.Down);
   });
 
@@ -77,7 +78,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(72, 1638, TeamId.A, 1); // 4-4-2 DF1 の home ちょうど
     const ballPos = { x: toFixed(72), y: toFixed(1438) }; // 真上 (小さいy) -> Up
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1);
     expect(direction).toBe(Direction8.Up);
   });
 
@@ -89,7 +90,7 @@ describe('computeNonControlledDirection', () => {
     // Team B は実際のキックオフフォーメーションで配置する (現実的なオフサイドライン値にするため)
     const state = createInitialState(1);
     const realTeamB = state.players.slice(11, 22);
-    const direction = computeNonControlledDirection(player, [player, ...realTeamB], ballPos, FORMATIONS);
+    const direction = computeNonControlledDirection(player, [player, ...realTeamB], ballPos, FORMATIONS, 1);
     // home(y=1035, 遠い)・offside、どちらも「自陣方向(y増加=Down)」を向くため Down になる
     expect(direction).toBe(Direction8.Down);
   });
@@ -101,7 +102,7 @@ describe('computeNonControlledDirection', () => {
     const player = makePlayer(0, 1638, TeamId.A, 1); // home は (72, 1638) = 真右
     const ballPos = { x: ZERO_FIXED, y: toFixed(1438) }; // 真上
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
-    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS);
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1);
     expect([Direction8.Right, Direction8.UpRight]).toContain(direction);
   });
 
@@ -109,7 +110,7 @@ describe('computeNonControlledDirection', () => {
     const state = createInitialState(1);
     for (const player of state.players) {
       expect(() =>
-        computeNonControlledDirection(player, state.players, state.ball.pos, state.teamFormations),
+        computeNonControlledDirection(player, state.players, state.ball.pos, state.teamFormations, 1),
       ).not.toThrow();
     }
   });

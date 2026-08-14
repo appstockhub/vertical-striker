@@ -3,7 +3,7 @@ import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8 } from '../input/types';
 import { DIRECTION_VECTORS } from './constants';
 import { quantizeToDirection8 } from './steering';
-import { attackingIsUpward, depthFromOwnGoal, getHomePosition, TeamId, type FormationId } from './formations';
+import { attackingIsUpward, depthFromOwnGoal, getHomePosition, TeamId, type FormationId, type Half } from './formations';
 import type { PlayerState } from './state';
 import {
   AI_BALL_DEADZONE_SQ_FIXED,
@@ -24,7 +24,7 @@ function opponentOf(team: TeamId): TeamId {
  * 同点は先に見つかった方 (小さいindex) が優先される — depth が同値ならYも同値になるため、
  * どちらが選ばれても結果のオフサイドラインYは変わらない。
  */
-export function computeOffsideLine(allPlayers: readonly PlayerState[], team: TeamId): Fixed {
+export function computeOffsideLine(allPlayers: readonly PlayerState[], team: TeamId, half: Half): Fixed {
   let bestDepth: number | null = null;
   let bestY: Fixed = ZERO_FIXED;
   let secondDepth: number | null = null;
@@ -34,7 +34,7 @@ export function computeOffsideLine(allPlayers: readonly PlayerState[], team: Tea
     const player = allPlayers[i];
     if (!player || player.team !== team) continue;
 
-    const depth = depthFromOwnGoal(team, player.pos.y) as number;
+    const depth = depthFromOwnGoal(team, half, player.pos.y) as number;
     if (bestDepth === null || depth < bestDepth) {
       secondDepth = bestDepth;
       secondY = bestY;
@@ -66,13 +66,14 @@ export function computeNonControlledDirection(
   allPlayers: readonly PlayerState[],
   ballPos: Vec2Fixed,
   teamFormations: readonly [FormationId, FormationId],
+  half: Half,
 ): Direction8 {
-  const home = getHomePosition(player.team, player.slotIndex, teamFormations[player.team]);
+  const home = getHomePosition(player.team, player.slotIndex, teamFormations[player.team], half);
   const homeDir = quantizeToDirection8(vSub(home, player.pos), AI_HOME_DEADZONE_SQ_FIXED);
   const ballDir = quantizeToDirection8(vSub(ballPos, player.pos), AI_BALL_DEADZONE_SQ_FIXED);
 
-  const offsideLineY = computeOffsideLine(allPlayers, opponentOf(player.team));
-  const attacksUp = attackingIsUpward(player.team);
+  const offsideLineY = computeOffsideLine(allPlayers, opponentOf(player.team), half);
+  const attacksUp = attackingIsUpward(player.team, half);
   const beyondLine = attacksUp
     ? (player.pos.y as number) < (offsideLineY as number)
     : (player.pos.y as number) > (offsideLineY as number);

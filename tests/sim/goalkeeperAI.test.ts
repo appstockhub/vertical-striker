@@ -137,7 +137,7 @@ describe('applySave', () => {
 
   it('secured: ball snaps to the goalkeeper position with zero velocity', () => {
     const ball = makeBall(90, 1770, 5, -5);
-    const next = applySave(ball, gk, 'secured');
+    const next = applySave(ball, gk, 'secured', 1);
     expect(next.pos).toEqual(gk.pos);
     expect(next.vel.x).toBe(ZERO_FIXED);
     expect(next.vel.y).toBe(ZERO_FIXED);
@@ -145,7 +145,7 @@ describe('applySave', () => {
 
   it('deflected: Team A goalkeeper forces the ball back toward negative y (away from their goal)', () => {
     const incoming = makeBall(90, 1770, 3, 8); // 自陣ゴール(大きいy側)に向かっている
-    const next = applySave(incoming, gk, 'deflected');
+    const next = applySave(incoming, gk, 'deflected', 1);
     expect(toFloat(next.vel.y)).toBeLessThan(0);
     expect(Math.abs(toFloat(next.vel.y))).toBeCloseTo(8, 1); // 大きさは維持
     expect(next.vel.x).toBe(incoming.vel.x); // x速度は維持
@@ -154,13 +154,13 @@ describe('applySave', () => {
   it('deflected: Team B goalkeeper forces the ball toward positive y', () => {
     const gkB = makeGK(100, 20, TeamId.B);
     const incoming = makeBall(90, 30, 3, -8);
-    const next = applySave(incoming, gkB, 'deflected');
+    const next = applySave(incoming, gkB, 'deflected', 1);
     expect(toFloat(next.vel.y)).toBeGreaterThan(0);
   });
 
   it('missed: the ball is unaffected', () => {
     const ball = makeBall(90, 1770, 3, 8);
-    const next = applySave(ball, gk, 'missed');
+    const next = applySave(ball, gk, 'missed', 1);
     expect(next).toEqual(ball);
   });
 });

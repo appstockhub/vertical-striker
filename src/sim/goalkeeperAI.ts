@@ -1,7 +1,7 @@
 import { clampFixed, distSqFixed, dotFixed, fixedAdd, fixedMul, fixedSub, toFixed, vZero, ZERO_FIXED } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, type ButtonState } from '../input/types';
-import { TeamId } from './formations';
+import { teamDefendsNorth, type Half } from './formations';
 import type { BallState, PlayerState } from './state';
 import { PITCH_WIDTH } from '../config/pitch';
 import { quantizeToDirection8 } from './steering';
@@ -97,7 +97,12 @@ export function resolveSaveOutcome(
  * deflected: 自陣ゴールから遠ざける向きへy速度の符号を強制する (大きさは維持)。
  *   RNGは使わず、符号を強制するだけの決定論的な跳ね返り。x速度は維持する。
  */
-export function applySave(ball: BallState, goalkeeper: PlayerState, outcome: SaveOutcome): BallState {
+export function applySave(
+  ball: BallState,
+  goalkeeper: PlayerState,
+  outcome: SaveOutcome,
+  half: Half,
+): BallState {
   if (outcome === 'missed') return ball;
 
   if (outcome === 'secured') {
@@ -105,7 +110,8 @@ export function applySave(ball: BallState, goalkeeper: PlayerState, outcome: Sav
   }
 
   const magnitude = Math.abs(ball.vel.y as number);
-  const sign = goalkeeper.team === TeamId.A ? -1 : 1; // Team A の自陣ゴールは大きいy側 -> 遠ざけるには-y
+  // 北(y=0側)を守るチームは自陣から遠ざけるには+y、南を守るチームは-y。
+  const sign = teamDefendsNorth(goalkeeper.team, half) ? 1 : -1;
   const deflectedVelY = (sign * magnitude) as Fixed;
 
   return { ...ball, vel: { x: ball.vel.x, y: deflectedVelY } };

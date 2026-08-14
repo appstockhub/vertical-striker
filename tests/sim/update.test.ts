@@ -3,6 +3,7 @@ import { toFixed, toFloat } from '../../src/core/fixed';
 import { createInitialState, type GameState, type PlayerState } from '../../src/sim/state';
 import { simulate } from '../../src/sim/update';
 import { Direction8, emptyButtonState, LogicalButton, type ButtonState } from '../../src/input/types';
+import { FULL_MATCH_DURATION_FRAMES, HALF_DURATION_FRAMES } from '../../src/sim/matchClock';
 
 function inputs(direction: Direction8) {
   return { direction, buttons: emptyButtonState() };
@@ -277,5 +278,66 @@ describe('simulate — Phase 2: full 22-player determinism regression (milestone
       expect(state.controlledPlayerIndex).toBeGreaterThanOrEqual(0);
       expect(state.controlledPlayerIndex).toBeLessThan(22);
     }
+  });
+});
+
+describe('simulate — Phase 3: match clock (half-swap + fulltime freeze)', () => {
+  it('resets to a mirrored kickoff formation exactly at the half-1/half-2 boundary', () => {
+    let state = createInitialState(1);
+    for (let i = 0; i < HALF_DURATION_FRAMES; i++) {
+      state = simulate(state, inputs(Direction8.None));
+    }
+    // このtickでちょうど半分の境界を跨いだはず
+    expect(state.frame).toBe(HALF_DURATION_FRAMES);
+    expect(controlled(state).facing).toBe(Direction8.Down); // Team A は後半 Down を向く
+    for (const p of state.players) {
+      if (p.team === 0) expect(p.facing).toBe(Direction8.Down);
+      else expect(p.facing).toBe(Direction8.Up);
+    }
+    expect(toFloat(state.ball.pos.y)).toBeCloseTo(1800 * 0.5, 0);
+    expect(state.lastTouchTeam).toBeNull();
+  });
+
+  it('does not reset before the boundary is actually reached', () => {
+    let state = createInitialState(1);
+    for (let i = 0; i < HALF_DURATION_FRAMES - 1; i++) {
+      state = simulate(state, inputs(Direction8.None));
+    }
+    expect(state.frame).toBe(HALF_DURATION_FRAMES - 1);
+    // 半分リセットが起きていれば全Team A選手がDownを向くはず。放置中のAI操作で個々の向きは
+    // 変わり得るため、「全員が一斉にDownを向いている」状態(=リセット済み)にはなっていない
+    // ことだけを頑健に確認する (個々の選手のfacingはカーソル自動追従で変わり得るため厳密比較しない)。
+    const allTeamAFaceDown = state.players.filter((p) => p.team === 0).every((p) => p.facing === Direction8.Down);
+    expect(allTeamAFaceDown).toBe(false);
+  });
+
+  it('freezes gameplay at fulltime (players/ball/score stop changing, frame keeps counting)', () => {
+    let state = createInitialState(1);
+    for (let i = 0; i < FULL_MATCH_DURATION_FRAMES; i++) {
+      state = simulate(state, inputs(Direction8.Up));
+    }
+    expect(state.frame).toBe(FULL_MATCH_DURATION_FRAMES);
+    const playersSnapshot = JSON.parse(JSON.stringify(state.players));
+    const ballSnapshot = JSON.parse(JSON.stringify(state.ball));
+    const next = simulate(state, inputs(Direction8.Up));
+    expect(next.frame).toBe(FULL_MATCH_DURATION_FRAMES + 1);
+    expect(next.players).toEqual(playersSnapshot);
+    expect(next.ball).toEqual(ballSnapshot);
+    expect(next.score).toEqual(state.score);
+  });
+
+  it('updates lastTouchTeam when the controlled player dribbles into the ball', () => {
+    const state = createInitialState(1);
+    expect(state.lastTouchTeam).toBeNull();
+    // 操作選手をボールのすぐ近くに置いて移動させ、ドリブルタッチを発生させる
+    const idx = state.controlledPlayerIndex;
+    const near = {
+      ...state,
+      players: state.players.map((p, i) =>
+        i === idx ? { ...p, pos: { x: state.ball.pos.x, y: toFixed(toFloat(state.ball.pos.y) + 5) } } : p,
+      ),
+    };
+    const next = simulate(near, inputs(Direction8.Up));
+    expect(next.lastTouchTeam).toBe(near.players[idx]?.team);
   });
 });

@@ -29,6 +29,8 @@ import {
   type TackleAdvance,
 } from './tackle';
 import { TACKLE_RECOVERY_FRAMES } from './tackleConstants';
+import { getHalf, isFulltime } from './matchClock';
+import { placeKickoffFormation } from './kickoff';
 
 /**
  * 1tick分の入力。InputFrame のサブセット (sim/ は入力の生成元を知らない)。
@@ -50,23 +52,47 @@ const NO_TACKLE: TackleAdvance = { tacklePhase: TacklePhase.None, tackleFrames: 
  * Math.random() や Math.sin/cos/atan2 はここでは使用しない
  * (scripts/checkDeterminism.mjs で静的にチェックされる)。
  *
- * Phase 2 (マイルストーン5: スライディングタックル) のパイプライン:
+ * Phase 3 (マイルストーン1-2: 半分対応+試合時計) で追加した先頭の早期return:
+ *   0a. フルタイム到達済みなら frame だけ進めて他は素通しする (試合終了、入力は実質無効)。
+ *   0b. このtickで前半→後半の境界を跨ぐなら、全員をミラー配置のキックオフにリセットする。
+ * それ以外は通常通り Phase 2 のパイプラインを進める (境界越え検出・得点・オフサイド・
+ * CPU攻撃AIは後続マイルストーンで追加、現時点ではまだ無い)。
  *   1. touch-priority を決定する。
  *   2. GK自動交代判定 (最優先、キック溜め中/タックル中はガード)。無ければ通常のカーソル解決。
  *   3. 各選手の実効入力 (操作選手=人間入力、非操作GK=専用ステアリング、その他=チームAI)。
- *   4. touch-priority選手のドリブルタッチ。
- *   5. Bボタンの文脈分岐:
- *      a. 操作選手がGKかつセーブ範囲内 -> Y=キャッチ/B=パンチング (最優先)。
- *      b. それ以外: カーソルパス(Y edge) → 操作選手がボール保持中ならBはチャージキック、
- *         非保持ならBはタックル状態機械を進める (新規発動判定 + Active中の毎tick成功判定)。
- *         成功した瞬間にボールを奪い Recovery へ短絡する。
+ *   4. touch-priority選手のドリブルタッチ (この時点で lastTouchTeam を更新)。
+ *   5. Bボタンの文脈分岐 (GKセーブ最優先 → カーソルパス/チャージキック → タックル)。
  *   6. ボール物理。
- *   7. 全選手の移動 (touch-priority選手はロングドリブル速度、非操作GKは反応速度、
- *      タックル中の操作選手はフェーズに応じた速度/方向で上書き)。
+ *   7. 全選手の移動。
  */
 export function simulate(state: GameState, inputs: Inputs): GameState {
+  if (isFulltime(state.frame)) {
+    return { ...state, frame: state.frame + 1, prevButtons: inputs.buttons };
+  }
+
+  const half = getHalf(state.frame);
+  const nextFrame = state.frame + 1;
+  if (getHalf(nextFrame) !== half) {
+    // 前半→後半の境界を跨ぐtick。全員をミラー配置のキックオフへリセットする。
+    const reset = placeKickoffFormation(getHalf(nextFrame), state.teamFormations);
+    return {
+      frame: nextFrame,
+      rngState: state.rngState,
+      players: reset.players,
+      ball: reset.ball,
+      controlledPlayerIndex: state.controlledPlayerIndex,
+      prevButtons: inputs.buttons,
+      teamFormations: state.teamFormations,
+      score: state.score,
+      lastTouchTeam: null,
+      difficulty: state.difficulty,
+      offsideEnabled: state.offsideEnabled,
+    };
+  }
+
   const touchPriorityIndex = findTouchPriorityPlayer(state.players, state.ball.pos);
   const teamAInPossession = isTeamAInPossession(touchPriorityIndex);
+  let lastTouchTeam = state.lastTouchTeam;
 
   const teamAGoalkeeper = state.players[TEAM_A_GK_INDEX];
   const currentControlled = state.players[state.controlledPlayerIndex];
@@ -99,7 +125,13 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     if (player.isGoalkeeper) {
       return { direction: computeGoalkeeperAutoDirection(player, state.ball.pos), buttons: NO_BUTTONS };
     }
-    const direction = computeNonControlledDirection(player, state.players, state.ball.pos, state.teamFormations);
+    const direction = computeNonControlledDirection(
+      player,
+      state.players,
+      state.ball.pos,
+      state.teamFormations,
+      half,
+    );
     return { direction, buttons: NO_BUTTONS };
   });
 
@@ -110,6 +142,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   const touchInputs = touchPriorityIndex !== null ? effectiveInputs[touchPriorityIndex] : undefined;
   if (touchInputs) {
     ball = applyDribbleTouch(ball, true, touchInputs.direction, touchInputs.buttons);
+    const touchPlayer = touchPriorityIndex !== null ? state.players[touchPriorityIndex] : undefined;
+    if (touchPlayer) lastTouchTeam = touchPlayer.team;
   }
 
   if (inSaveRange && controlledPlayer) {
@@ -117,9 +151,13 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     const yEdge = inputs.buttons.Y && !state.prevButtons.Y;
     const bEdge = inputs.buttons.B && !state.prevButtons.B;
     if (yEdge) {
-      ball = applySave(ball, controlledPlayer, resolveSaveOutcome(controlledPlayer, ball, 'catch'));
+      const outcome = resolveSaveOutcome(controlledPlayer, ball, 'catch');
+      ball = applySave(ball, controlledPlayer, outcome, half);
+      if (outcome !== 'missed') lastTouchTeam = controlledPlayer.team;
     } else if (bEdge) {
-      ball = applySave(ball, controlledPlayer, resolveSaveOutcome(controlledPlayer, ball, 'punch'));
+      const outcome = resolveSaveOutcome(controlledPlayer, ball, 'punch');
+      ball = applySave(ball, controlledPlayer, outcome, half);
+      if (outcome !== 'missed') lastTouchTeam = controlledPlayer.team;
     }
   } else {
     if (cursor.passTriggered && cursor.passTargetIndex !== null && controlledPlayer) {
@@ -155,6 +193,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         if (tackleAdvance.tacklePhase === TacklePhase.Active) {
           if (checkTackleSuccess(controlledPlayer, state.players, touchPriorityIndex)) {
             ball = applyTackleWin(ball, tackleAdvance.tackleDirection);
+            lastTouchTeam = controlledPlayer.team;
             // 成功した瞬間にRecoveryへ短絡する (Activeの残り時間を待たない)。
             tackleAdvance = {
               tacklePhase: TacklePhase.Recovery,
@@ -197,13 +236,17 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   });
 
   return {
-    frame: state.frame + 1,
+    frame: nextFrame,
     rngState: state.rngState,
     players,
     ball,
     controlledPlayerIndex,
     prevButtons: inputs.buttons,
     teamFormations: state.teamFormations,
+    score: state.score,
+    lastTouchTeam,
+    difficulty: state.difficulty,
+    offsideEnabled: state.offsideEnabled,
   };
 }
 
