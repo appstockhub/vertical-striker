@@ -5,6 +5,7 @@ import { simulate } from '../sim/update';
 import { InputManager } from '../input/inputManager';
 import type { InputFrame } from '../input/types';
 import { GamepadOverlay } from '../input/overlay';
+import { MatchSetupOverlay } from '../input/matchSetupOverlay';
 import { ballLiftPx, vecToPx } from './fixedToPixel';
 import { computeCameraY, type CameraConfig } from './camera';
 import { computeRadarLayout } from './radar';
@@ -82,6 +83,13 @@ export class PitchScene extends Phaser.Scene {
   // 効果音フック (マイルストーン8)。実アセットは未調達のため、当面は無音のまま安全に動く。
   private soundPlayer!: SoundPlayer;
 
+  // 試合前設定UI (マイルストーン0)。確定されるまでは既定値(difficulty='medium',
+  // offsideEnabled=true)のGameStateがキックオフ配置のまま静止表示され、fixedUpdate()は
+  // 何もしない (入力を無効化する、CLAUDE.md「照準スキルを薄めない」= 誤操作で試合が
+  // 始まってしまうことを避ける趣旨とも合致する)。
+  private matchStarted = false;
+  private matchSetupOverlay: MatchSetupOverlay | null = null;
+
   constructor() {
     super('Pitch');
   }
@@ -96,6 +104,19 @@ export class PitchScene extends Phaser.Scene {
 
     this.replayRecorder.start(DETERMINISTIC_SEED, this.state.difficulty, this.state.offsideEnabled);
     this.soundPlayer = new SoundPlayer(this);
+
+    const setupEl = document.getElementById('match-setup-overlay');
+    if (setupEl) {
+      this.matchSetupOverlay = new MatchSetupOverlay(setupEl);
+      this.matchSetupOverlay.waitForStart(({ difficulty, offsideEnabled }) => {
+        this.state = createInitialState(DETERMINISTIC_SEED, { difficulty, offsideEnabled });
+        this.replayRecorder.start(DETERMINISTIC_SEED, difficulty, offsideEnabled);
+        this.matchStarted = true;
+      });
+    } else {
+      // オーバーレイ用のDOM要素が無い場合 (テスト環境等) は設定UIを待たずに即開始する。
+      this.matchStarted = true;
+    }
 
     this.buildPitch();
     this.buildEntities();
@@ -258,6 +279,7 @@ export class PitchScene extends Phaser.Scene {
   }
 
   private fixedUpdate(): void {
+    if (!this.matchStarted) return; // 試合前設定UI確定待ち (マイルストーン0)
     const inputs = this.cachedInputs;
     if (!inputs) return; // update() が必ず先にサンプルするため通常発生しない
     if (Object.values(inputs.buttons).some(Boolean)) {
