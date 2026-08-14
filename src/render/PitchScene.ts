@@ -15,6 +15,8 @@ import { toFloat } from '../core/fixed';
 import { GOAL_WIDTH_FIXED } from '../sim/goalkeeperConstants';
 import { formatClockText, formatScoreText } from './scoreboard';
 import { ReplayRecorder } from '../replay/ReplayRecorder';
+import { detectSoundEvents } from './soundEvents';
+import { SoundPlayer } from './SoundPlayer';
 import {
   PITCH_HEIGHT,
   PITCH_WIDTH,
@@ -77,6 +79,9 @@ export class PitchScene extends Phaser.Scene {
   // createInitialState() と同じ既定値 (difficulty='medium', offsideEnabled=true) を渡す。
   private replayRecorder = new ReplayRecorder();
 
+  // 効果音フック (マイルストーン8)。実アセットは未調達のため、当面は無音のまま安全に動く。
+  private soundPlayer!: SoundPlayer;
+
   constructor() {
     super('Pitch');
   }
@@ -90,6 +95,7 @@ export class PitchScene extends Phaser.Scene {
     }
 
     this.replayRecorder.start(DETERMINISTIC_SEED, this.state.difficulty, this.state.offsideEnabled);
+    this.soundPlayer = new SoundPlayer(this);
 
     this.buildPitch();
     this.buildEntities();
@@ -260,7 +266,9 @@ export class PitchScene extends Phaser.Scene {
     // リプレイ記録: simulate()が呼ばれるたびに必ず1回、ここ(fixedUpdate側)で記録する
     // (update()側=実フレーム単位で記録すると、catch-upでの複数回呼び出し時に記録漏れが起きるため)。
     this.replayRecorder.record(inputs);
+    const prevState = this.state;
     this.state = simulate(this.state, inputs);
+    this.soundPlayer.playAll(detectSoundEvents(prevState, this.state));
   }
 
   update(_time: number, delta: number): void {
