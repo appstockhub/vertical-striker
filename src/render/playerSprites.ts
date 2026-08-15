@@ -6,34 +6,45 @@ import { toFloat } from '../core/fixed';
 import { TEAM_COLORS, PLAYER_HEAD_COLOR } from './teamColors';
 
 /**
- * 選手の見た目を「単なる円+頭の小円」から、頭・肩・胴体・脚が識別できるドット絵風の
- * 人型スプライトへ置き換える (ユーザー要望: 「図形の組み合わせでは限界がある」への対応)。
+ * 選手スプライトの手続き的生成。★描画専用★
  *
- * 画像アセットは一切使わない。ボールのテクスチャ (PitchScene.ts の buildBallTexture、
- * Graphics→generateTexture) と同じプロシージャル生成パターンを踏襲する
- * (CLAUDE.md「完全オリジナル素材」方針。CC0素材等の外部流用はこの方針に抵触するため採らない)。
+ * 16周目の疑似3D化にあわせて全面的に描き直した。それまでは「真上から見た選手」
+ * (肩と頭を上から見下ろした絵) だったが、カメラが地面近くから斜めに見る視点になったため、
+ * **立っている人を横〜斜め上から見た姿**でなければ画面と噛み合わない。
  *
- * 8方向 × 2フレーム(歩行アニメ: 脚を閉じた基本姿勢/開いたストライド姿勢) ×
- * (Team A/B) × (フィールドプレイヤー/GK) = 64テクスチャを起動時に1回だけ焼き込む。
- * 毎フレームの描画コストは setTexture() のみ (Graphics再生成なし、既存の
- * 「プール化オブジェクトを1回だけ生成しrender()ではsetPosition等のみ」方針を維持し60fpsを守る)。
+ * - 足元が接地点: 描画側で origin=(0.5, 1) を指定し、投影した地面座標にそのまま置く。
+ * - 8方向 × 走行アニメ4フレーム × (Team A/B) × (フィールド/GK) = 128テクスチャを
+ *   起動時に1回だけ焼く。毎フレームのコストは setTexture()/setScale() のみ (60fps方針)。
+ * - 画像アセットは使わない (CLAUDE.md「完全オリジナル素材」)。
  *
- * 向きの表現: 既存の「頭を胴体前面へオフセットする」コンセプトを継承しつつ、
- * 脚のストライド軸も向きベクトルに沿って開くようにした (歩いている方向へ脚が開く)。
+ * 向きの表現:
+ *   - 手前向き(Down)= 顔が見える正面、奥向き(Up)= 後頭部の背面
+ *   - 左右 = 横向き(肩幅が狭くなり、鼻先が進行方向へ出る)
+ *   - 斜め4方向 = その中間 (肩幅と顔の要素を連続的に補間する)
+ * 走行アニメは4フレームの標準的なランサイクル (ストライド → 通過 → 逆ストライド → 通過)。
  */
 
-const OUTFIELD_CANVAS_W = 40;
-const OUTFIELD_CANVAS_H = 50;
-const GK_SCALE = 1.15;
+const OUTFIELD_CANVAS_W = 30;
+const OUTFIELD_CANVAS_H = 46;
+const GK_SCALE = 1.1;
 const GK_CANVAS_W = Math.round(OUTFIELD_CANVAS_W * GK_SCALE);
 const GK_CANVAS_H = Math.round(OUTFIELD_CANVAS_H * GK_SCALE);
 
-const OUTLINE_COLOR = 0x1a1a1a;
-const OUTLINE_ALPHA = 0.8;
-/** 短パン/靴下の色 (両チーム共通、ピッチの緑との対比を優先した中立の濃灰)。 */
-const SHORTS_COLOR = 0x262626;
+const OUTLINE_COLOR = 0x14161a;
+const OUTLINE_ALPHA = 0.85;
+/** 短パンの色 (両チーム共通、ピッチの緑との対比を優先した中立の濃灰)。 */
+const SHORTS_COLOR = 0x24262b;
+const SOCK_COLOR = 0xe8e8ea;
+const BOOT_COLOR = 0x101216;
+const HAIR_COLOR = 0x2b1f18;
 
-export type AnimFrame = 0 | 1;
+/** 走行アニメのフレーム番号 (0..3 のランサイクル)。 */
+export type AnimFrame = 0 | 1 | 2 | 3;
+export const ANIM_FRAME_COUNT = 4;
+
+/** フレームごとの脚のストライド量 (-1..1) と、胴体の上下動 (px相当)。 */
+const STRIDE_PHASE: readonly number[] = [1, 0, -1, 0];
+const BOB_PHASE: readonly number[] = [0, -1.2, 0, -1.2];
 
 const BAKED_DIRECTIONS: readonly Direction8[] = [
   Direction8.Down,
@@ -46,8 +57,7 @@ const BAKED_DIRECTIONS: readonly Direction8[] = [
   Direction8.UpLeft,
 ];
 
-/** Direction8.None (初期値のみで実プレイでは即座に上書きされる) はテクスチャを焼かないため、
- * 描画時は Down 扱いにフォールバックする。 */
+/** Direction8.None (初期値のみ) はテクスチャを焼かないため、描画時は Down 扱いにする。 */
 export function resolveSpriteDirection(facing: Direction8): Direction8 {
   return facing === Direction8.None ? Direction8.Down : facing;
 }
@@ -69,7 +79,10 @@ export function playerSpriteKey(
   return `player-${team}-${isGoalkeeper ? 'gk' : 'out'}-${dir}-${frame}`;
 }
 
-/** 1体ぶんの人型を (cx, cy) を胴体中心として Graphics に描く。 */
+/**
+ * 立ち姿1体を Graphics に描く。足元がキャンバス下端に来るように配置する
+ * (呼び出し側は origin=(0.5,1) で接地点に合わせる)。
+ */
 function drawPlayerSprite(
   g: Phaser.GameObjects.Graphics,
   w: number,
@@ -78,60 +91,131 @@ function drawPlayerSprite(
   dirVec: { x: number; y: number },
   frame: AnimFrame,
 ): void {
-  const scale = w / OUTFIELD_CANVAS_W;
+  const s = h / OUTFIELD_CANVAS_H; // 46px高さを基準にした寸法スケール
   const cx = w / 2;
-  const cy = h * 0.54;
-  const dx = dirVec.x;
-  const dy = dirVec.y;
+  const groundY = h - 1;
 
-  // 脚 (先に描いて胴体の下に敷く)。歩行時は向いている方向の軸に沿って開く。
-  const legStride = frame === 1 ? 3 * scale : 0;
-  const legW = 6 * scale;
-  const legH = 12 * scale;
-  const legY = cy + 13 * scale;
-  const legAx = cx - 5 * scale + dx * legStride;
-  const legAy = legY + dy * legStride;
-  const legBx = cx + 5 * scale - dx * legStride;
-  const legBy = legY - dy * legStride;
+  // 向きの分解: dx = 横向き成分 (-1..1)、dy = 手前(+)/奥(-) 成分。
+  const len = Math.hypot(dirVec.x, dirVec.y) || 1;
+  const dx = dirVec.x / len;
+  const dy = dirVec.y / len;
+  const side = Math.abs(dx); // 1 = 完全な横向き
+  const front = dy; // +1 = 手前向き(顔が見える) / -1 = 奥向き(背中)
+
+  const stride = STRIDE_PHASE[frame] ?? 0;
+  const bob = (BOB_PHASE[frame] ?? 0) * s;
+
+  // --- 骨格の基準点 ---
+  const hipY = groundY - 16 * s + bob;
+  const shoulderY = hipY - 13 * s;
+  const headR = 5 * s;
+  const headY = shoulderY - 6 * s - headR * 0.4;
+
+  // --- 脚 (先に描いて胴体の下に敷く) ---
+  // 走行方向へ振り出す。奥行き方向(dy)は見た目上つぶれるので半分に圧縮する。
+  const strideLen = 5.5 * s;
+  const swingX = dx * stride * strideLen;
+  const swingY = dy * stride * strideLen * 0.45;
+  const legSpread = (2.6 + 1.6 * (1 - side)) * s; // 正面ほど左右に開いて見える
+  const legW = 4.2 * s;
+
+  const drawLeg = (baseX: number, footX: number, footY: number): void => {
+    // 太もも〜すね (短パンの下から靴下)
+    g.lineStyle(legW, PLAYER_HEAD_COLOR, 1);
+    g.lineBetween(baseX, hipY, footX, footY - 3.5 * s);
+    // 靴下
+    g.lineStyle(legW, SOCK_COLOR, 1);
+    g.lineBetween(footX, footY - 4.5 * s, footX, footY - 1.5 * s);
+    // スパイク
+    g.fillStyle(BOOT_COLOR, 1);
+    g.fillRoundedRect(footX - 2.6 * s + (dx > 0 ? 0.8 * s : -0.8 * s), footY - 2 * s, 5.2 * s, 2.6 * s, 1 * s);
+  };
+
+  drawLeg(cx - legSpread, cx - legSpread + swingX, groundY + swingY);
+  drawLeg(cx + legSpread, cx + legSpread - swingX, groundY - swingY);
+
+  // --- 腕 (脚と逆位相で振る) ---
+  const shoulderW = (5.5 + 4.5 * (1 - side)) * s;
+  const armW = 3.4 * s;
+  const armLen = 10 * s;
+  const armSwing = -stride * 3.2 * s;
+  g.lineStyle(armW, PLAYER_HEAD_COLOR, 1);
+  g.lineBetween(cx - shoulderW, shoulderY + 1 * s, cx - shoulderW - 1.2 * s + armSwing, shoulderY + armLen);
+  g.lineBetween(cx + shoulderW, shoulderY + 1 * s, cx + shoulderW + 1.2 * s - armSwing, shoulderY + armLen);
+
+  // --- 短パン ---
+  const shortsW = shoulderW * 1.85;
+  const shortsH = 6.5 * s;
   g.fillStyle(SHORTS_COLOR, 1);
-  g.lineStyle(1.5, OUTLINE_COLOR, OUTLINE_ALPHA);
-  g.fillRoundedRect(legAx - legW / 2, legAy - legH / 2, legW, legH, 2 * scale);
-  g.strokeRoundedRect(legAx - legW / 2, legAy - legH / 2, legW, legH, 2 * scale);
-  g.fillRoundedRect(legBx - legW / 2, legBy - legH / 2, legW, legH, 2 * scale);
-  g.strokeRoundedRect(legBx - legW / 2, legBy - legH / 2, legW, legH, 2 * scale);
+  g.lineStyle(1 * s, OUTLINE_COLOR, OUTLINE_ALPHA);
+  g.fillRoundedRect(cx - shortsW / 2, hipY - shortsH * 0.75, shortsW, shortsH, 1.5 * s);
+  g.strokeRoundedRect(cx - shortsW / 2, hipY - shortsH * 0.75, shortsW, shortsH, 1.5 * s);
 
-  // 胴体 (ジャージ)。裾に単色の陰影バンドを足して立体感の最小限の手がかりにする。
-  const torsoW = 16 * scale;
-  const torsoH = 12 * scale;
+  // --- 胴体 (ジャージ、袖まで含めた台形) ---
+  const torsoTop = shoulderY - 1.5 * s;
+  const torsoBottom = hipY - shortsH * 0.55;
+  const topHalf = shoulderW * 1.18;
+  const bottomHalf = shoulderW * 0.95;
   g.fillStyle(jerseyColor, 1);
-  g.lineStyle(1.5, OUTLINE_COLOR, OUTLINE_ALPHA);
-  g.fillRoundedRect(cx - torsoW / 2, cy - torsoH / 2, torsoW, torsoH, 3 * scale);
-  g.strokeRoundedRect(cx - torsoW / 2, cy - torsoH / 2, torsoW, torsoH, 3 * scale);
-  const hemH = 3 * scale;
-  g.fillStyle(darken(jerseyColor, 0.75), 1);
-  g.fillRect(cx - torsoW / 2, cy + torsoH / 2 - hemH, torsoW, hemH);
+  g.lineStyle(1 * s, OUTLINE_COLOR, OUTLINE_ALPHA);
+  const torso = [
+    { x: cx - topHalf, y: torsoTop },
+    { x: cx + topHalf, y: torsoTop },
+    { x: cx + bottomHalf, y: torsoBottom },
+    { x: cx - bottomHalf, y: torsoBottom },
+  ];
+  g.fillPoints(torso, true);
+  g.strokePoints(torso, true);
+  // 裾の陰影 (立体感の最小限の手がかり)
+  g.fillStyle(darken(jerseyColor, 0.72), 1);
+  g.fillRect(cx - bottomHalf, torsoBottom - 1.8 * s, bottomHalf * 2, 1.8 * s);
+  // 背面向きのときは背中側にも縦の陰影を入れて「後ろ姿」だと分かるようにする
+  if (front < -0.3) {
+    g.fillStyle(darken(jerseyColor, 0.85), 1);
+    g.fillRect(cx - 1 * s, torsoTop, 2 * s, torsoBottom - torsoTop);
+  }
 
-  // 肩
-  const shoulderW = 22 * scale;
-  const shoulderH = 6 * scale;
-  const shoulderY = cy - 8 * scale;
-  g.fillStyle(jerseyColor, 1);
-  g.lineStyle(1.5, OUTLINE_COLOR, OUTLINE_ALPHA);
-  g.fillRoundedRect(cx - shoulderW / 2, shoulderY - shoulderH / 2, shoulderW, shoulderH, 3 * scale);
-  g.strokeRoundedRect(cx - shoulderW / 2, shoulderY - shoulderH / 2, shoulderW, shoulderH, 3 * scale);
-
-  // 頭 (向いている方向へオフセット。「頭がある方向=向いている方向」という既存コンセプトを継承)
-  const headR = 6 * scale;
-  const headX = cx + dx * 4 * scale;
-  const headY = cy - 14 * scale + dy * 3 * scale;
+  // --- 頭 ---
+  const headX = cx + dx * 1.6 * s;
   g.fillStyle(PLAYER_HEAD_COLOR, 1);
-  g.lineStyle(1.5, OUTLINE_COLOR, 0.7);
+  g.lineStyle(1 * s, OUTLINE_COLOR, 0.75);
   g.fillCircle(headX, headY, headR);
   g.strokeCircle(headX, headY, headR);
+
+  // 髪: 奥向きほど頭全体を覆い、手前向きは上半分だけ。横向きは後頭部側に寄せる。
+  g.fillStyle(HAIR_COLOR, 1);
+  if (front < -0.3) {
+    g.fillCircle(headX, headY, headR * 0.94);
+  } else {
+    // 上半分の髪
+    g.beginPath();
+    g.arc(headX, headY, headR, Math.PI, Math.PI * 2, false);
+    g.fillPath();
+    // 横向きは進行方向と逆側 (後頭部) に厚みを足す
+    if (side > 0.5) {
+      g.fillCircle(headX - dx * headR * 0.55, headY + headR * 0.1, headR * 0.62);
+    }
+  }
+
+  // 顔 (手前向き成分がある時だけ目を描く)。横向きは片目 + 鼻先。
+  if (front > -0.2) {
+    const eyeY = headY + headR * 0.12;
+    const eyeR = Math.max(0.6, 0.9 * s);
+    g.fillStyle(OUTLINE_COLOR, 0.9);
+    if (side > 0.5) {
+      g.fillCircle(headX + dx * headR * 0.35, eyeY, eyeR);
+      // 鼻先
+      g.fillStyle(PLAYER_HEAD_COLOR, 1);
+      g.fillCircle(headX + dx * headR * 0.95, eyeY + headR * 0.15, eyeR * 1.1);
+    } else {
+      g.fillCircle(headX - headR * 0.38, eyeY, eyeR);
+      g.fillCircle(headX + headR * 0.38, eyeY, eyeR);
+    }
+  }
 }
 
 /**
- * 64テクスチャを1回だけ焼き込む。Scene再生成時の重複生成防止に、既存のボールテクスチャと
+ * 128テクスチャを1回だけ焼き込む。Scene再生成時の重複生成防止に、既存のボールテクスチャと
  * 同じ「代表キーの存在チェック」ガードを使う。
  */
 export function buildPlayerSpriteTextures(scene: Phaser.Scene): void {
@@ -140,7 +224,7 @@ export function buildPlayerSpriteTextures(scene: Phaser.Scene): void {
 
   const g = scene.make.graphics({ x: 0, y: 0 }, false);
   const teams: TeamId[] = [TeamId.A, TeamId.B];
-  const frames: AnimFrame[] = [0, 1];
+  const frames: AnimFrame[] = [0, 1, 2, 3];
 
   for (const team of teams) {
     for (const isGoalkeeper of [false, true]) {
@@ -161,3 +245,6 @@ export function buildPlayerSpriteTextures(scene: Phaser.Scene): void {
   }
   g.destroy();
 }
+
+/** スプライトの基準サイズ (奥行きスケール1.0のときの表示高さ)。描画側の位置合わせに使う。 */
+export const SPRITE_BASE_HEIGHT = OUTFIELD_CANVAS_H;

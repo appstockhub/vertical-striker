@@ -6,8 +6,7 @@ import { InputManager } from '../input/inputManager';
 import type { InputFrame } from '../input/types';
 import { GamepadOverlay } from '../input/overlay';
 import { MatchSetupOverlay } from '../input/matchSetupOverlay';
-import { ballLiftPx, vecToPx } from './fixedToPixel';
-import { computeCameraY, type CameraConfig } from './camera';
+import { vecToPx } from './fixedToPixel';
 import { computeRadarLayout } from './radar';
 import {
   TEAM_COLORS,
@@ -16,10 +15,18 @@ import {
   PASS_MARKER_COLOR,
   KICK_CHARGE_COLOR,
   KICK_FLASH_COLOR,
-
 } from './teamColors';
-import { buildPlayerSpriteTextures, playerSpriteKey, resolveSpriteDirection, type AnimFrame } from './playerSprites';
-import { drawPitchLines, drawPitchTurf } from './pitchMarkings';
+import {
+  ANIM_FRAME_COUNT,
+  buildPlayerSpriteTextures,
+  playerSpriteKey,
+  resolveSpriteDirection,
+  type AnimFrame,
+} from './playerSprites';
+import { createProjection, DEFAULT_PROJECTION_CONFIG, type Projection } from './projection';
+import { drawPitchPerspective } from './pitchPerspective';
+import { CIRCLE_RADIUS, pitchLineSegments } from './pitchGeometry';
+import { drawStadium } from './stadium';
 import { findTouchPriorityPlayer } from '../sim/ballTouch';
 import { isTeamAInPossession, selectPassTarget } from '../sim/cursor';
 import { toFloat } from '../core/fixed';
@@ -41,31 +48,57 @@ import {
 
 const DETERMINISTIC_SEED = 1; // Phase 0 は固定シード。Phase 3+ で試合ごとに可変にする。
 
-const CAMERA_CONFIG: CameraConfig = {
-  viewportHeight: VIEWPORT_HEIGHT,
-  pitchHeight: PITCH_HEIGHT,
-  lookAheadMax: 80,
-  lookAheadVelRef: 3,
-  smoothing: 0.12,
-};
+/**
+ * ★16周目: 疑似3D (透視投影) 表示への移行★
+ *
+ * 原作 (縦スクロールサッカー) の画面を確認した結果、真上からの平面表示ではなく
+ * 「地面から少し高い位置で斜め前方を見た」視点であることが分かったため、描画層を
+ * 全面的に投影ベースへ移した。sim/ は平面座標のまま一切変更していない
+ * (決定論・リプレイ・ネット対戦の前提は無傷)。
+ *
+ * 設計:
+ *   - 変換は render/projection.ts の1箇所に閉じる (X圧縮とスケールを別々に持たない)。
+ *   - Phaser のカメラスクロールは使わない。全オブジェクトを毎フレーム「画面座標」に置く。
+ *     カメラ移動 = 投影に渡す cameraWorldY を変えること、と定義が1本化される。
+ *   - 描画順は depth = ワールドY (手前 = 大きいY = 手前に描く)。
+ *   - レーダーだけは従来どおりワールド座標のまま別カメラで描く (真上表示が正しいUI)。
+ */
+const PROJECTION_CONFIG = DEFAULT_PROJECTION_CONFIG;
+/** 注視点 (ボール) を画面のどこに置くか。少し下寄りにして前方の視界を広く取る。 */
+const FOCUS_SCREEN_Y = VIEWPORT_HEIGHT * 0.66;
+/** カメラ追従のイージング係数 (0..1、1に近いほど速い)。 */
+const CAMERA_SMOOTHING = 0.12;
+/** 進行方向の先読みオフセット (px) と、その上限に達する速度 (px/tick)。 */
+const LOOK_AHEAD_MAX = 90;
+const LOOK_AHEAD_VEL_REF = 3;
 
-// 選手の当たり半径 (px)。ドット絵スプライト化後も、カーソルリング/パスマーカーの
-// 位置合わせ用の「footprint」半径としてそのまま使う (スプライト自体の見た目サイズは
-// playerSprites.ts 側のキャンバス寸法で管理する)。
-const OUTFIELD_RADIUS = 14;
-const BALL_RADIUS_PX = 10;
-/** 選手の歩行アニメ切替間隔 (tick数)。60fps固定なので 8tick ≈ 133ms/フレームの歩行サイクル。 */
-const WALK_ANIM_TICKS_PER_FRAME = 8;
+const BALL_RADIUS_PX = 8;
+/** 選手の歩行アニメ切替間隔 (tick数)。 */
+const WALK_ANIM_TICKS_PER_FRAME = 6;
 /** キック解放時のインパクト表示の持続時間 (ms、実フレーム時間ベース。描画専用)。 */
 const KICK_FLASH_DURATION_MS = 180;
 /** ゴール演出の表示時間 (ms、実フレーム時間ベース)。 */
 const GOAL_CELEBRATION_MS = 1600;
-/** この速度未満は「静止」とみなし、脚を閉じた基本姿勢(frame 0)に固定する (仮値)。 */
+/** この速度未満は「静止」とみなし、脚を閉じた基本姿勢に固定する。 */
 const WALK_ANIM_MIN_SPEED = 0.15;
-/** ボールの見た目回転(仮の視覚効果、速度に比例。実際の物理スピンは追跡していない)の係数。 */
+/** ボールの見た目回転(視覚効果のみ)の係数。 */
 const BALL_VISUAL_SPIN_PER_PX = 0.09;
+/** 地面の円 (カーソルリング等) の縦つぶし率。斜め視点で円は楕円に見える。 */
+const GROUND_ELLIPSE_SQUASH = 0.42;
+/**
+ * 選手の見かけサイズの補正。厳密な投影スケールのままだと、この縦長ピッチ (480x1800) では
+ * 選手が小さすぎて背番号も向きも読めない。原作も選手を実寸比より大きく描いており、
+ * 「視認性 > 幾何的な正確さ」を優先する (描画専用の演出係数)。
+ */
+const PLAYER_SIZE_BOOST = 1.4;
+/** HUDバーの高さ。 */
+const HUD_HEIGHT = 30;
 
-
+// 描画順 (depth)。選手/ボールはワールドYを depth に使うため 0..PITCH_HEIGHT を占める。
+const DEPTH_STADIUM = -3000;
+const DEPTH_PITCH = -2000;
+const DEPTH_EFFECT = 6000;
+const DEPTH_HUD = 10000;
 
 export class PitchScene extends Phaser.Scene {
   private state: GameState = createInitialState(DETERMINISTIC_SEED);
@@ -74,73 +107,56 @@ export class PitchScene extends Phaser.Scene {
   private overlay: GamepadOverlay | null = null;
   /**
    * 実フレームにつき1回だけサンプルした InputFrame。固定タイムステップの catch-up で
-   * 1フレーム内に fixedUpdate() が複数回呼ばれても、それらは同じ入力を使い回す
-   * (InputManager.sample() 自体を複数回呼ぶと、KeyboardSource/GamepadSource が
-   * 内部で保持する prevButtons がその都度更新され、2回目以降の呼び出しで
-   * 立ち上がりedgeを取りこぼす恐れがあるため。Phase 1/2 のキック溜め・カーソル切替は
-   * すべて GameState 側で edge を導出する設計なので実害は無かったが、
-   * 将来 InputFrame.buttonsPressed に依存するコードが増えた時のための地雷を塞ぐ)。
+   * 1フレーム内に fixedUpdate() が複数回呼ばれても、それらは同じ入力を使い回す。
    */
   private cachedInputs: InputFrame | null = null;
 
-  // プール化された表示オブジェクト。生成は buildEntities()/buildRadar() で1回だけ行い、
-  // render() では setPosition()/setVisible() のみを呼ぶ (60fps維持のガードレール、
-  // 毎フレーム Arc/Text を生成/破棄しない)。
-  /** 選手のドット絵風スプライト (playerSprites.ts で焼き込んだテクスチャを貼る)。
-   * 向き(8方向)×歩行アニメ(2フレーム)に応じて毎フレーム setTexture() のみで切り替える
-   * (Graphics再生成なし、既存の60fps方針を維持)。 */
+  private readonly projection: Projection = createProjection(PROJECTION_CONFIG);
+  /** 追従中の注視点 (ワールドY、イージング後)。 */
+  private focusWorldY = PITCH_HEIGHT / 2;
+  /** 現在のカメラのワールドY (focusWorldY から毎フレーム導出する)。 */
+  private cameraWorldY = PITCH_HEIGHT / 2 + PROJECTION_CONFIG.nearDepth;
+
+  // プール化された表示オブジェクト (生成は build*() で1回だけ、render() では更新のみ)。
   private playerSprites: Phaser.GameObjects.Sprite[] = [];
-  /** 直前に適用したテクスチャキー (同一キーへの無意味な setTexture() 呼び出しを避ける)。 */
   private playerSpriteKeys: string[] = [];
+  /** 選手の頭上に浮く背番号ラベル (原作の表示を踏襲)。 */
+  private playerNumbers: Phaser.GameObjects.Text[] = [];
+  /** 選手の接地影 (疑似3Dでは足元の影があるだけで「立っている」感が出る)。 */
+  private playerShadows: Phaser.GameObjects.Ellipse[] = [];
   private playerRadarDots: Phaser.GameObjects.Arc[] = [];
-  private cursorRing!: Phaser.GameObjects.Arc;
-  /** キック溜めメーター (操作選手の足元、溜め量に応じて縮む輪)。描画専用。 */
-  private chargeMeter!: Phaser.GameObjects.Arc;
-  /** キックした瞬間にボール位置で広がる輪。描画専用。 */
-  private kickFlash!: Phaser.GameObjects.Arc;
-  /** キックフラッシュの残り表示時間 (ms、実フレーム時間ベース)。 */
+  private cursorRing!: Phaser.GameObjects.Ellipse;
+  private chargeMeter!: Phaser.GameObjects.Ellipse;
+  private kickFlash!: Phaser.GameObjects.Ellipse;
   private kickFlashMs = 0;
-  /** 前フレームの操作選手のキック溜め量 (解放= キック実行の検出用)。 */
   private prevKickChargeFrames = 0;
   private passMarker!: Phaser.GameObjects.Text;
-  /** カーソル視認性向上用のパルスアニメーション経過時間 (実フレーム時間、シミュレーションには影響しない)。 */
   private cursorPulseMs = 0;
-  /** ボールの見た目回転(視覚効果のみ、GameStateには持たない)。 */
   private ballVisualRotation = 0;
 
-  // スコアボードHUD (画面固定表示、カメラスクロールの影響を受けない setScrollFactor(0))。
+  // HUD (画面固定)。
+  private hudBar!: Phaser.GameObjects.Rectangle;
   private scoreText!: Phaser.GameObjects.Text;
   private clockText!: Phaser.GameObjects.Text;
-  /** スローイン/GKキャッチ等の一時バナー (Phase 5)。試合は止めず、HUD文言のみで視認性を上げる。 */
   private eventBannerText!: Phaser.GameObjects.Text;
-  /** 入力診断ライン (14周目)。simに届いているボタン/溜め/タックル状態を常時表示する。 */
   private inputDebugText!: Phaser.GameObjects.Text;
-  /** ゴール演出のテキスト (15周目)。得点時に一時的に大きく表示する。 */
   private goalText!: Phaser.GameObjects.Text;
-  /** ゴール演出の残り表示時間 (ms、実フレーム時間ベース)。 */
   private goalCelebrationMs = 0;
 
-  /** ボール本体。サッカーボール模様のテクスチャ(buildBallTexture()で生成)を貼ったImage。 */
   private ballMain!: Phaser.GameObjects.Image;
   private ballShadow!: Phaser.GameObjects.Ellipse;
   private ballRadarDot!: Phaser.GameObjects.Arc;
-  /** ゴールネットの装飾(buildGoalNet()で生成、静的)。レーダーには映さない。 */
-  private goalNets: Phaser.GameObjects.Graphics[] = [];
+
+  /** 毎フレーム描き直すピッチ (透視投影のため静的に焼けない)。 */
+  private pitchGraphics!: Phaser.GameObjects.Graphics;
+  /** 地平線より上のスタジアム (静的、1回だけ描く)。 */
+  private stadiumGraphics!: Phaser.GameObjects.Graphics;
 
   private radarCamera!: Phaser.Cameras.Scene2D.Camera;
-  private cameraY = 0;
 
-  // リプレイ記録 (マイルストーン7)。設定UI(マイルストーン0)が無いため、現時点では
-  // createInitialState() と同じ既定値 (difficulty='medium', offsideEnabled=true) を渡す。
   private replayRecorder = new ReplayRecorder();
-
-  // 効果音フック (マイルストーン8)。実アセットは未調達のため、当面は無音のまま安全に動く。
   private soundPlayer!: SoundPlayer;
 
-  // 試合前設定UI (マイルストーン0)。確定されるまでは既定値(difficulty='medium',
-  // offsideEnabled=true)のGameStateがキックオフ配置のまま静止表示され、fixedUpdate()は
-  // 何もしない (入力を無効化する、CLAUDE.md「照準スキルを薄めない」= 誤操作で試合が
-  // 始まってしまうことを避ける趣旨とも合致する)。
   private matchStarted = false;
   private matchSetupOverlay: MatchSetupOverlay | null = null;
 
@@ -171,12 +187,9 @@ export class PitchScene extends Phaser.Scene {
         this.soundPlayer.ensureStarted();
       });
     } else {
-      // オーバーレイ用のDOM要素が無い場合 (テスト環境等) は設定UIを待たずに即開始する。
       this.matchStarted = true;
     }
 
-    // 保険: 何らかの理由で上のフックを通らなかった場合でも、最初の操作で音を起こす。
-    // あわせて M キーでミュート切替 (音が邪魔な時の逃げ道を必ず用意しておく)。
     window.addEventListener('keydown', (e: KeyboardEvent) => {
       this.soundPlayer.ensureStarted();
       if (e.code === 'KeyM') this.soundPlayer.setMuted(!this.soundPlayer.isMuted());
@@ -185,7 +198,7 @@ export class PitchScene extends Phaser.Scene {
 
     this.buildBallTexture();
     buildPlayerSpriteTextures(this);
-    this.buildPitch();
+    this.buildBackground();
     this.buildEntities();
     this.buildRadar();
     this.buildHud();
@@ -194,24 +207,17 @@ export class PitchScene extends Phaser.Scene {
       onFixedUpdate: () => this.fixedUpdate(),
     });
 
-    this.cameras.main.setBounds(0, 0, PITCH_WIDTH, PITCH_HEIGHT);
+    // 透視投影ではオブジェクトを画面座標で置くため、メインカメラはスクロールしない。
     this.cameras.main.setViewport(0, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+    this.cameras.main.setScroll(0, 0);
 
-    // 診断用の読み取り専用ハンドル (14周目で恒久追加)。E2E検証と実プレイ時の切り分けの
-    // 両方に使う。simへの書き込み手段は一切公開しない (読むだけ、決定論に影響なし)。
-    // 「テストは緑だが実プレイで壊れている」が起きた時、このハンドル経由で
-    // 入力→ループ→simのどの層で信号が消えているかを外側から特定できる。
+    // 診断用の読み取り専用ハンドル (14周目で恒久追加)。simへの書き込み手段は公開しない。
     (window as unknown as { __vsDebug?: unknown }).__vsDebug = {
       getFrame: () => this.state.frame,
       isMatchStarted: () => this.matchStarted,
       getSampledInputs: () => this.cachedInputs,
       getState: () => this.state,
-      /**
-       * E2E検証専用の手動駆動。update()と同じ経路 (InputManager.sample → cachedInputs →
-       * fixedUpdate) を指定tick数だけ直接回す。非表示タブではブラウザがタイマーを
-       * 1秒間隔までスロットルするため (実測: 2tick/秒)、Phaserのループ任せでは検証が
-       * 成立しない。通常プレイでは誰も呼ばないので挙動への影響は無い。
-       */
+      /** E2E検証専用の手動駆動 (非表示タブではrAFがスロットルされるため必要)。 */
       pump: (ticks: number) => {
         for (let i = 0; i < ticks; i++) {
           this.cachedInputs = this.inputManager.sample();
@@ -220,34 +226,39 @@ export class PitchScene extends Phaser.Scene {
         return this.state.frame;
       },
       /**
-       * E2E検証専用: 指定Y位置へカメラを寄せて1フレームぶん描画し、canvasに絵を焼く。
-       * 非表示paneでは rAF が止まり描画も走らないため、見た目の確認にはこれが必要。
-       * 返り値の dataURL を保存すれば実際のスクリーンショットとして確認できる。
+       * E2E検証専用: 指定のワールドYを注視点として1フレーム描画し、canvasに絵を焼く。
+       * 16周目の疑似3D化に伴い、引数の意味が「カメラのスクロールY」から
+       * 「注視点のワールドY」へ変わった (カメラスクロールという概念自体が無くなったため)。
        */
-      renderAt: (scrollY: number) => {
-        this.cameraY = scrollY;
-        this.render(16.7);
+      renderAt: (focusWorldY: number) => {
+        this.focusWorldY = focusWorldY;
+        this.render(16.7, true);
         this.game.renderer.preRender();
-        this.game.renderer.render(this, this.children.getChildren(), this.cameras.main);
-        this.game.renderer.render(this, this.children.getChildren(), this.radarCamera);
+        // カメラごとに willRender() で絞る。子オブジェクトを丸ごと渡すと Camera.ignore()
+        // (cameraFilter) が効かず、レーダー用の点がメイン画面に巨大な円として描かれ、
+        // レーダー側にはメイン画面がそのまま出る (通常のPhaserループはこの絞り込みを
+        // CameraManager が行っている。ここは手動描画なので自前でやる必要がある)。
+        const forCamera = (cam: Phaser.Cameras.Scene2D.Camera) =>
+          this.children.getChildren().filter((child) => {
+            const obj = child as Phaser.GameObjects.GameObject & { willRender?: (c: unknown) => boolean };
+            return obj.willRender ? obj.willRender(cam) : true;
+          });
+        this.game.renderer.render(this, forCamera(this.cameras.main), this.cameras.main);
+        this.game.renderer.render(this, forCamera(this.radarCamera), this.radarCamera);
         this.game.renderer.postRender();
         return (this.game.canvas as HTMLCanvasElement).toDataURL('image/png');
       },
     };
   }
 
-  private buildPitch(): void {
-    // 芝の縞模様 + サッカーのライン一式 (pitchMarkings.ts、完全に手続き的な描画)。
-    // 15周目まではただの緑の矩形と200pxごとの横線しか無く、ペナルティエリアも
-    // センターサークルも無いためデバッグ画面に見えていた。静的な描画なので
-    // Graphics 2枚に1回だけ焼き、以後は毎フレーム触らない (60fps方針)。
-    const turf = this.add.graphics();
-    drawPitchTurf(turf, PITCH_WIDTH, PITCH_HEIGHT);
-    const lines = this.add.graphics();
-    drawPitchLines(lines, PITCH_WIDTH, PITCH_HEIGHT, toFloat(GOAL_WIDTH_FIXED));
+  /** 背景 (スタジアム = 静的 / ピッチ = 毎フレーム再描画)。 */
+  private buildBackground(): void {
+    this.stadiumGraphics = this.add.graphics();
+    this.stadiumGraphics.setDepth(DEPTH_STADIUM);
+    drawStadium(this.stadiumGraphics, VIEWPORT_WIDTH, PROJECTION_CONFIG.horizonY);
 
-    // ゴール枠・ネットも drawPitchLines が両エンドぶんまとめて描く
-    // (旧 buildGoalNet / 個別のゴールライン描画は pitchMarkings.ts に統合して削除した)。
+    this.pitchGraphics = this.add.graphics();
+    this.pitchGraphics.setDepth(DEPTH_PITCH);
   }
 
   private colorFor(player: PlayerState): number {
@@ -255,24 +266,17 @@ export class PitchScene extends Phaser.Scene {
     return player.isGoalkeeper ? palette.goalkeeper : palette.outfield;
   }
 
-  /**
-   * サッカーボール模様のテクスチャを1回だけ生成する (Graphics→generateTexture、
-   * 画像アセット無しで手続き的に描く。CLAUDE.mdの「完全オリジナル素材」方針に合致)。
-   * 白地に黒のペンタゴンを数枚配置した簡略パターンで、回転させた時に見た目でも
-   * 「回っている」ことが分かるようにする (ballVisualRotationと組み合わせて使う)。
-   */
+  /** サッカーボール模様のテクスチャを1回だけ生成する (画像アセット不使用)。 */
   private buildBallTexture(): void {
     const key = 'ball-texture';
-    if (this.textures.exists(key)) return; // Scene再生成時の重複生成を防ぐ
+    if (this.textures.exists(key)) return;
     const size = BALL_RADIUS_PX * 2;
     const g = this.make.graphics({ x: 0, y: 0 }, false);
     const c = BALL_RADIUS_PX;
     g.fillStyle(BALL_COLOR, 1);
     g.fillCircle(c, c, BALL_RADIUS_PX);
     g.fillStyle(0x1a1a1a, 1);
-    // 中央のペンタゴン(簡略化: 5角形の代わりに視認性優先で小さめの正多角形近似)
     this.drawPolygon(g, c, c, BALL_RADIUS_PX * 0.42, 5, -Math.PI / 2);
-    // 周辺に3枚、回転させれば動きが分かる非対称配置にする
     this.drawPolygon(g, c, c - BALL_RADIUS_PX * 0.62, BALL_RADIUS_PX * 0.26, 5, 0);
     this.drawPolygon(g, c + BALL_RADIUS_PX * 0.55, c + BALL_RADIUS_PX * 0.35, BALL_RADIUS_PX * 0.26, 5, 1.9);
     this.drawPolygon(g, c - BALL_RADIUS_PX * 0.55, c + BALL_RADIUS_PX * 0.35, BALL_RADIUS_PX * 0.26, 5, 3.7);
@@ -282,7 +286,7 @@ export class PitchScene extends Phaser.Scene {
     g.destroy();
   }
 
-  /** 正n角形を(cx,cy)中心に描く小さなヘルパー (sin/cosはPhaser描画専用の許容範囲、sim/には影響しない)。 */
+  /** 正n角形を(cx,cy)中心に描く小さなヘルパー (描画専用、sim/には影響しない)。 */
   private drawPolygon(
     g: Phaser.GameObjects.Graphics,
     cx: number,
@@ -300,76 +304,98 @@ export class PitchScene extends Phaser.Scene {
   }
 
   private buildEntities(): void {
-    // 影 (地面位置に描画、疑似3D高さの手がかり)。ボール本体より先に描画して下に敷く。
-    this.ballShadow = this.add.ellipse(0, 0, 20, 10, 0x000000, 0.35);
+    this.ballShadow = this.add.ellipse(0, 0, 16, 7, 0x000000, 0.35);
 
-    // 選手22人ぶんを1回だけ生成してプールする (ドット絵風スプライト、頭・肩・胴体・脚)。
     for (const player of this.state.players) {
+      // 接地影 → 本体 → 背番号 の順に作る (depthは毎フレーム設定する)。
+      const shadow = this.add.ellipse(0, 0, 20, 8, 0x000000, 0.3);
+      this.playerShadows.push(shadow);
+
       const key = playerSpriteKey(player.team, player.isGoalkeeper, resolveSpriteDirection(player.facing), 0);
       const sprite = this.add.sprite(0, 0, key);
+      // 疑似3D: スプライトの足元を接地点に合わせる。
+      sprite.setOrigin(0.5, 1);
       this.playerSprites.push(sprite);
       this.playerSpriteKeys.push(key);
+
+      const label = this.add.text(0, 0, String(player.slotIndex + 1), {
+        fontSize: '11px',
+        color: '#ffffff',
+        backgroundColor: '#00000099',
+        padding: { x: 2, y: 0 },
+      });
+      label.setOrigin(0.5, 1);
+      this.playerNumbers.push(label);
     }
 
-    // カーソルハイライト (縁取りのみのリング、常に操作選手の位置に表示)。太めのストロークにして
-    // 視認性を上げる (仮値、要プレイテスト調整)。
-    this.cursorRing = this.add.circle(0, 0, OUTFIELD_RADIUS + 5, 0x000000, 0);
-    this.cursorRing.setStrokeStyle(4, CURSOR_RING_COLOR, 1);
+    // カーソルハイライト (足元の楕円リング。斜め視点では円は楕円に見える)。
+    this.cursorRing = this.add.ellipse(0, 0, 34, 34 * GROUND_ELLIPSE_SQUASH, 0x000000, 0);
+    this.cursorRing.setStrokeStyle(3, CURSOR_RING_COLOR, 1);
 
-    // カーソルパスの受け手マーカー (「↓」、Team Aがボール保持中かつ受け手がいる時だけ表示)
-    this.passMarker = this.add.text(0, 0, '↓', {
-      fontSize: '22px',
+    this.passMarker = this.add.text(0, 0, '▼', {
+      fontSize: '20px',
       color: '#' + PASS_MARKER_COLOR.toString(16).padStart(6, '0'),
       fontStyle: 'bold',
     });
     this.passMarker.setOrigin(0.5, 1);
     this.passMarker.setVisible(false);
 
-    // ボール (サッカーボール模様のテクスチャ。実物より大きめの表示サイズでピッチとの境界を明確にする)
     this.ballMain = this.add.image(0, 0, 'ball-texture');
 
-    // ★キック溜めメーター★ (実プレイ報告「キックの反応しない」への視覚面の対応)
-    // 溜めキックは「押している間は何も起きず、離した瞬間に飛ぶ」ため、押した瞬間に画面上の
-    // 変化が皆無だと「ボタンが効いていない」と感じる。押下が受理されていること・どれだけ
-    // 溜まったかを操作選手の足元のリングで常時可視化する。描画専用でGameStateには触らない。
-    this.chargeMeter = this.add.circle(0, 0, OUTFIELD_RADIUS + 10, 0x000000, 0);
+    // キック溜めメーター (押下が効いていること・溜まり具合の可視化)。
+    this.chargeMeter = this.add.ellipse(0, 0, 46, 46 * GROUND_ELLIPSE_SQUASH, 0x000000, 0);
     this.chargeMeter.setStrokeStyle(3, KICK_CHARGE_COLOR, 1);
     this.chargeMeter.setVisible(false);
 
-    // ★キック時のインパクト表示★ 蹴った瞬間にボール位置で一瞬だけ広がる輪。
-    // 「今のは蹴れた」という即時の手応えを返す (溜めメーターと対になる視覚フィードバック)。
-    this.kickFlash = this.add.circle(0, 0, BALL_RADIUS_PX, 0x000000, 0);
+    // キック時のインパクト表示 (蹴れたという手応え)。
+    this.kickFlash = this.add.ellipse(0, 0, 20, 20 * GROUND_ELLIPSE_SQUASH, 0x000000, 0);
     this.kickFlash.setStrokeStyle(3, KICK_FLASH_COLOR, 1);
     this.kickFlash.setVisible(false);
+    this.kickFlash.setDepth(DEPTH_EFFECT);
+  }
+
+  /**
+   * レーダー(ミニマップ)用のピッチ下地。ワールド座標のまま描き、レーダーカメラだけが映す。
+   *
+   * 疑似3D化でメインのピッチ描画が画面座標になったため、レーダーには何の目印も無い
+   * 「点が浮いているだけの黒い板」になってしまった。CLAUDE.mdの
+   * 「視野の浅さはレーダーで補う。レーダーの視認性・情報量には妥協しない」に反するため、
+   * レーダー専用の真上視点のピッチを別に描く。
+   */
+  private buildRadarPitch(): Phaser.GameObjects.Graphics {
+    const g = this.add.graphics();
+    g.setDepth(DEPTH_PITCH);
+    g.fillStyle(0x15351f, 1);
+    g.fillRect(0, 0, PITCH_WIDTH, PITCH_HEIGHT);
+    g.lineStyle(4, 0xffffff, 0.55);
+    for (const seg of pitchLineSegments()) {
+      g.lineBetween(seg.x1, seg.y1, seg.x2, seg.y2);
+    }
+    g.strokeCircle(PITCH_WIDTH / 2, PITCH_HEIGHT / 2, CIRCLE_RADIUS);
+    return g;
   }
 
   private buildRadar(): void {
-    const layout = computeRadarLayout(
-      VIEWPORT_WIDTH,
-      PITCH_WIDTH,
-      PITCH_HEIGHT,
-      RADAR_WIDTH,
-      RADAR_MARGIN,
-    );
+    const layout = computeRadarLayout(VIEWPORT_WIDTH, PITCH_WIDTH, PITCH_HEIGHT, RADAR_WIDTH, RADAR_MARGIN);
+    const radarY = layout.y + HUD_HEIGHT; // HUDバーの下へ逃がす
 
-    this.radarCamera = this.cameras.add(layout.x, layout.y, layout.width, layout.height);
+    this.radarCamera = this.cameras.add(layout.x, radarY, layout.width, layout.height);
     this.radarCamera.setBounds(0, 0, PITCH_WIDTH, PITCH_HEIGHT);
     this.radarCamera.setZoom(layout.zoom);
     this.radarCamera.scrollX = 0;
     this.radarCamera.scrollY = 0;
-    // ピッチ本体の緑と紛れないよう、ページ背景に近い濃紺にしてUIパネルとして分離させる。
-    // レーダーカメラはメインカメラの後に描画されるため、この背景色がそのままピッチの上に
-    // 不透明に乗る (別途"背景板"オブジェクトを重ねる必要はない)。
-    this.radarCamera.setBackgroundColor(0x10141a);
+    this.radarCamera.setBackgroundColor(0x0c1017);
 
-    // レーダー枠 (DOM ではなく Phaser の描画で、メインカメラのみに表示するUI的矩形)
-    const frame = this.add.rectangle(layout.x, layout.y, layout.width, layout.height, 0x000000, 0);
+    const radarPitch = this.buildRadarPitch();
+    this.cameras.main.ignore(radarPitch);
+
+    const frame = this.add.rectangle(layout.x, radarY, layout.width, layout.height, 0x000000, 0);
     frame.setOrigin(0, 0);
     frame.setStrokeStyle(1, 0xffffff, 0.8);
     frame.setScrollFactor(0);
+    frame.setDepth(DEPTH_HUD);
     this.radarCamera.ignore(frame);
 
-    // レーダー用の点 (実寸より大きい固定サイズにして視認性を確保。色はメイン表示と揃える)
     for (const player of this.state.players) {
       const radius = (player.isGoalkeeper ? 6 : 5) / layout.zoom;
       const dot = this.add.circle(0, 0, radius, this.colorFor(player));
@@ -377,12 +403,14 @@ export class PitchScene extends Phaser.Scene {
     }
     this.ballRadarDot = this.add.circle(0, 0, 4 / layout.zoom, BALL_COLOR);
 
-    // メイン/レーダーの出し分けはプール配列から機械的に構築する (手書き列挙は
-    // オブジェクト数が増えるほど漏れの元になるため)。
+    // メイン/レーダーの出し分けはプール配列から機械的に構築する (手書き列挙は漏れの元)。
     this.cameras.main.ignore([...this.playerRadarDots, this.ballRadarDot]);
     this.radarCamera.ignore([
       ...this.playerSprites,
-      ...this.goalNets,
+      ...this.playerNumbers,
+      ...this.playerShadows,
+      this.pitchGraphics,
+      this.stadiumGraphics,
       this.ballMain,
       this.ballShadow,
       this.cursorRing,
@@ -392,38 +420,44 @@ export class PitchScene extends Phaser.Scene {
     ]);
   }
 
-  /**
-   * スコアボードHUD (得点・前後半/経過分)。他のプール化オブジェクトと同じく1回だけ生成し、
-   * render() では setText() のみで更新する。setScrollFactor(0) で画面固定表示にし、
-   * レーダーカメラには映さない (メインカメラのUI)。
-   */
+  /** スコアボードHUD (左=スコア / 右=前後半+時間)。原作のレイアウトに合わせて上端固定。 */
   private buildHud(): void {
-    const textStyle: Phaser.Types.GameObjects.Text.TextStyle = {
-      fontSize: '20px',
+    this.hudBar = this.add.rectangle(0, 0, VIEWPORT_WIDTH, HUD_HEIGHT, 0x05080d, 0.82);
+    this.hudBar.setOrigin(0, 0);
+    this.hudBar.setScrollFactor(0);
+    this.hudBar.setDepth(DEPTH_HUD);
+
+    this.scoreText = this.add.text(10, 4, '0 - 0', {
+      fontSize: '22px',
       color: '#ffffff',
       fontStyle: 'bold',
-      backgroundColor: '#00000080',
-      padding: { x: 6, y: 3 },
-    };
-    this.scoreText = this.add.text(VIEWPORT_WIDTH / 2, 6, '0 - 0', textStyle);
-    this.scoreText.setOrigin(0.5, 0);
+    });
+    this.scoreText.setOrigin(0, 0);
     this.scoreText.setScrollFactor(0);
+    this.scoreText.setDepth(DEPTH_HUD + 1);
 
-    this.clockText = this.add.text(VIEWPORT_WIDTH / 2, 32, "H1  0'", textStyle);
-    this.clockText.setOrigin(0.5, 0);
+    this.clockText = this.add.text(VIEWPORT_WIDTH - 10, 6, "H1  0'", {
+      fontSize: '18px',
+      color: '#ffe9a8',
+      fontStyle: 'bold',
+    });
+    this.clockText.setOrigin(1, 0);
     this.clockText.setScrollFactor(0);
+    this.clockText.setDepth(DEPTH_HUD + 1);
 
-    this.eventBannerText = this.add.text(VIEWPORT_WIDTH / 2, 58, '', textStyle);
+    this.eventBannerText = this.add.text(VIEWPORT_WIDTH / 2, HUD_HEIGHT + 6, '', {
+      fontSize: '18px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      backgroundColor: '#00000099',
+      padding: { x: 6, y: 3 },
+    });
     this.eventBannerText.setOrigin(0.5, 0);
     this.eventBannerText.setScrollFactor(0);
+    this.eventBannerText.setDepth(DEPTH_HUD + 1);
     this.eventBannerText.setVisible(false);
 
-    // ★入力診断ライン★ (14周目で追加、実プレイ「反応しない」の切り分け用)。
-    // いまsimに届いている論理ボタン・溜め量・タックル状態を画面下端に常時表示する。
-    // これで「ボタンを押しても反応しない」が起きた時、
-    //   - ここに表示が出ない → 入力層 (キーボード/パッドのマッピング・フォーカス) の問題
-    //   - 表示は出るがゲームが動かない → sim側の問題
-    // をユーザーの一目で確定できる。派手にしない (小さく、画面隅)。
+    // 入力診断ライン (14周目、実プレイ「反応しない」の切り分け用)。
     this.inputDebugText = this.add.text(4, VIEWPORT_HEIGHT - 18, '', {
       fontSize: '12px',
       color: '#c8ffc8',
@@ -431,10 +465,8 @@ export class PitchScene extends Phaser.Scene {
       padding: { x: 4, y: 2 },
     });
     this.inputDebugText.setScrollFactor(0);
+    this.inputDebugText.setDepth(DEPTH_HUD + 1);
 
-    // ★ゴール演出★ (15周目)。旧実装は得点しても即キックオフに戻るだけで、
-    // 「決まった」という手応えが画面上に一切無かった。試合を止めない既存方針は守り、
-    // 大きな文字を1.6秒だけ被せる (拡大→縮小のアニメで視線を引く)。
     this.goalText = this.add.text(VIEWPORT_WIDTH / 2, VIEWPORT_HEIGHT / 2 - 40, 'GOAL!', {
       fontSize: '68px',
       color: '#ffe680',
@@ -444,22 +476,26 @@ export class PitchScene extends Phaser.Scene {
     });
     this.goalText.setOrigin(0.5, 0.5);
     this.goalText.setScrollFactor(0);
+    this.goalText.setDepth(DEPTH_HUD + 2);
     this.goalText.setVisible(false);
 
-    this.radarCamera.ignore([this.goalText]);
-
-    this.radarCamera.ignore([this.scoreText, this.clockText, this.eventBannerText, this.inputDebugText]);
+    this.radarCamera.ignore([
+      this.hudBar,
+      this.scoreText,
+      this.clockText,
+      this.eventBannerText,
+      this.inputDebugText,
+      this.goalText,
+    ]);
   }
 
   private fixedUpdate(): void {
-    if (!this.matchStarted) return; // 試合前設定UI確定待ち (マイルストーン0)
+    if (!this.matchStarted) return;
     const inputs = this.cachedInputs;
-    if (!inputs) return; // update() が必ず先にサンプルするため通常発生しない
+    if (!inputs) return;
     if (Object.values(inputs.buttons).some(Boolean)) {
       this.overlay?.notifyButtonPressed();
     }
-    // リプレイ記録: simulate()が呼ばれるたびに必ず1回、ここ(fixedUpdate側)で記録する
-    // (update()側=実フレーム単位で記録すると、catch-upでの複数回呼び出し時に記録漏れが起きるため)。
     this.replayRecorder.record(inputs);
     const prevState = this.state;
     this.state = simulate(this.state, inputs);
@@ -472,40 +508,24 @@ export class PitchScene extends Phaser.Scene {
     this.cachedInputs = this.inputManager.sample();
     this.loop.tick(delta);
     this.overlay?.pollConnectionState(this.inputManager.isGamepadConnected());
-    this.render(delta);
+    this.render(delta, false);
   }
 
-  private render(delta: number): void {
-    this.state.players.forEach((player, index) => {
-      const px = vecToPx(player.pos);
-      this.playerSprites[index]?.setPosition(px.x, px.y);
-      this.playerRadarDots[index]?.setPosition(px.x, px.y);
+  /**
+   * @param freezeCamera true なら注視点のイージングを行わない (__vsDebug.renderAt 用)。
+   */
+  private render(delta: number, freezeCamera: boolean): void {
+    const ballPx = vecToPx(this.state.ball.pos);
+    if (!freezeCamera) this.updateCamera(ballPx.y, this.state.ball.vel.y / 256);
+    this.cameraWorldY = this.projection.cameraWorldYFor(this.focusWorldY, FOCUS_SCREEN_Y);
 
-      // 向き+歩行アニメ: player.facing/velをそのまま読むだけで、simulate()の入出力には
-      // 一切影響しない (描画専用の派生表示、GameStateには何も持たせない)。速度が閾値以上の
-      // 時だけ tick数ベースで2フレームの脚アニメを切り替える (実フレーム時間ではなく
-      // state.frameを使うため、リプレイ再生時も含め常に同じ見え方になる)。
-      const speed = Math.hypot(toFloat(player.vel.x), toFloat(player.vel.y));
-      const animFrame: AnimFrame =
-        speed >= WALK_ANIM_MIN_SPEED && Math.floor(this.state.frame / WALK_ANIM_TICKS_PER_FRAME) % 2 === 1 ? 1 : 0;
-      const key = playerSpriteKey(player.team, player.isGoalkeeper, resolveSpriteDirection(player.facing), animFrame);
-      if (this.playerSpriteKeys[index] !== key) {
-        this.playerSpriteKeys[index] = key;
-        this.playerSprites[index]?.setTexture(key);
-      }
-    });
+    drawPitchPerspective(this.pitchGraphics, this.projection, this.cameraWorldY, toFloat(GOAL_WIDTH_FIXED));
+
+    this.renderPlayers();
+    this.renderBall(ballPx);
 
     const controlled = this.state.players[this.state.controlledPlayerIndex];
-    if (controlled) {
-      const px = vecToPx(controlled.pos);
-      this.cursorRing.setPosition(px.x, px.y);
-      // パルスアニメーション (視認性向上、実フレーム時間ベースでシミュレーションには影響しない)。
-      this.cursorPulseMs += delta;
-      const pulse = (Math.sin(this.cursorPulseMs / 220) + 1) / 2; // 0..1
-      this.cursorRing.setScale(1 + pulse * 0.12);
-      this.cursorRing.setAlpha(0.75 + pulse * 0.25);
-    }
-
+    this.renderCursor(controlled, delta);
     this.renderKickFeedback(controlled, delta);
     this.renderGoalCelebration(delta);
     this.renderInputDebug(controlled);
@@ -517,25 +537,119 @@ export class PitchScene extends Phaser.Scene {
     const bannerText = formatEventBannerText(this.state);
     this.eventBannerText.setText(bannerText ?? '');
     this.eventBannerText.setVisible(bannerText !== null);
+  }
 
-    const groundPx = vecToPx(this.state.ball.pos); // ボールの「地面位置」(影・レーダーはこちらを使う)
-    const lift = ballLiftPx(this.state.ball.height);
+  /** 注視点 (ボール) の追従。カメラのワールドYはここから毎フレーム導出する。 */
+  private updateCamera(ballWorldY: number, ballVelY: number): void {
+    const lookAhead = Math.max(
+      -LOOK_AHEAD_MAX,
+      Math.min(LOOK_AHEAD_MAX, (ballVelY / LOOK_AHEAD_VEL_REF) * LOOK_AHEAD_MAX),
+    );
+    // 注視点はピッチ内にクランプする (ゴール裏へ回り込みすぎない)。
+    const desired = Math.max(0, Math.min(PITCH_HEIGHT, ballWorldY + lookAhead));
+    this.focusWorldY += (desired - this.focusWorldY) * CAMERA_SMOOTHING;
+  }
 
-    this.ballShadow.setPosition(groundPx.x, groundPx.y);
-    this.ballMain.setPosition(groundPx.x, groundPx.y - lift); // 疑似3D: 高さ分だけ見た目を持ち上げる
-    this.ballRadarDot.setPosition(groundPx.x, groundPx.y);
+  private renderPlayers(): void {
+    this.state.players.forEach((player, index) => {
+      const world = vecToPx(player.pos);
+      const p = this.projection.project(world.x, world.y, this.cameraWorldY);
 
-    // ボールの見た目回転 (視覚効果のみ、GameStateには持たない/実際の物理スピンは追跡していない)。
-    // 速度に比例して回すことで「転がっている」ことが模様の変化で分かるようにする
-    // (計画: 回転や位置が分かりやすいボール)。
+      const sprite = this.playerSprites[index];
+      const shadow = this.playerShadows[index];
+      const label = this.playerNumbers[index];
+      this.playerRadarDots[index]?.setPosition(world.x, world.y);
+      if (!sprite || !shadow || !label) return;
+
+      if (!p.visible) {
+        sprite.setVisible(false);
+        shadow.setVisible(false);
+        label.setVisible(false);
+        return;
+      }
+
+      // 手前ほど大きく、手前ほど後に描く (depth = ワールドY)。
+      const drawScale = p.scale * PLAYER_SIZE_BOOST;
+      sprite.setVisible(true);
+      sprite.setPosition(p.x, p.y);
+      sprite.setScale(drawScale);
+      sprite.setDepth(world.y);
+
+      shadow.setVisible(true);
+      shadow.setPosition(p.x, p.y);
+      shadow.setScale(drawScale);
+      shadow.setDepth(world.y - 0.5);
+
+      // 背番号ラベル: 頭上に浮かせる。奥ほど小さく、小さすぎたら消す (可読性優先)。
+      const spriteHeight = sprite.height * drawScale;
+      label.setPosition(p.x, p.y - spriteHeight - 2);
+      label.setScale(Math.max(0.55, p.scale));
+      label.setDepth(world.y + 0.2);
+      label.setVisible(p.scale > 0.3);
+
+      // 向き + 走行アニメ (state.frame ベースなのでリプレイでも同じ見え方になる)。
+      const speed = Math.hypot(toFloat(player.vel.x), toFloat(player.vel.y));
+      const animFrame: AnimFrame =
+        speed >= WALK_ANIM_MIN_SPEED
+          ? ((Math.floor(this.state.frame / WALK_ANIM_TICKS_PER_FRAME) % ANIM_FRAME_COUNT) as AnimFrame)
+          : 1;
+      const key = playerSpriteKey(player.team, player.isGoalkeeper, resolveSpriteDirection(player.facing), animFrame);
+      if (this.playerSpriteKeys[index] !== key) {
+        this.playerSpriteKeys[index] = key;
+        sprite.setTexture(key);
+      }
+    });
+  }
+
+  private renderBall(ballPx: { x: number; y: number }): void {
+    const p = this.projection.project(ballPx.x, ballPx.y, this.cameraWorldY);
+    this.ballRadarDot.setPosition(ballPx.x, ballPx.y);
+
+    if (!p.visible) {
+      this.ballMain.setVisible(false);
+      this.ballShadow.setVisible(false);
+      return;
+    }
+
+    // 影は地面、本体は高さぶんだけ画面上へ持ち上げる (持ち上げ量も遠近スケールに従う)。
+    const heightPx = toFloat(this.state.ball.height);
+    this.ballShadow.setVisible(true);
+    this.ballShadow.setPosition(p.x, p.y);
+    // 高く浮くほど影は小さく薄くする (高さの手がかり)。
+    const shadowShrink = 1 / (1 + heightPx * 0.02);
+    this.ballShadow.setScale(p.scale * shadowShrink);
+    this.ballShadow.setAlpha(0.35 * shadowShrink);
+    this.ballShadow.setDepth(ballPx.y - 0.4);
+
+    this.ballMain.setVisible(true);
+    this.ballMain.setPosition(p.x, p.y - heightPx * p.scale * 1.6);
+    // 高いボールほどわずかに大きく描く (カメラに近づくため)。
+    this.ballMain.setScale(p.scale * (1 + heightPx * 0.006));
+    this.ballMain.setDepth(ballPx.y + 0.5);
+
     const speedPx = Math.hypot(toFloat(this.state.ball.vel.x), toFloat(this.state.ball.vel.y));
     this.ballVisualRotation += speedPx * BALL_VISUAL_SPIN_PER_PX;
     this.ballMain.setRotation(this.ballVisualRotation);
+  }
 
-    // カメラ追従先はボール (Phase 1から変更なし。computeCameraY のシグネチャは不変)
-    const targetVelY = this.state.ball.vel.y / 256;
-    this.cameraY = computeCameraY(groundPx.y, targetVelY, this.cameraY, CAMERA_CONFIG);
-    this.cameras.main.scrollY = this.cameraY;
+  private renderCursor(controlled: PlayerState | undefined, delta: number): void {
+    if (!controlled) {
+      this.cursorRing.setVisible(false);
+      return;
+    }
+    const world = vecToPx(controlled.pos);
+    const p = this.projection.project(world.x, world.y, this.cameraWorldY);
+    if (!p.visible) {
+      this.cursorRing.setVisible(false);
+      return;
+    }
+    this.cursorPulseMs += delta;
+    const pulse = (Math.sin(this.cursorPulseMs / 220) + 1) / 2; // 0..1
+    this.cursorRing.setVisible(true);
+    this.cursorRing.setPosition(p.x, p.y);
+    this.cursorRing.setScale(p.scale * (1 + pulse * 0.12));
+    this.cursorRing.setAlpha(0.75 + pulse * 0.25);
+    this.cursorRing.setDepth(world.y - 0.6);
   }
 
   /** ゴール演出 (得点時に大きく出して素早く落ち着く)。描画専用、試合は止めない。 */
@@ -546,14 +660,13 @@ export class PitchScene extends Phaser.Scene {
     }
     this.goalCelebrationMs = Math.max(0, this.goalCelebrationMs - delta);
     const t = this.goalCelebrationMs / GOAL_CELEBRATION_MS; // 1 → 0
-    // 出た瞬間に大きく、すぐ標準サイズへ落ち着き、最後に薄れて消える
     const pop = 1 + Math.max(0, t - 0.75) * 3.2;
     this.goalText.setScale(pop);
     this.goalText.setAlpha(t < 0.25 ? t / 0.25 : 1);
     this.goalText.setVisible(true);
   }
 
-  /** 入力診断ライン (buildHudのコメント参照)。simに届いている入力と操作選手の状態を毎フレーム表示。 */
+  /** 入力診断ライン。simに届いている入力と操作選手の状態を毎フレーム表示。 */
   private renderInputDebug(controlled: PlayerState | undefined): void {
     const buttons = this.cachedInputs?.buttons;
     const held = buttons
@@ -569,25 +682,25 @@ export class PitchScene extends Phaser.Scene {
   }
 
   /**
-   * キックの視覚フィードバック (実プレイ報告「キックの反応しない」への対応)。
-   *
-   * 溜めキックは「押している間は何も起きず、離した瞬間に飛ぶ」機構なので、押下中に画面が
-   * 無反応だと入力が受理されていないように見える。そこで:
-   *   - 溜め中: 操作選手の足元に、溜め量に応じて縮んでいくリングを出す (押下が効いている証拠)
-   *   - 解放時: ボール位置で一瞬だけ輪が広がる (蹴れたという手応え)
-   * どちらも描画専用で GameState には一切触らないため、決定論には影響しない。
+   * キックの視覚フィードバック。溜め中は足元のリングが締まり、解放時にボール位置で輪が広がる。
+   * どちらも描画専用で GameState には触らない。
    */
   private renderKickFeedback(controlled: PlayerState | undefined, delta: number): void {
     const charge = controlled?.kickChargeFrames ?? 0;
 
     if (controlled && charge > 0) {
-      const px = vecToPx(controlled.pos);
-      // 溜めが増えるほどリングが小さく締まっていく (弓を引く感覚の視覚化)。
-      const ratio = Math.min(1, charge / KICK_MAX_CHARGE_FRAMES);
-      this.chargeMeter.setPosition(px.x, px.y);
-      this.chargeMeter.setScale(1.45 - ratio * 0.55);
-      this.chargeMeter.setAlpha(0.45 + ratio * 0.55);
-      this.chargeMeter.setVisible(true);
+      const world = vecToPx(controlled.pos);
+      const p = this.projection.project(world.x, world.y, this.cameraWorldY);
+      if (p.visible) {
+        const ratio = Math.min(1, charge / KICK_MAX_CHARGE_FRAMES);
+        this.chargeMeter.setPosition(p.x, p.y);
+        this.chargeMeter.setScale(p.scale * (1.45 - ratio * 0.55));
+        this.chargeMeter.setAlpha(0.45 + ratio * 0.55);
+        this.chargeMeter.setDepth(world.y - 0.7);
+        this.chargeMeter.setVisible(true);
+      } else {
+        this.chargeMeter.setVisible(false);
+      }
     } else {
       this.chargeMeter.setVisible(false);
     }
@@ -595,16 +708,17 @@ export class PitchScene extends Phaser.Scene {
     // 溜めが非ゼロから0へ落ちた = このフレームでキックが解放された。
     if (this.prevKickChargeFrames > 0 && charge === 0) {
       this.kickFlashMs = KICK_FLASH_DURATION_MS;
-      const ballPx = vecToPx(this.state.ball.pos);
-      this.kickFlash.setPosition(ballPx.x, ballPx.y);
+      const ballWorld = vecToPx(this.state.ball.pos);
+      const p = this.projection.project(ballWorld.x, ballWorld.y, this.cameraWorldY);
+      if (p.visible) this.kickFlash.setPosition(p.x, p.y);
     }
     this.prevKickChargeFrames = charge;
 
     if (this.kickFlashMs > 0) {
       this.kickFlashMs = Math.max(0, this.kickFlashMs - delta);
       const t = this.kickFlashMs / KICK_FLASH_DURATION_MS; // 1 → 0
-      this.kickFlash.setScale(1 + (1 - t) * 2.2); // 広がりながら
-      this.kickFlash.setAlpha(t); // 薄れて消える
+      this.kickFlash.setScale(1 + (1 - t) * 2.2);
+      this.kickFlash.setAlpha(t);
       this.kickFlash.setVisible(true);
     } else {
       this.kickFlash.setVisible(false);
@@ -612,9 +726,8 @@ export class PitchScene extends Phaser.Scene {
   }
 
   /**
-   * カーソルパスの受け手マーカー ("↓")。Team Aがボールを保持しており、かつ前方コーン内に
-   * 受け手候補がいる時だけ表示する。simulate() 内の判定と同じ純関数 (findTouchPriorityPlayer /
-   * selectPassTarget) を描画側でも呼び直すことで、GameStateに派生情報を持たせずに済む。
+   * カーソルパスの受け手マーカー。Team Aがボールを保持しており、かつ前方コーン内に
+   * 受け手候補がいる時だけ表示する (simと同じ純関数を描画側でも呼ぶ)。
    */
   private renderPassMarker(): void {
     const touchPriorityIndex = findTouchPriorityPlayer(
@@ -632,8 +745,16 @@ export class PitchScene extends Phaser.Scene {
       this.passMarker.setVisible(false);
       return;
     }
-    const px = vecToPx(receiver.pos);
-    this.passMarker.setPosition(px.x, px.y - OUTFIELD_RADIUS - 6);
+    const world = vecToPx(receiver.pos);
+    const p = this.projection.project(world.x, world.y, this.cameraWorldY);
+    if (!p.visible) {
+      this.passMarker.setVisible(false);
+      return;
+    }
+    const spriteHeight = (this.playerSprites[targetIndex ?? 0]?.height ?? 46) * p.scale;
+    this.passMarker.setPosition(p.x, p.y - spriteHeight - 16 * p.scale);
+    this.passMarker.setScale(Math.max(0.6, p.scale));
+    this.passMarker.setDepth(world.y + 0.3);
     this.passMarker.setVisible(true);
   }
 }
