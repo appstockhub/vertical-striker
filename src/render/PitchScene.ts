@@ -16,9 +16,10 @@ import {
   PASS_MARKER_COLOR,
   KICK_CHARGE_COLOR,
   KICK_FLASH_COLOR,
-  GOAL_NET_COLOR,
+
 } from './teamColors';
 import { buildPlayerSpriteTextures, playerSpriteKey, resolveSpriteDirection, type AnimFrame } from './playerSprites';
+import { drawPitchLines, drawPitchTurf } from './pitchMarkings';
 import { findTouchPriorityPlayer } from '../sim/ballTouch';
 import { isTeamAInPossession, selectPassTarget } from '../sim/cursor';
 import { toFloat } from '../core/fixed';
@@ -27,7 +28,7 @@ import { KICK_MAX_CHARGE_FRAMES } from '../sim/ballConstants';
 import { formatClockText, formatScoreText } from './scoreboard';
 import { formatEventBannerText } from './eventBanner';
 import { ReplayRecorder } from '../replay/ReplayRecorder';
-import { detectSoundEvents } from './soundEvents';
+import { detectSoundEvents, SoundEventId } from './soundEvents';
 import { SoundPlayer } from './SoundPlayer';
 import {
   PITCH_HEIGHT,
@@ -57,12 +58,14 @@ const BALL_RADIUS_PX = 10;
 const WALK_ANIM_TICKS_PER_FRAME = 8;
 /** キック解放時のインパクト表示の持続時間 (ms、実フレーム時間ベース。描画専用)。 */
 const KICK_FLASH_DURATION_MS = 180;
+/** ゴール演出の表示時間 (ms、実フレーム時間ベース)。 */
+const GOAL_CELEBRATION_MS = 1600;
 /** この速度未満は「静止」とみなし、脚を閉じた基本姿勢(frame 0)に固定する (仮値)。 */
 const WALK_ANIM_MIN_SPEED = 0.15;
 /** ボールの見た目回転(仮の視覚効果、速度に比例。実際の物理スピンは追跡していない)の係数。 */
 const BALL_VISUAL_SPIN_PER_PX = 0.09;
-/** ゴールネットの奥行き(px、仮値)。ピッチ境界内側に収める(境界外はカメラに映らないため)。 */
-const GOAL_NET_DEPTH = 18;
+
+
 
 export class PitchScene extends Phaser.Scene {
   private state: GameState = createInitialState(DETERMINISTIC_SEED);
@@ -112,6 +115,10 @@ export class PitchScene extends Phaser.Scene {
   private eventBannerText!: Phaser.GameObjects.Text;
   /** 入力診断ライン (14周目)。simに届いているボタン/溜め/タックル状態を常時表示する。 */
   private inputDebugText!: Phaser.GameObjects.Text;
+  /** ゴール演出のテキスト (15周目)。得点時に一時的に大きく表示する。 */
+  private goalText!: Phaser.GameObjects.Text;
+  /** ゴール演出の残り表示時間 (ms、実フレーム時間ベース)。 */
+  private goalCelebrationMs = 0;
 
   /** ボール本体。サッカーボール模様のテクスチャ(buildBallTexture()で生成)を貼ったImage。 */
   private ballMain!: Phaser.GameObjects.Image;
@@ -150,7 +157,7 @@ export class PitchScene extends Phaser.Scene {
     }
 
     this.replayRecorder.start(DETERMINISTIC_SEED, this.state.difficulty, this.state.offsideEnabled);
-    this.soundPlayer = new SoundPlayer(this);
+    this.soundPlayer = new SoundPlayer();
 
     const setupEl = document.getElementById('match-setup-overlay');
     if (setupEl) {
@@ -159,11 +166,22 @@ export class PitchScene extends Phaser.Scene {
         this.state = createInitialState(DETERMINISTIC_SEED, { difficulty, offsideEnabled });
         this.replayRecorder.start(DETERMINISTIC_SEED, difficulty, offsideEnabled);
         this.matchStarted = true;
+        // 試合開始のキー入力は「ユーザー操作」なので、ここが AudioContext を起こす正規の
+        // タイミング (ブラウザの自動再生ポリシー上、操作ハンドラ内でしか resume できない)。
+        this.soundPlayer.ensureStarted();
       });
     } else {
       // オーバーレイ用のDOM要素が無い場合 (テスト環境等) は設定UIを待たずに即開始する。
       this.matchStarted = true;
     }
+
+    // 保険: 何らかの理由で上のフックを通らなかった場合でも、最初の操作で音を起こす。
+    // あわせて M キーでミュート切替 (音が邪魔な時の逃げ道を必ず用意しておく)。
+    window.addEventListener('keydown', (e: KeyboardEvent) => {
+      this.soundPlayer.ensureStarted();
+      if (e.code === 'KeyM') this.soundPlayer.setMuted(!this.soundPlayer.isMuted());
+    });
+    window.addEventListener('pointerdown', () => this.soundPlayer.ensureStarted());
 
     this.buildBallTexture();
     buildPlayerSpriteTextures(this);
@@ -201,78 +219,35 @@ export class PitchScene extends Phaser.Scene {
         }
         return this.state.frame;
       },
+      /**
+       * E2E検証専用: 指定Y位置へカメラを寄せて1フレームぶん描画し、canvasに絵を焼く。
+       * 非表示paneでは rAF が止まり描画も走らないため、見た目の確認にはこれが必要。
+       * 返り値の dataURL を保存すれば実際のスクリーンショットとして確認できる。
+       */
+      renderAt: (scrollY: number) => {
+        this.cameraY = scrollY;
+        this.render(16.7);
+        this.game.renderer.preRender();
+        this.game.renderer.render(this, this.children.getChildren(), this.cameras.main);
+        this.game.renderer.render(this, this.children.getChildren(), this.radarCamera);
+        this.game.renderer.postRender();
+        return (this.game.canvas as HTMLCanvasElement).toDataURL('image/png');
+      },
     };
   }
 
   private buildPitch(): void {
-    const pitch = this.add.rectangle(0, 0, PITCH_WIDTH, PITCH_HEIGHT, 0x1e6b3a);
-    pitch.setOrigin(0, 0);
-    pitch.setStrokeStyle(2, 0xffffff, 0.6);
+    // 芝の縞模様 + サッカーのライン一式 (pitchMarkings.ts、完全に手続き的な描画)。
+    // 15周目まではただの緑の矩形と200pxごとの横線しか無く、ペナルティエリアも
+    // センターサークルも無いためデバッグ画面に見えていた。静的な描画なので
+    // Graphics 2枚に1回だけ焼き、以後は毎フレーム触らない (60fps方針)。
+    const turf = this.add.graphics();
+    drawPitchTurf(turf, PITCH_WIDTH, PITCH_HEIGHT);
+    const lines = this.add.graphics();
+    drawPitchLines(lines, PITCH_WIDTH, PITCH_HEIGHT, toFloat(GOAL_WIDTH_FIXED));
 
-    // 目印代わりの横ライン (縦スクロールが視認しやすいように)
-    const lineSpacing = 200;
-    for (let y = lineSpacing; y < PITCH_HEIGHT; y += lineSpacing) {
-      const line = this.add.line(0, 0, 0, y, PITCH_WIDTH, y, 0xffffff, 0.25);
-      line.setOrigin(0, 0);
-    }
-
-    // ゴールマウスの目印 (得点処理は伴わない、GKの位置取り確認用の最小限の幾何参照)。
-    // Team A の自陣ゴールは y=PITCH_HEIGHT 側、Team B は y=0 側。
-    const goalHalfWidth = toFloat(GOAL_WIDTH_FIXED) / 2;
-    const goalCenterX = PITCH_WIDTH / 2;
-    const goalLineA = this.add.line(
-      0,
-      0,
-      goalCenterX - goalHalfWidth,
-      PITCH_HEIGHT,
-      goalCenterX + goalHalfWidth,
-      PITCH_HEIGHT,
-      0xffffff,
-      0.9,
-    );
-    goalLineA.setOrigin(0, 0);
-    goalLineA.setLineWidth(4);
-    const goalLineB = this.add.line(
-      0,
-      0,
-      goalCenterX - goalHalfWidth,
-      0,
-      goalCenterX + goalHalfWidth,
-      0,
-      0xffffff,
-      0.9,
-    );
-    goalLineB.setOrigin(0, 0);
-    goalLineB.setLineWidth(4);
-
-    // ゴールネット (見た目のみ、判定には関与しない)。真上からの視点では奥行きを表現できないため、
-    // ゴールラインのすぐ内側 (ピッチ境界内、カメラのsetBoundsを越えると描画されないため)に
-    // 格子状の網目を敷いて「ネットがある」ことを示す最小限の表現。
-    this.buildGoalNet(goalCenterX - goalHalfWidth, goalCenterX + goalHalfWidth, PITCH_HEIGHT, -1);
-    this.buildGoalNet(goalCenterX - goalHalfWidth, goalCenterX + goalHalfWidth, 0, 1);
-  }
-
-  /**
-   * ゴールネットの格子模様を1つ描く (静的な装飾、毎フレーム再描画しない)。
-   * @param goalLineY ゴールラインのY座標 (0 または PITCH_HEIGHT)。
-   * @param inwardSign ピッチ内側へ向かう方向 (+1=Y増方向、-1=Y減方向)。
-   */
-  private buildGoalNet(xStart: number, xEnd: number, goalLineY: number, inwardSign: 1 | -1): void {
-    const net = this.add.graphics();
-    net.lineStyle(1, GOAL_NET_COLOR, 0.35);
-    const meshSize = 6;
-    const yInner = goalLineY + inwardSign * GOAL_NET_DEPTH;
-    // 縦線
-    for (let x = xStart; x <= xEnd; x += meshSize) {
-      net.lineBetween(x, goalLineY, x, yInner);
-    }
-    // 横線
-    const yMin = Math.min(goalLineY, yInner);
-    const yMax = Math.max(goalLineY, yInner);
-    for (let y = yMin; y <= yMax; y += meshSize) {
-      net.lineBetween(xStart, y, xEnd, y);
-    }
-    this.goalNets.push(net);
+    // ゴール枠・ネットも drawPitchLines が両エンドぶんまとめて描く
+    // (旧 buildGoalNet / 個別のゴールライン描画は pitchMarkings.ts に統合して削除した)。
   }
 
   private colorFor(player: PlayerState): number {
@@ -457,6 +432,22 @@ export class PitchScene extends Phaser.Scene {
     });
     this.inputDebugText.setScrollFactor(0);
 
+    // ★ゴール演出★ (15周目)。旧実装は得点しても即キックオフに戻るだけで、
+    // 「決まった」という手応えが画面上に一切無かった。試合を止めない既存方針は守り、
+    // 大きな文字を1.6秒だけ被せる (拡大→縮小のアニメで視線を引く)。
+    this.goalText = this.add.text(VIEWPORT_WIDTH / 2, VIEWPORT_HEIGHT / 2 - 40, 'GOAL!', {
+      fontSize: '68px',
+      color: '#ffe680',
+      fontStyle: 'bold',
+      stroke: '#22160a',
+      strokeThickness: 8,
+    });
+    this.goalText.setOrigin(0.5, 0.5);
+    this.goalText.setScrollFactor(0);
+    this.goalText.setVisible(false);
+
+    this.radarCamera.ignore([this.goalText]);
+
     this.radarCamera.ignore([this.scoreText, this.clockText, this.eventBannerText, this.inputDebugText]);
   }
 
@@ -472,7 +463,9 @@ export class PitchScene extends Phaser.Scene {
     this.replayRecorder.record(inputs);
     const prevState = this.state;
     this.state = simulate(this.state, inputs);
-    this.soundPlayer.playAll(detectSoundEvents(prevState, this.state));
+    const events = detectSoundEvents(prevState, this.state);
+    this.soundPlayer.playAll(events);
+    if (events.includes(SoundEventId.Goal)) this.goalCelebrationMs = GOAL_CELEBRATION_MS;
   }
 
   update(_time: number, delta: number): void {
@@ -514,6 +507,7 @@ export class PitchScene extends Phaser.Scene {
     }
 
     this.renderKickFeedback(controlled, delta);
+    this.renderGoalCelebration(delta);
     this.renderInputDebug(controlled);
     this.renderPassMarker();
 
@@ -542,6 +536,21 @@ export class PitchScene extends Phaser.Scene {
     const targetVelY = this.state.ball.vel.y / 256;
     this.cameraY = computeCameraY(groundPx.y, targetVelY, this.cameraY, CAMERA_CONFIG);
     this.cameras.main.scrollY = this.cameraY;
+  }
+
+  /** ゴール演出 (得点時に大きく出して素早く落ち着く)。描画専用、試合は止めない。 */
+  private renderGoalCelebration(delta: number): void {
+    if (this.goalCelebrationMs <= 0) {
+      this.goalText.setVisible(false);
+      return;
+    }
+    this.goalCelebrationMs = Math.max(0, this.goalCelebrationMs - delta);
+    const t = this.goalCelebrationMs / GOAL_CELEBRATION_MS; // 1 → 0
+    // 出た瞬間に大きく、すぐ標準サイズへ落ち着き、最後に薄れて消える
+    const pop = 1 + Math.max(0, t - 0.75) * 3.2;
+    this.goalText.setScale(pop);
+    this.goalText.setAlpha(t < 0.25 ? t / 0.25 : 1);
+    this.goalText.setVisible(true);
   }
 
   /** 入力診断ライン (buildHudのコメント参照)。simに届いている入力と操作選手の状態を毎フレーム表示。 */

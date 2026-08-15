@@ -54,8 +54,17 @@ export function detectSoundEvents(prev: GameState, next: GameState): SoundEventI
     events.push(SoundEventId.FullTimeWhistle);
   }
 
-  if (!scored && next.lastTouchTeam !== null && next.lastTouchTeam !== prev.lastTouchTeam) {
-    events.push(SoundEventId.Kick);
+  // キック音の検出は2系統のORにする。
+  // (a) 操作選手のキック溜めが >0 から 0 へ落ちた = **人間が自分で蹴った瞬間**。
+  //     15周目の追加。旧実装は (b) だけだったため、自分でドリブルして自分で撃つ
+  //     (= lastTouchTeamが変わらない) という最も重要な場面で音が一切鳴っていなかった。
+  // (b) lastTouchTeam が別チームへ変わった = competing な接触 (奪取・セーブ・こぼれ球)。
+  if (!scored) {
+    const prevCharge = prev.players[prev.controlledPlayerIndex]?.kickChargeFrames ?? 0;
+    const nextCharge = next.players[next.controlledPlayerIndex]?.kickChargeFrames ?? 0;
+    const releasedKick = prevCharge > 0 && nextCharge === 0;
+    const possessionTouch = next.lastTouchTeam !== null && next.lastTouchTeam !== prev.lastTouchTeam;
+    if (releasedKick || possessionTouch) events.push(SoundEventId.Kick);
   }
 
   if (!scored && !halfChanged) {
