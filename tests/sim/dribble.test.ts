@@ -66,10 +66,15 @@ describe('applyDribbleTouch', () => {
     expect(next).toEqual(airborne);
   });
 
-  it('蹴り出しドリブル中は距離に関わらず速い値のまま (意図的にボールを足元から離す仕様)', () => {
+  it('★18周目に挙動変更★ 蹴り出しドリブルは接触している時だけ押し出す', () => {
+    // 旧挙動: 距離に関わらず毎tick速度6.0を与え続けていた。転がり摩擦が0.985と小さいため
+    // ボールは加速し続け、実測で平均810px も離れて事実上ボールを捨てる動作になっていた。
+    // 新挙動: 接触時のみ押し出す (押し出す→離れる→追いつく→また押す、というリズム)。
+    // なお選手位置を渡す新しい追従モデル (update.ts の実経路) では、蹴り出しドリブルも
+    // 「目標点を通常より前(16px)に置く」形で制御される。
     const b = ball();
     expect(applyDribbleTouch(b, true, true, Direction8.Right, true).vel.x).toBe(LONG_DRIBBLE_TOUCH_SPEED_FIXED);
-    expect(applyDribbleTouch(b, true, false, Direction8.Right, true).vel.x).toBe(LONG_DRIBBLE_TOUCH_SPEED_FIXED);
+    expect(applyDribbleTouch(b, true, false, Direction8.Right, true)).toEqual(b);
   });
 });
 

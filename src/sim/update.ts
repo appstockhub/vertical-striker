@@ -696,7 +696,16 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     // ここに true (=常に接触) を渡していたのが、ボールが永久に逃げ続けて
     // 「走りながらキックできない」実プレイ不具合の直接原因だった (ballConstants.ts参照)。
     const inContact = !!touchPlayer && isInDribbleContact(touchPlayer.pos, ball.pos);
-    ball = applyDribbleTouch(ball, true, inContact, touchInputs.direction, kickDribbleActive);
+    // 第6引数に選手位置を渡すと「足元の少し前へ引き寄せる」追従モデルになる
+    // (18周目、ユーザー指示「ドリブル中は足から離れないようにして。LR同時押以外」)。
+    ball = applyDribbleTouch(
+      ball,
+      true,
+      inContact,
+      touchInputs.direction,
+      kickDribbleActive,
+      touchPlayer?.pos,
+    );
     // 接触距離の内外に関わらず、プレー可能な間合いで実際にボールを動かしたなら「触れた」。
     // inContact だけで判定すると、12〜20px で押している選手が lastTouchTeam に反映されず、
     // 支配率・スローイン相手判定・ライン押し引きがすべてズレる。

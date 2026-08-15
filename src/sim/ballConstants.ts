@@ -63,6 +63,55 @@ export const DRIBBLE_TOUCH_MAX_HEIGHT_FIXED: Fixed = toFixed(2.0);
 /** ドリブルタッチ時にボールへ与える速度 (px/tick, 仮値)。PLAYER_SPEED(3.0)よりわずかに速い。 */
 export const DRIBBLE_TOUCH_SPEED_FIXED: Fixed = toFixed(3.6);
 
+/**
+ * ★18周目: ドリブル中の追従モデル★
+ * ユーザー指示「基本的にドリブルしているときは足から離れないようにして。LR同時押以外」。
+ *
+ * 旧実装は「接触距離なら3.6で前へ転がす / 離れかけなら2.8」という速度の上書きだけで、
+ * 進行方向が変わるとボールは古い方向へ転がり続けて置き去りになっていた
+ * (実測: 直進時は最大15pxだが、**方向転換を繰り返すと最大95.6px** 離れる)。
+ *
+ * 新実装は「足元の少し前 (DRIBBLE_FOLLOW_DISTANCE) にボールの目標点を置き、そこへ
+ * 引き寄せる」追従モデルにする。方向転換しても目標点が選手について回るため、
+ * ボールが足元から離れない。目標点を選手の中心ではなく少し前方に置くことで、
+ * CLAUDE.mdの「ボールが足元に吸着しすぎない。触れると少し前に転がる」も両立する。
+ */
+export const DRIBBLE_FOLLOW_DISTANCE_FIXED: Fixed = toFixed(9);
+/**
+ * 追従の追いつき速度の上限 (px/tick)。方向転換で置き去りになったボールを引き戻す速さ。
+ * 選手速度(3.0)より速くしないと永久に追いつけないが、速すぎるとボールが足に吸い付いて
+ * 見えるため、catch-upとして自然な範囲に留める。
+ */
+export const DRIBBLE_FOLLOW_MAX_SPEED_FIXED: Fixed = toFixed(5.0);
+/**
+ * 蹴り出しドリブル時の追従上限 (px/tick)。選手速度 (LONG_DRIBBLE_PLAYER_SPEED = 4.2) を
+ * わずかに上回るだけにする。上回りすぎるとボールが選手より速く前進し続け、
+ * touch-priority の半径 (20px) を抜けた瞬間に制御を失って転がり去る
+ * (実ブラウザで上限5.0のとき平均467px・最大1725px 離れるのを実測した。
+ *  単体テストでは初期条件が穏やかなため8.2pxに収まり、この破綻を見逃していた)。
+ */
+export const KICK_DRIBBLE_FOLLOW_MAX_SPEED_FIXED: Fixed = toFixed(4.6);
+/** 目標点までの距離に掛ける追従ゲイン (0..1)。1に近いほど1tickで目標へ届く=吸着的。 */
+export const DRIBBLE_FOLLOW_GAIN_FIXED: Fixed = toFixed(0.55);
+/**
+ * 蹴り出しドリブル (L+R) の目標点までの距離 (px)。通常ドリブル(9px)より大きく取り、
+ * 「大きく前へ蹴り出して自分で追いかける」動作にする。速度ではなく目標点で制御するので、
+ * ボールは必ずこの距離に収束する (旧実装は毎tick速度6.0を与え続けて平均831px離れていた)。
+ *
+ * 値は touch-priority の半径 (DRIBBLE_RADIUS = 20px) より内側にする必要がある:
+ * それを超えるとボールの保持者判定が外れて追従制御自体が止まり、ボールが
+ * そのまま転がって行方不明になる (46pxで試したところ平均810px離れた、実測)。
+ * 「相手のスライディングをかわせる」という仕様上の役割は、通常ドリブル(9px)の
+ * 倍近い16pxまで足元から離すことで果たす。
+ */
+export const KICK_DRIBBLE_FOLLOW_DISTANCE_FIXED: Fixed = toFixed(16);
+/**
+ * この速度以上で転がっているボールにはドリブルタッチが触れない (px/tick)。
+ * 追従の最大速度(5.0)より上、最も弱いキック(6.2)より下に置くことで、
+ * 「追従で与えた速度は毎tick制御し直せる/キックはそのまま飛ばす」を両立させる。
+ */
+export const DRIBBLE_HANDS_OFF_SPEED_FIXED: Fixed = toFixed(5.6);
+
 /** ロングドリブル(L/R押し続け)時のプレイヤー速度 (px/tick, 仮値。通常の約1.4倍、要実機検証)。 */
 export const LONG_DRIBBLE_PLAYER_SPEED_FIXED: Fixed = toFixed(4.2);
 

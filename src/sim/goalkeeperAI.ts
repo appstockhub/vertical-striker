@@ -71,9 +71,20 @@ export function shouldTakeOverGoalkeeper(
   buttons: ButtonState,
   teamAInPossession: boolean,
 ): boolean {
-  const nearBall = (distSqFixed(goalkeeper.pos, ballPos) as number) <= (GK_AUTO_TAKEOVER_RADIUS_SQ_FIXED as number);
-  const lWantsGoalkeeper = buttons.L && !teamAInPossession;
-  return nearBall || lWantsGoalkeeper;
+  /**
+   * ★18周目に削除: 「Lボタンでキーパーへ交代」★
+   *
+   * 12周目までの仮実装で L に割り当てていたが、公式仕様のどこにも存在しない当プロジェクト
+   * 独自の割り当てだった (公式はGKのAUTO/MANUALを試合前に選ぶ方式)。しかも L/R は
+   * シフトキック・蹴り出しドリブル(L+R)・パスカーソル切替に使うため、実プレイで正面衝突する:
+   * 蹴り出しドリブル中に保持判定が一瞬揺れるたびカーソルがキーパーへ飛び、
+   * **ドリブルが1tickおきに中断されてボールを置き去りにする**のを実ブラウザで実測した
+   * (controlled が 9↔0 で毎tick入れ替わるトレースを取得)。
+   * ボール接近による自動交代のみを残す。
+   */
+  void buttons;
+  void teamAInPossession;
+  return (distSqFixed(goalkeeper.pos, ballPos) as number) <= (GK_AUTO_TAKEOVER_RADIUS_SQ_FIXED as number);
 }
 
 /** ボールがキーパーのセーブ文脈 (Y=キャッチ/B=パンチング) に入る範囲内か。 */

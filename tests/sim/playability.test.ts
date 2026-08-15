@@ -198,6 +198,50 @@ describe('プレイアビリティ 1: ドリブルでボールが足元から逃
     expect(lostTicks, `ボールを見失ったtick数 (最終距離=${distPx(state, human).toFixed(1)}px)`).toBe(0);
   });
 
+  /**
+   * ★ユーザー指示「基本的にドリブルしているときは足から離れないようにして。LR同時押以外」★
+   *
+   * 旧実装の実測: 直進では最大15pxだが、**方向転換を繰り返すと最大95.6px** 置き去りになった
+   * (速度を上書きするだけで、進行方向が変わってもボールは古い方向へ転がり続けたため)。
+   * 追従モデル (足元の少し前を目標点にして引き寄せる) へ変更後は最大5.0px。
+   */
+  it('★方向転換を繰り返してもボールが足元から離れない', () => {
+    let state = humanCarrying();
+    const human = state.controlledPlayerIndex;
+    const dirs = [
+      Direction8.Up,
+      Direction8.UpRight,
+      Direction8.Right,
+      Direction8.DownRight,
+      Direction8.Down,
+      Direction8.Left,
+    ];
+    let maxDist = 0;
+    for (let i = 0; i < 240; i++) {
+      state = simulate(state, inputs(dirs[Math.floor(i / 20) % dirs.length]!));
+      maxDist = Math.max(maxDist, distPx(state, human));
+    }
+    expect(maxDist, '方向転換でボールが置き去りになっている').toBeLessThan(10);
+  });
+
+  it('L+R (蹴り出しドリブル) だけは足元から離れる — ただし制御は失わない', () => {
+    let state = humanCarrying();
+    const human = state.controlledPlayerIndex;
+    let maxDist = 0;
+    let sum = 0;
+    for (let i = 0; i < 120; i++) {
+      state = simulate(state, inputs(Direction8.Up, { L: true, R: true }));
+      const d = distPx(state, human);
+      maxDist = Math.max(maxDist, d);
+      sum += d;
+    }
+    // 通常ドリブル (最大5px) より明確に前へ出る。
+    expect(sum / 120, '蹴り出しドリブルなのに通常ドリブルと変わらない').toBeGreaterThan(6);
+    // ただしプレー可能な間合い(20px)の中に留まり、ボールを見失わない
+    // (旧実装は毎tick速度6.0を与え続けた結果、平均810px離れて事実上ボールを捨てていた)。
+    expect(maxDist, '蹴り出しドリブルでボールを見失っている').toBeLessThan(20);
+  });
+
   it('ドリブル中、ボールが選手から極端に離れない (20px = 触れる限界を超えない)', () => {
     let state = humanCarrying();
     const human = state.controlledPlayerIndex;

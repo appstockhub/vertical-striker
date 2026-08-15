@@ -94,13 +94,12 @@ describe('shouldTakeOverGoalkeeper', () => {
     expect(shouldTakeOverGoalkeeper(gk, farBall, buttonsNone, true)).toBe(false);
   });
 
-  it('is true when the ball is far but L is held and Team A does not have the ball', () => {
+  it('★18周目に廃止★ Lボタンではキーパーへ交代しない (仕様外の割当だった)', () => {
+    // L/R はシフトキック・蹴り出しドリブル(L+R)・パスカーソル切替に使うため、
+    // 「Lでキーパーへ交代」と正面衝突していた。実ブラウザで、蹴り出しドリブル中に
+    // カーソルが毎tickキーパーへ飛んでドリブルが壊れるのを実測したため削除した。
     const farBall = { x: gk.pos.x, y: ZERO_FIXED };
-    expect(shouldTakeOverGoalkeeper(gk, farBall, buttonsL, false)).toBe(true);
-  });
-
-  it('is false when L is held but Team A already has the ball (no need to take over)', () => {
-    const farBall = { x: gk.pos.x, y: ZERO_FIXED };
+    expect(shouldTakeOverGoalkeeper(gk, farBall, buttonsL, false)).toBe(false);
     expect(shouldTakeOverGoalkeeper(gk, farBall, buttonsL, true)).toBe(false);
   });
 });

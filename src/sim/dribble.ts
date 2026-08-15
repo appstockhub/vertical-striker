@@ -1,14 +1,21 @@
-import { dotFixed, fixedAdd, fixedMul, fixedSub, vScaleFixed } from '../core/fixed';
+import { dotFixed, fixedAdd, fixedMul, fixedSub, toFixed, vAdd, vScaleFixed, vSub, ZERO_FIXED } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, type ButtonState } from '../input/types';
 import type { BallState } from './state';
 import { DIRECTION_VECTORS } from './constants';
+import { quantizeToDirection8 } from './steering';
 import {
   DRIBBLE_CONTACT_RADIUS_SQ_FIXED,
   DRIBBLE_KEEP_SPEED_FIXED,
   DRIBBLE_RADIUS_SQ_FIXED,
   DRIBBLE_TOUCH_MAX_HEIGHT_FIXED,
+  DRIBBLE_FOLLOW_DISTANCE_FIXED,
+  DRIBBLE_FOLLOW_GAIN_FIXED,
+  DRIBBLE_FOLLOW_MAX_SPEED_FIXED,
+  DRIBBLE_HANDS_OFF_SPEED_FIXED,
   DRIBBLE_TOUCH_SPEED_FIXED,
+  KICK_DRIBBLE_FOLLOW_DISTANCE_FIXED,
+  KICK_DRIBBLE_FOLLOW_MAX_SPEED_FIXED,
   LONG_DRIBBLE_TOUCH_SPEED_FIXED,
 } from './ballConstants';
 
@@ -74,10 +81,69 @@ export function applyDribbleTouch(
   inContact: boolean,
   direction: Direction8,
   kickDribbleActive: boolean,
+  /**
+   * ★18周目★ 追従モデル用の選手位置。渡すと「足元の少し前へ引き寄せる」制御になり、
+   * 方向転換してもボールが置き去りにならない (ユーザー指示「ドリブル中は足から離れない
+   * ようにして。LR同時押以外」)。省略時は従来の速度上書き方式のまま (既存テスト互換)。
+   */
+  playerPos?: Vec2Fixed,
 ): BallState {
   if (!near) return ball;
   if ((ball.height as number) > (DRIBBLE_TOUCH_MAX_HEIGHT_FIXED as number)) return ball; // 浮き球はキックのみ
   if (direction === Direction8.None) return ball; // 停止中は何もしない
+
+  if (playerPos) {
+    /**
+     * --- 追従モデル (18周目) ---
+     * 「足元の少し前」を目標点にしてボールを引き寄せる。通常ドリブルと蹴り出しドリブル
+     * (L+R) の違いは**目標点の距離だけ**にする。速度を直接与える旧方式は、転がり摩擦が
+     * 0.985 と非常に小さい (= 一度速度を与えると v/(1-0.985) ≒ 67倍の距離を転がる) ため
+     * 制御不能で、実測でも通常ドリブルで最大302px、L+Rで平均831px も離れていた。
+     * 目標点で制御すれば、摩擦がいくつでもボールは必ずその点に収束する。
+     */
+    const followDistance = kickDribbleActive
+      ? KICK_DRIBBLE_FOLLOW_DISTANCE_FIXED
+      : DRIBBLE_FOLLOW_DISTANCE_FIXED;
+    const target = vAdd(playerPos, vScaleFixed(DIRECTION_VECTORS[direction], followDistance));
+    const toTarget = vSub(target, ball.pos);
+    const distSq = dotFixed(toTarget, toTarget) as number;
+    // 目標点にほぼ乗っているなら何もしない (微小な押し合いでボールが震えるのを防ぐ)。
+    if (distSq <= (fixedMul(toFixed(1), toFixed(1)) as number)) return ball;
+
+    /**
+     * すでに速く転がっているボールには触れない = キック/パス/こぼれ球を殺さないためのガード。
+     * しきい値は追従の最大速度より上・最も弱いキック(6.2)より下に置く。
+     * 「追従で与えた速度」は毎tick制御し直せる (= 収束する) が、キックはそのまま飛ばす。
+     */
+    if ((dotFixed(ball.vel, ball.vel) as number) >= (fixedMul(DRIBBLE_HANDS_OFF_SPEED_FIXED, DRIBBLE_HANDS_OFF_SPEED_FIXED) as number)) {
+      return ball;
+    }
+
+    // 速度 = 目標までの距離 × ゲイン (上限あり)。距離が大きいほど速く追いつく。
+    //
+    // 決定論について: Math.sqrt は IEEE754 で「正確に丸められる」ことが規格で要求されており、
+    // 準拠環境なら常にビット単位で同一の結果になる (Math.sin/cos/atan2 と違い実装依存の
+    // 近似ではない) ため使用してよい。ただし戻り値は非整数になり得るので、必ず floor して
+    // Fixed(1/256px単位の整数) の不変条件を壊さないようにする。
+    // 注意: dotFixed は Fixed の乗算なので既に 1/256 されている (単位は px^2 * 256)。
+    // そのまま sqrt すると px*16 になり、Fixed(px*256) より16倍小さい値になる
+    // (最初の実装でこれを踏み、ボールが選手の1/17の速さでしか追従せず置き去りになった)。
+    // 256 を掛けてから sqrt することで正しく Fixed スケールの距離になる。
+    const dist = Math.floor(Math.sqrt(distSq * 256)) as Fixed;
+    const maxSpeed = kickDribbleActive
+      ? KICK_DRIBBLE_FOLLOW_MAX_SPEED_FIXED
+      : DRIBBLE_FOLLOW_MAX_SPEED_FIXED;
+    const speed = Math.min(fixedMul(dist, DRIBBLE_FOLLOW_GAIN_FIXED) as number, maxSpeed as number) as Fixed;
+    // 方向は8方向に量子化する (sim全体の方針。ボールの追従では見た目に影響しない)。
+    const dir = quantizeToDirection8(toTarget, ZERO_FIXED);
+    if (dir === Direction8.None) return ball;
+    return { ...ball, vel: vScaleFixed(DIRECTION_VECTORS[dir], speed) };
+  }
+
+  if (kickDribbleActive) {
+    if (!inContact) return ball;
+    return { ...ball, vel: vScaleFixed(DIRECTION_VECTORS[direction], LONG_DRIBBLE_TOUCH_SPEED_FIXED) };
+  }
 
   // 距離によって押し出す強さを変えるのが要点 (ballConstants.ts の
   // DRIBBLE_KEEP_SPEED_FIXED のコメントに設計理由の全体像あり):
