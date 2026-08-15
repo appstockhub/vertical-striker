@@ -110,6 +110,8 @@ export class PitchScene extends Phaser.Scene {
   private clockText!: Phaser.GameObjects.Text;
   /** スローイン/GKキャッチ等の一時バナー (Phase 5)。試合は止めず、HUD文言のみで視認性を上げる。 */
   private eventBannerText!: Phaser.GameObjects.Text;
+  /** 入力診断ライン (14周目)。simに届いているボタン/溜め/タックル状態を常時表示する。 */
+  private inputDebugText!: Phaser.GameObjects.Text;
 
   /** ボール本体。サッカーボール模様のテクスチャ(buildBallTexture()で生成)を貼ったImage。 */
   private ballMain!: Phaser.GameObjects.Image;
@@ -176,6 +178,30 @@ export class PitchScene extends Phaser.Scene {
 
     this.cameras.main.setBounds(0, 0, PITCH_WIDTH, PITCH_HEIGHT);
     this.cameras.main.setViewport(0, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+
+    // 診断用の読み取り専用ハンドル (14周目で恒久追加)。E2E検証と実プレイ時の切り分けの
+    // 両方に使う。simへの書き込み手段は一切公開しない (読むだけ、決定論に影響なし)。
+    // 「テストは緑だが実プレイで壊れている」が起きた時、このハンドル経由で
+    // 入力→ループ→simのどの層で信号が消えているかを外側から特定できる。
+    (window as unknown as { __vsDebug?: unknown }).__vsDebug = {
+      getFrame: () => this.state.frame,
+      isMatchStarted: () => this.matchStarted,
+      getSampledInputs: () => this.cachedInputs,
+      getState: () => this.state,
+      /**
+       * E2E検証専用の手動駆動。update()と同じ経路 (InputManager.sample → cachedInputs →
+       * fixedUpdate) を指定tick数だけ直接回す。非表示タブではブラウザがタイマーを
+       * 1秒間隔までスロットルするため (実測: 2tick/秒)、Phaserのループ任せでは検証が
+       * 成立しない。通常プレイでは誰も呼ばないので挙動への影響は無い。
+       */
+      pump: (ticks: number) => {
+        for (let i = 0; i < ticks; i++) {
+          this.cachedInputs = this.inputManager.sample();
+          this.fixedUpdate();
+        }
+        return this.state.frame;
+      },
+    };
   }
 
   private buildPitch(): void {
@@ -417,7 +443,21 @@ export class PitchScene extends Phaser.Scene {
     this.eventBannerText.setScrollFactor(0);
     this.eventBannerText.setVisible(false);
 
-    this.radarCamera.ignore([this.scoreText, this.clockText, this.eventBannerText]);
+    // ★入力診断ライン★ (14周目で追加、実プレイ「反応しない」の切り分け用)。
+    // いまsimに届いている論理ボタン・溜め量・タックル状態を画面下端に常時表示する。
+    // これで「ボタンを押しても反応しない」が起きた時、
+    //   - ここに表示が出ない → 入力層 (キーボード/パッドのマッピング・フォーカス) の問題
+    //   - 表示は出るがゲームが動かない → sim側の問題
+    // をユーザーの一目で確定できる。派手にしない (小さく、画面隅)。
+    this.inputDebugText = this.add.text(4, VIEWPORT_HEIGHT - 18, '', {
+      fontSize: '12px',
+      color: '#c8ffc8',
+      backgroundColor: '#00000090',
+      padding: { x: 4, y: 2 },
+    });
+    this.inputDebugText.setScrollFactor(0);
+
+    this.radarCamera.ignore([this.scoreText, this.clockText, this.eventBannerText, this.inputDebugText]);
   }
 
   private fixedUpdate(): void {
@@ -474,6 +514,7 @@ export class PitchScene extends Phaser.Scene {
     }
 
     this.renderKickFeedback(controlled, delta);
+    this.renderInputDebug(controlled);
     this.renderPassMarker();
 
     this.scoreText.setText(formatScoreText(this.state));
@@ -501,6 +542,21 @@ export class PitchScene extends Phaser.Scene {
     const targetVelY = this.state.ball.vel.y / 256;
     this.cameraY = computeCameraY(groundPx.y, targetVelY, this.cameraY, CAMERA_CONFIG);
     this.cameras.main.scrollY = this.cameraY;
+  }
+
+  /** 入力診断ライン (buildHudのコメント参照)。simに届いている入力と操作選手の状態を毎フレーム表示。 */
+  private renderInputDebug(controlled: PlayerState | undefined): void {
+    const buttons = this.cachedInputs?.buttons;
+    const held = buttons
+      ? Object.entries(buttons)
+          .filter(([, v]) => v)
+          .map(([k]) => k)
+          .join('+')
+      : '';
+    const dir = this.cachedInputs?.direction ?? 'None';
+    this.inputDebugText.setText(
+      `t${this.state.frame} dir:${dir} btn:[${held}] chg:${controlled?.kickChargeFrames ?? 0} tkl:${controlled?.tacklePhase ?? 0}`,
+    );
   }
 
   /**
