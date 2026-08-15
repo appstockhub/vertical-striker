@@ -5,6 +5,7 @@ import { simulate } from '../../src/sim/update';
 import { Direction8, emptyButtonState, LogicalButton, type ButtonState } from '../../src/input/types';
 import { FULL_MATCH_DURATION_FRAMES, HALF_DURATION_FRAMES } from '../../src/sim/matchClock';
 import { PITCH_HEIGHT, PITCH_WIDTH } from '../../src/config/pitch';
+import { CURVE_DURATION_TICKS, CURVE_INPUT_WINDOW_TICKS } from '../../src/sim/ballConstants';
 
 function inputs(direction: Direction8) {
   return { direction, buttons: emptyButtonState() };
@@ -227,6 +228,33 @@ describe('simulate — Phase 1/2: dribble + kick integration (controlled player 
     const released = simulate(charging, inputsWithButtons(Direction8.Right, {}));
     expect(toFloat(released.ball.zVel)).toBeCloseTo(0, 1);
     expect(toFloat(released.ball.vel.x)).toBeGreaterThan(0);
+  });
+
+  it('カーブ(続編仕様③): a direct kick opens a curve input window, consumed by the next direction press', () => {
+    let state = withPositions(1, { x: 100, y: 100 }, { x: 105, y: 100 });
+    state = simulate(state, inputsWithButtons(Direction8.None, { B: true }));
+    const afterKick = simulate(state, inputsWithButtons(Direction8.Right, {}));
+    // キックが開いたウィンドウ(CURVE_INPUT_WINDOW_TICKS)は、同tick内でボール物理更新が
+    // 1回走るぶん既に1減っている(applyKickが先に設定→stepBallPhysicsDetailedが後で減衰)。
+    expect(afterKick.ball.curveWindowTicksLeft).toBe(CURVE_INPUT_WINDOW_TICKS - 1);
+    expect(afterKick.ball.curveDirection).toBe(Direction8.None);
+
+    const afterCurveInput = simulate(afterKick, inputs(Direction8.Up));
+    expect(afterCurveInput.ball.curveDirection).toBe(Direction8.Up);
+    // 発動tick自体でもstepBallPhysicsDetailedが1回減衰させるため -1。
+    expect(afterCurveInput.ball.curveTicksLeft).toBe(CURVE_DURATION_TICKS - 1);
+    expect(toFloat(afterCurveInput.ball.vel.y)).toBeLessThan(0); // Up方向へ曲がり始めている
+  });
+
+  it('カーブ: the input window expires with no curve applied if no direction is pressed in time', () => {
+    let state = withPositions(1, { x: 100, y: 100 }, { x: 105, y: 100 });
+    state = simulate(state, inputsWithButtons(Direction8.None, { B: true }));
+    let afterKick = simulate(state, inputsWithButtons(Direction8.Right, {}));
+    for (let i = 0; i < CURVE_INPUT_WINDOW_TICKS + 2; i++) {
+      afterKick = simulate(afterKick, inputs(Direction8.None));
+    }
+    expect(afterKick.ball.curveWindowTicksLeft).toBe(0);
+    expect(afterKick.ball.curveDirection).toBe(Direction8.None);
   });
 });
 

@@ -7,7 +7,12 @@ import { attackingIsUpward, getHomePosition, opponentOf } from './formations';
 import { PITCH_HEIGHT } from '../config/pitch';
 import { checkOffside } from './offsideRule';
 import { DIRECTION_VECTORS, PLAYER_RADIUS_FIXED, PLAYER_SPEED_FIXED } from './constants';
-import { KICK_MIN_CHARGE_FRAMES, LONG_DRIBBLE_PLAYER_SPEED_FIXED } from './ballConstants';
+import {
+  CURVE_DURATION_TICKS,
+  CURVE_INPUT_WINDOW_TICKS,
+  KICK_MIN_CHARGE_FRAMES,
+  LONG_DRIBBLE_PLAYER_SPEED_FIXED,
+} from './ballConstants';
 import { applyDribbleTouch, computeKickDribbleState } from './dribble';
 import { applyKick, updateKickCharge } from './kick';
 import { clampToPitchBounds, stepBallPhysicsDetailed } from './ballPhysics';
@@ -350,6 +355,17 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   });
 
   let ball = state.ball;
+
+  // カーブ (続編仕様③): 直前のtickまでに人間の直接キックが開いた入力受付ウィンドウ
+  // (state.ball.curveWindowTicksLeft、前tickからの持ち越し値)が残っている間に、
+  // このtickで方向入力があればカーブを発生させる。「キックボタンを押した瞬間に+字」を
+  // 単一方向入力アーキテクチャ上「キック発動直後の短いウィンドウ」で近似したもの
+  // (詳細はballConstants.tsのコメント参照)。新しいキックがこのtick中に発生した場合は
+  // 後段の直接キック処理が上書きする(下記参照)ので、ここで消費しても問題ない。
+  if ((state.ball.curveWindowTicksLeft ?? 0) > 0 && inputs.direction !== Direction8.None) {
+    ball = { ...ball, curveDirection: inputs.direction, curveTicksLeft: CURVE_DURATION_TICKS, curveWindowTicksLeft: 0 };
+  }
+
   let nextControlledKickChargeFrames = controlledPlayer?.kickChargeFrames ?? 0;
   let tackleAdvance: TackleAdvance = NO_TACKLE;
   // 直近の知覚可能イベント (Phase 5)。物理/AIには影響しない echo (state.ts参照)。
@@ -426,6 +442,15 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
             lastTouchTeam = opponentOf(controlledPlayer.team);
           } else {
             ball = applyKick(ball, controlledPlayer, charge.releasedFrames, inputs.direction, inputs.buttons);
+            // カーブ(続編仕様③)の入力受付ウィンドウを新たに開く。このキック自体には
+            // カーブは掛からない(このtickの方向入力は既にショットの照準に使われているため)。
+            // 直前に別のカーブが効いていた場合はこの新しいキックで上書きする。
+            ball = {
+              ...ball,
+              curveDirection: Direction8.None,
+              curveTicksLeft: 0,
+              curveWindowTicksLeft: CURVE_INPUT_WINDOW_TICKS,
+            };
           }
         }
         tackleAdvance = advanceTacklePhase(controlledPlayer, false, Direction8.None);

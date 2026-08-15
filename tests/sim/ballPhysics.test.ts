@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
 import { clampToPitchBounds, stepBallPhysics, stepBallPhysicsDetailed } from '../../src/sim/ballPhysics';
 import type { BallState } from '../../src/sim/state';
-import { BALL_RADIUS_FIXED, GRAVITY_FIXED } from '../../src/sim/ballConstants';
+import { BALL_RADIUS_FIXED, CURVE_DURATION_TICKS, GRAVITY_FIXED } from '../../src/sim/ballConstants';
 import { PITCH_BOUNDS } from '../../src/sim/constants';
+import { Direction8 } from '../../src/input/types';
 
 function ball(overrides: Partial<BallState> = {}): BallState {
   return {
@@ -101,6 +102,74 @@ describe('stepBallPhysicsDetailed', () => {
   it('stepBallPhysics is a thin wrapper returning the same ball as stepBallPhysicsDetailed().ball', () => {
     const b = ball({ height: toFixed(10), vel: { x: toFixed(3), y: toFixed(-2) } });
     expect(stepBallPhysics(b)).toEqual(stepBallPhysicsDetailed(b).ball);
+  });
+});
+
+describe('stepBallPhysicsDetailed: curve (続編仕様③)', () => {
+  it('does nothing when curveDirection is None/absent (existing behavior unchanged)', () => {
+    const b = ball({ vel: { x: toFixed(5), y: ZERO_FIXED }, height: toFixed(10) });
+    const next = stepBallPhysicsDetailed(b).ball;
+    expect(next.vel.y).toBe(ZERO_FIXED);
+  });
+
+  it('bends the trajectory sideways each tick while curveTicksLeft > 0', () => {
+    const b = ball({
+      vel: { x: toFixed(5), y: ZERO_FIXED },
+      height: toFixed(10),
+      curveDirection: Direction8.Down,
+      curveTicksLeft: 3,
+    });
+    const next = stepBallPhysicsDetailed(b).ball;
+    expect(toFloat(next.vel.y)).toBeGreaterThan(0); // Down方向のカーブでy成分が正に
+    expect(next.curveTicksLeft).toBe(2);
+    expect(next.curveDirection).toBe(Direction8.Down);
+  });
+
+  it('curve accumulates each tick, bending the path further over time', () => {
+    let state = ball({
+      vel: { x: toFixed(5), y: ZERO_FIXED },
+      height: toFixed(50),
+      curveDirection: Direction8.Down,
+      curveTicksLeft: CURVE_DURATION_TICKS,
+    });
+    const yVelAfter: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      state = stepBallPhysicsDetailed(state).ball;
+      yVelAfter.push(toFloat(state.vel.y));
+    }
+    for (let i = 1; i < yVelAfter.length; i++) {
+      expect(yVelAfter[i]!).toBeGreaterThan(yVelAfter[i - 1]!);
+    }
+  });
+
+  it('curve stops (direction resets to None) once curveTicksLeft is exhausted', () => {
+    let state = ball({
+      vel: { x: toFixed(5), y: ZERO_FIXED },
+      height: toFixed(50),
+      curveDirection: Direction8.Down,
+      curveTicksLeft: 1,
+    });
+    state = stepBallPhysicsDetailed(state).ball;
+    expect(state.curveTicksLeft).toBe(0);
+    expect(state.curveDirection).toBe(Direction8.None);
+    const yVelWhenExhausted = toFloat(state.vel.y);
+
+    const before = state;
+    state = stepBallPhysicsDetailed(state).ball;
+    expect(toFloat(state.vel.y)).toBeCloseTo(yVelWhenExhausted, 5); // これ以上曲がらない
+    expect(state.vel.x).toBe(before.vel.x);
+  });
+
+  it('curveWindowTicksLeft decays by 1 each tick down to 0 (window itself does not curve the ball)', () => {
+    let state = ball({ curveWindowTicksLeft: 3 });
+    state = stepBallPhysicsDetailed(state).ball;
+    expect(state.curveWindowTicksLeft).toBe(2);
+    state = stepBallPhysicsDetailed(state).ball;
+    expect(state.curveWindowTicksLeft).toBe(1);
+    state = stepBallPhysicsDetailed(state).ball;
+    expect(state.curveWindowTicksLeft).toBe(0);
+    state = stepBallPhysicsDetailed(state).ball;
+    expect(state.curveWindowTicksLeft).toBe(0); // 0未満にはならない
   });
 });
 

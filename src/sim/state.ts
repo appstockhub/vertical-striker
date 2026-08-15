@@ -42,6 +42,17 @@ export interface BallState {
   readonly height: Fixed;
   /** 垂直方向の速度。+ = 上昇。 */
   readonly zVel: Fixed;
+  /**
+   * カーブ(続編仕様③)の入力受付ウィンドウの残りtick数。0より大きい間に方向入力があれば
+   * curveDirection/curveTicksLeftへ遷移する(update.tsのカーブトリガー判定を参照)。
+   * 人間の直接キック(シフトキックと同じ経路)でのみ開かれる。
+   * optional(既存テストコード互換のため。省略時は`?? 0`として扱う)。
+   */
+  readonly curveWindowTicksLeft?: number;
+  /** 現在効いているカーブの方向。Direction8.Noneなら無効(optional、省略時は`?? Direction8.None`)。 */
+  readonly curveDirection?: Direction8;
+  /** 上記カーブの残り持続tick数。0になったらcurveDirectionもNoneへ戻る(sim/ballPhysics.ts参照)。 */
+  readonly curveTicksLeft?: number;
 }
 
 /**

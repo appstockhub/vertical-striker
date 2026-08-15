@@ -1,8 +1,16 @@
 import { clampFixed, fixedAdd, fixedMul, fixedSub, vAdd, vScaleFixed, ZERO_FIXED } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import type { BallState } from './state';
-import { PITCH_BOUNDS } from './constants';
-import { BALL_RADIUS_FIXED, BOUNCE_DAMPING_FIXED, BOUNCE_MIN_VEL_FIXED, GRAVITY_FIXED, ROLLING_FRICTION_FIXED } from './ballConstants';
+import { Direction8 } from '../input/types';
+import { DIRECTION_VECTORS, PITCH_BOUNDS } from './constants';
+import {
+  BALL_RADIUS_FIXED,
+  BOUNCE_DAMPING_FIXED,
+  BOUNCE_MIN_VEL_FIXED,
+  CURVE_ACCEL_FIXED,
+  GRAVITY_FIXED,
+  ROLLING_FRICTION_FIXED,
+} from './ballConstants';
 
 /** stepBallPhysicsDetailed() の戻り値。tentativePos はピッチ境界クランプ「前」の位置。 */
 export interface BallPhysicsStep {
@@ -44,11 +52,24 @@ export function stepBallPhysicsDetailed(ball: BallState): BallPhysicsStep {
   }
 
   const grounded = (height as number) <= (ZERO_FIXED as number);
-  const vel: Vec2Fixed = grounded ? vScaleFixed(ball.vel, ROLLING_FRICTION_FIXED) : ball.vel; // 空中は摩擦なし
+  let vel: Vec2Fixed = grounded ? vScaleFixed(ball.vel, ROLLING_FRICTION_FIXED) : ball.vel; // 空中は摩擦なし
+
+  // カーブ (続編仕様③): curveTicksLeftが残っている間、毎tick側方加速度を加え続ける。
+  // トリガー判定(方向入力受付ウィンドウの消費)はupdate.ts側の責務、ここでは
+  // 「既に設定されたカーブを毎tick適用し、持続時間を減衰させる」だけを行う。
+  const curveDirectionIn = ball.curveDirection ?? Direction8.None;
+  let curveTicksLeft = ball.curveTicksLeft ?? 0;
+  if (curveTicksLeft > 0 && curveDirectionIn !== Direction8.None) {
+    vel = vAdd(vel, vScaleFixed(DIRECTION_VECTORS[curveDirectionIn], CURVE_ACCEL_FIXED));
+    curveTicksLeft -= 1;
+  }
+  const curveDirection = curveTicksLeft > 0 ? curveDirectionIn : Direction8.None;
+  const curveWindowTicksLeft = Math.max(0, (ball.curveWindowTicksLeft ?? 0) - 1);
+
   const tentativePos = vAdd(ball.pos, vel);
   const pos = clampToPitchBounds(tentativePos, BALL_RADIUS_FIXED);
 
-  return { ball: { pos, vel, height, zVel }, tentativePos };
+  return { ball: { pos, vel, height, zVel, curveDirection, curveTicksLeft, curveWindowTicksLeft }, tentativePos };
 }
 
 /**

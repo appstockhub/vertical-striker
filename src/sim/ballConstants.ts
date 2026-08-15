@@ -50,3 +50,26 @@ export const BOUNCE_DAMPING_FIXED: Fixed = toFixed(0.5);
 export const BOUNCE_MIN_VEL_FIXED: Fixed = toFixed(0.5);
 /** 接地中、毎tick水平速度に掛ける減衰係数 (仮値)。 */
 export const ROLLING_FRICTION_FIXED: Fixed = toFixed(0.96);
+
+/**
+ * カーブ(続編仕様③)関連の定数。すべて仮値(実機データ無し、プレイフィールで調整する対象。
+ * CLAUDE.md「独自仕様」節のバックスピンと同様の扱い)。
+ *
+ * 入力受付ウィンドウ: 公式説明書は「キックボタンを押した"瞬間に"+字を入れる」と記述するが、
+ * この実装は1tickにつき方向入力を1つしか読めず、キック発動tickの方向入力は既に
+ * ショット自体の照準(シフトキック含む)に使われている。そのため「同時」を「キック発動
+ * tickの直後から始まる短いウィンドウ」で近似する。初代CLAUDE.mdが計画していた
+ * 「キック後Nフレーム(仮値20f)」より大幅に短くしてある(「同時」に近づける意図)。
+ */
+export const CURVE_INPUT_WINDOW_TICKS = 6;
+/** カーブが実際に効いている持続tick数 (仮値)。 */
+export const CURVE_DURATION_TICKS = 24;
+/**
+ * カーブによる毎tickの側方加速度 (px/tick、仮値)。CURVE_DURATION_TICKS(24)分
+ * 累積すると側方速度が最大で約2.4px/tick増える計算 (STRONG_KICK_SPEED=9.0の
+ * 約27%相当)。軌道を明確に曲げつつ直進性を完全には殺さない、上限側の初期値として
+ * 選んだ(要プレイテスト調整。初期実装値0.35は最大8.4px/tickまで積み上がり
+ * ショットを完全に横へねじ曲げてしまい、観戦シミュレーターで新規の振動を誘発したため
+ * 大幅に下げた)。
+ */
+export const CURVE_ACCEL_FIXED: Fixed = toFixed(0.04);
