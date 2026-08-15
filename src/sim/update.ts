@@ -14,7 +14,7 @@ import {
 } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, emptyButtonState, type ButtonState } from '../input/types';
-import type { BallState, GameState, PlayerState, SetPieceLock } from './state';
+import type { BallState, GameState, PendingKick, PlayerState, SetPieceLock } from './state';
 import { PLAYERS_PER_TEAM, TacklePhase, TeamId } from './state';
 import { attackingIsUpward, getHomePosition, opponentOf, type Half } from './formations';
 import { PITCH_HEIGHT } from '../config/pitch';
@@ -25,7 +25,9 @@ import {
   CURVE_INPUT_WINDOW_TICKS,
   DRIBBLE_TOUCH_MAX_HEIGHT_FIXED,
   DRIBBLE_TOUCH_SPEED_FIXED,
+  KICK_INPUT_BUFFER_TICKS,
   KICK_MIN_CHARGE_FRAMES,
+  KICK_REACH_FIXED,
   LIFT_Z_VEL_FIXED,
   LONG_DRIBBLE_PLAYER_SPEED_FIXED,
 } from './ballConstants';
@@ -342,6 +344,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       prevTouchPlayerIndex: null,
       difficulty: state.difficulty,
       offsideEnabled: state.offsideEnabled,
+      cpuHandsOff: state.cpuHandsOff,
+      pendingKick: null,
       restartGraceTeam: kickoffTeam,
       restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
       lastEvent: null,
@@ -352,11 +356,13 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
 
   // セットプレー再開ロック中は touch-priority も restartTeam に制限する (相手は絶対に
   // 触れられない、という保証を押し出しの幾何精度に頼らず構造的に成立させる)。
+  // 練習モード (cpuHandsOff) では Team A に限定する = CPUはボールに触れない。
+  const touchRestrictTeam = state.cpuHandsOff ? TeamId.A : state.setPieceLock?.restartTeam;
   const touchPriorityIndex = findTouchPriorityPlayer(
     state.players,
     state.ball.pos,
     state.lastTouchPlayerIndex,
-    state.setPieceLock?.restartTeam,
+    touchRestrictTeam,
   );
   const teamAInPossession = isTeamAInPossession(touchPriorityIndex);
   let lastTouchTeam = state.lastTouchTeam;
@@ -475,8 +481,19 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // 猶予中は restartGraceTeam の相手チームの追跡権をゼロにする (下記 chaseRightIndices 参照)。
   let restartGraceTicksLeft = Math.max(0, state.restartGraceTicksLeft - 1);
   let restartGraceTeam = restartGraceTicksLeft > 0 ? state.restartGraceTeam : null;
-  const suppressedTeam =
-    restartGraceTicksLeft > 0 && restartGraceTeam !== null ? opponentOf(restartGraceTeam) : null;
+  // 練習モードでは Team B の追跡権を丸ごと止める (陣形は保つが、ボールへは寄って来ない)。
+  const suppressedTeam = state.cpuHandsOff
+    ? TeamId.B
+    : restartGraceTicksLeft > 0 && restartGraceTeam !== null
+      ? opponentOf(restartGraceTeam)
+      : null;
+
+  // キック入力バッファの持ち越し (★17周目★)。毎tick 1 減らし、0になったら破棄する。
+  // 消化 (射程に入って実際に蹴る) と登録 (射程外でBを離す) は下のキック処理で行う。
+  let pendingKick: PendingKick | null =
+    state.pendingKick && state.pendingKick.ticksLeft > 1
+      ? { ...state.pendingKick, ticksLeft: state.pendingKick.ticksLeft - 1 }
+      : null;
 
   // セットプレー再開ロックの持ち越し。経過tickを数え、上限を超えたら自動解除する
   // (人間側の再開でプレイヤーが操作しないと試合が永久停止するため。SET_PIECE_LOCK_MAX_TICKS
@@ -718,17 +735,32 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
 
     if (controlledPlayer) {
       const isCarryingBall = touchPriorityIndex === controlledPlayerIndex;
+      /**
+       * ★17周目: キックの射程★ 旧実装は「touch-priorityを保持しているtickだけ」蹴れたため、
+       * ボールが足元から少し離れただけでBが完全に無反応になっていた (実戦相当の計測で
+       * ドリブル中の22%のtickがキック不能)。KICK_REACH まで広げる。
+       * 相手が保持しているボールは対象外 (それはタックル/チャージの領分)。
+       */
+      const holder = touchPriorityIndex !== null ? state.players[touchPriorityIndex] : null;
+      const kickReachSq = fixedMul(KICK_REACH_FIXED, KICK_REACH_FIXED) as number;
+      const kickable =
+        (distSqFixed(controlledPlayer.pos, ball.pos) as number) <= kickReachSq &&
+        !(holder && holder.team !== controlledPlayer.team) &&
+        !(setPieceLock && setPieceLock.restartTeam !== controlledPlayer.team);
 
-      if (isCarryingBall) {
+      if (kickable) {
         // リフティング (続編仕様⑥): 「急な方向転換(ターンアクション)中にキックボタンを
         // 押すと、保持を継続したまま頭上へ軽く浮かせる」。CLAUDE.mdの実装方針どおり、
         // 専用のターンアクション停止状態は実装せず(選手の移動自体は通常どおり進む)、
         // 「直前の向き(facing)と今回の入力方向がほぼ正反対」を検出条件として使う。
         // Bのedge(フレッシュな押下)を要求することで、既にB長押し中(通常のチャージキック
         // 進行中)の途中で反転しても誤発火しない。
+        // リフティングは「足元に置いている」状態の技なので、キック射程の拡張とは切り離し、
+        // 従来どおり touch-priority 保持中のみに限定する。
         const isReversal = isOppositeDirection8(inputs.direction, controlledPlayer.facing);
         const bEdge = inputs.buttons.B && !state.prevButtons.B;
-        const liftEligible = isReversal && bEdge && (ball.height as number) <= (DRIBBLE_TOUCH_MAX_HEIGHT_FIXED as number);
+        const liftEligible =
+          isCarryingBall && isReversal && bEdge && (ball.height as number) <= (DRIBBLE_TOUCH_MAX_HEIGHT_FIXED as number);
 
         if (liftEligible) {
           // 水平速度は「新しい入力方向へ通常のドリブルタッチと同じ速さ」にしておく
@@ -742,7 +774,25 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
           // 既存のチャージキック (タックル状態は自然にNoneへ収束させる)。
           const charge = updateKickCharge(controlledPlayer.kickChargeFrames, inputs.buttons.B);
           nextControlledKickChargeFrames = charge.nextFrames;
-          if (charge.releasedFrames > 0) {
+
+          // ★入力バッファの消化★ 射程外で押されたBを覚えてあり、いま射程に入ったので蹴る
+          // (「押したのに無反応」の解消)。Bを離した後の予約なので、押しっぱなしの
+          // チャージ進行とは競合しない。
+          const buffered = pendingKick && !inputs.buttons.B ? pendingKick : null;
+          if (buffered) {
+            pendingKick = null;
+            ball = applyKick(ball, controlledPlayer, KICK_MIN_CHARGE_FRAMES, buffered.direction, {
+              L: buffered.shiftL,
+              R: buffered.shiftR,
+            });
+            ball = {
+              ...ball,
+              curveDirection: Direction8.None,
+              curveTicksLeft: 0,
+              curveWindowTicksLeft: CURVE_INPUT_WINDOW_TICKS,
+            };
+            lastTouchTeam = controlledPlayer.team;
+          } else if (charge.releasedFrames > 0) {
             const offside = state.offsideEnabled
               ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
               : { offside: false, offsidePlayerIndex: null };
@@ -773,6 +823,19 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         // 恒久的にtrueになり、ボールを持っていない選手にカーソルが永遠に固定されて
         // 二度と切り替わらなくなる不具合があった (実プレイで発覚)。
         nextControlledKickChargeFrames = 0;
+
+        // ★入力バッファの登録★ 射程外でBを離した = 「蹴りたかったが届かなかった」。
+        // 短時間だけ意図を覚えておき、射程に入った瞬間に蹴る (上記の消化側を参照)。
+        // 相手が保持している時は登録しない (それはタックルの入力であってキックではない)。
+        const bRelease = !inputs.buttons.B && state.prevButtons.B;
+        if (bRelease && !(holder && holder.team !== controlledPlayer.team)) {
+          pendingKick = {
+            ticksLeft: KICK_INPUT_BUFFER_TICKS,
+            direction: inputs.direction,
+            shiftL: inputs.buttons.L,
+            shiftR: inputs.buttons.R,
+          };
+        }
 
         // ロック中 (キーパーの保持・セットプレー再開待ち) は相手チームからのボールへの
         // チャレンジを一切通さない。touch-priority制限だけでは、タックル/チャージが
@@ -858,7 +921,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // せず試合が停止する (観戦シミュレーターで実測、cpuDefenseAI.ts のコメント参照)。
   // セットプレー再開ロック中は発火させない (「蹴られるまで相手は触れない」を守る)。
   // GKのセーブが起きたtickも二重にボール速度を上書きしないよう見送る。
-  if (!gkSavedThisTick && !setPieceLock) {
+  if (!gkSavedThisTick && !setPieceLock && !state.cpuHandsOff) {
     const defense = decideCpuDefense(
       touchPriorityIndex,
       controlledPlayerIndex,
@@ -911,6 +974,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       prevTouchPlayerIndex: null,
       difficulty: state.difficulty,
       offsideEnabled: state.offsideEnabled,
+      cpuHandsOff: state.cpuHandsOff,
+      pendingKick: null,
       restartGraceTeam: kickoffTeam,
       restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
       lastEvent: null,
@@ -1047,6 +1112,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     prevTouchPlayerIndex,
     difficulty: state.difficulty,
     offsideEnabled: state.offsideEnabled,
+    cpuHandsOff: state.cpuHandsOff,
+    pendingKick,
     restartGraceTeam,
     restartGraceTicksLeft,
     lastEvent,

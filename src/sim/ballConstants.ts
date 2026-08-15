@@ -73,8 +73,38 @@ export const LONG_DRIBBLE_TOUCH_SPEED_FIXED: Fixed = toFixed(6.0);
 export const KICK_MIN_CHARGE_FRAMES = 1;
 export const KICK_MAX_CHARGE_FRAMES = 30;
 
-/** 弱キック (方向入力無しで解放) の基準速度 (px/tick, 仮値)。 */
-export const WEAK_KICK_SPEED_FIXED: Fixed = toFixed(4.0);
+/**
+ * 弱キック (方向入力無しで解放) の基準速度 (px/tick)。
+ *
+ * ★17周目に 4.0 → 6.2★ 実プレイ報告「キックの反応が弱い」の計測で、方向入力なしのBが
+ * 球速3.94 (方向ありは8.86) と落差が大きすぎ、「蹴ったのに転がっただけ」に感じることが
+ * 判明した。方向を入れない=狙いを定めていないので強キックより弱いのは仕様として残すが、
+ * 「クリア/軽い蹴り出し」として成立する速度まで上げる。
+ */
+export const WEAK_KICK_SPEED_FIXED: Fixed = toFixed(6.2);
+
+/**
+ * キックが届く距離 (px)。touch-priority (ドリブル半径20px) より広くする。
+ *
+ * ★17周目に新設★ 実プレイ「キックの反応が弱い」の直接原因。旧実装はキックを
+ * 「touch-priorityを保持しているtickだけ」に許していたため、ボールが足元から少し離れる
+ * (こぼれ球・トラップ直後・味方が一瞬タッチした等)だけでBが**完全に無反応**になっていた。
+ * 実戦相当の計測では、ドリブル中でも22%のtickでキックできなかった。
+ * 「相手が保持しているボール」は対象外 (それはタックルの領分) なので、責任範囲は変えない。
+ */
+export const KICK_REACH_FIXED: Fixed = toFixed(30);
+
+/**
+ * キック入力のバッファ長 (tick)。★17周目に新設★
+ *
+ * 押した瞬間にキックできない状況 (ボールが射程外) でも、この時間内に射程へ入れば
+ * 蹴る。人間の操作は「ボールに追いつく少し前にボタンを押す」のが自然なので、
+ * これが無いと「押したのに無反応」が頻発する (格闘ゲーム等の入力バッファと同じ発想)。
+ * 12tick = 0.2秒。選手速度3.0px/tickなので「ボールまで36pxの手前で押した」までを拾える
+ * (計測: 60px手前で押すと射程30pxに入るまで10tick)。長すぎると意図しない暴発になるため、
+ * 実際の追走距離から決めたこの値を上限とする。
+ */
+export const KICK_INPUT_BUFFER_TICKS = 12;
 /** 強キック (方向入力ありで解放) の基準速度 (px/tick, 仮値)。 */
 export const STRONG_KICK_SPEED_FIXED: Fixed = toFixed(9.0);
 

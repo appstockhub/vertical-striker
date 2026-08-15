@@ -66,6 +66,87 @@ function humanCarrying(carrierIndex = TeamId.A * 11 + 9, x = 240, y = 1000): Gam
   };
 }
 
+describe('プレイアビリティ 0: キックが「押した時に必ず出る」', () => {
+  /**
+   * ★実プレイ報告「まだキックの反応が弱い」の計測結果に対応するゲート★
+   * 計測で判明した2つの原因:
+   *   1. キックは touch-priority 保持中しか出ず、ボールが少し離れると完全に無反応
+   *      (実戦相当の計測で、ドリブル中の22%のtickがキック不能だった)
+   *   2. 方向入力なしのBが球速3.94 (方向ありは8.86) と落差が大きく「蹴った気がしない」
+   */
+
+  /** 人間からボールを dist px 離した状態を作る (足元 → 少し先 → 射程外)。 */
+  function ballAtDistance(dist: number): GameState {
+    const base = humanCarrying();
+    const human = base.players[base.controlledPlayerIndex]!;
+    return {
+      ...base,
+      ball: { ...base.ball, pos: { x: human.pos.x, y: toFixed(toFloat(human.pos.y) - dist) } },
+    };
+  }
+
+  for (const dist of [8, 16, 24, 29]) {
+    it(`ボールが${dist}px離れていてもBで蹴れる (射程30px以内)`, () => {
+      let state = ballAtDistance(dist);
+      state = simulate(state, inputs(Direction8.Up, { B: true }));
+      state = simulate(state, inputs(Direction8.Up));
+      expect(ballSpeed(state), `${dist}pxでBが無反応`).toBeGreaterThan(5);
+    });
+  }
+
+  it('★入力バッファ★ 射程外でBを押しても、ボールが射程に入った瞬間に蹴られる', () => {
+    // ボールを前方に転がしておき、選手が追いつく前にBを押す (実プレイで最も多い操作)。
+    const base = humanCarrying();
+    const human = base.players[base.controlledPlayerIndex]!;
+    let state: GameState = {
+      ...base,
+      ball: { ...base.ball, pos: { x: human.pos.x, y: toFixed(toFloat(human.pos.y) - 60) } },
+    };
+    // 射程外(60px)でB押下→離す。この時点では蹴れない。
+    state = simulate(state, inputs(Direction8.Up, { B: true }));
+    state = simulate(state, inputs(Direction8.Up));
+    expect(ballSpeed(state), '射程外なのに蹴れてしまった').toBeLessThan(1);
+
+    // 走って追いつく間に、バッファが消化されてキックが出るはず。
+    let fired = false;
+    for (let i = 0; i < 12 && !fired; i++) {
+      state = simulate(state, inputs(Direction8.Up));
+      if (ballSpeed(state) > 5) fired = true;
+    }
+    expect(fired, '射程に入ってもバッファされたキックが出ない').toBe(true);
+  });
+
+  it('方向入力なしのBでも「蹴った」と分かる速度が出る', () => {
+    let state = humanCarrying();
+    state = simulate(state, inputs(Direction8.None, { B: true }));
+    state = simulate(state, inputs(Direction8.None));
+    // 旧実装は3.94で「転がっただけ」に見えていた。方向ありの強キックより弱いのは仕様。
+    expect(ballSpeed(state)).toBeGreaterThan(5.5);
+    expect(ballSpeed(state)).toBeLessThan(toFloat(STRONG_KICK_SPEED_FIXED));
+  });
+
+  it('相手が保持しているボールは、近くてもBで蹴れない (それはタックルの領分)', () => {
+    const base = humanCarrying();
+    const human = base.controlledPlayerIndex;
+    const opponent = TeamId.B * 11 + 5;
+    const oppPos = { x: toFixed(240), y: toFixed(985) };
+    const state: GameState = {
+      ...base,
+      ball: { ...base.ball, pos: oppPos },
+      players: base.players.map((p, i) => (i === opponent ? { ...p, pos: oppPos } : p)),
+      lastTouchTeam: TeamId.B,
+      lastTouchPlayerIndex: opponent,
+      setPieceLock: null,
+    };
+    const next = simulate(simulate(state, inputs(Direction8.Up, { B: true })), inputs(Direction8.Up));
+    // タックル/チャージでボールが動くのは正当なので、「キックの速度で飛ぶ」ことだけを禁じる。
+    expect(ballSpeed(next), '相手の保持球をキックで奪えてしまった').toBeLessThan(
+      toFloat(STRONG_KICK_SPEED_FIXED) - 1,
+    );
+    expect(next.players[human]!.pos).toBeDefined();
+  });
+});
+
 describe('プレイアビリティ 1: ドリブルでボールが足元から逃げない', () => {
   it('前進ドリブルを2秒続けても、ボールは触れる間合いに留まる', () => {
     let state = humanCarrying();

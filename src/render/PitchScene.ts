@@ -140,6 +140,8 @@ export class PitchScene extends Phaser.Scene {
   private clockText!: Phaser.GameObjects.Text;
   private eventBannerText!: Phaser.GameObjects.Text;
   private inputDebugText!: Phaser.GameObjects.Text;
+  /** 練習モード (CPU非干渉) の表示。Pキーで切り替える。 */
+  private practiceText!: Phaser.GameObjects.Text;
   private goalText!: Phaser.GameObjects.Text;
   private goalCelebrationMs = 0;
 
@@ -193,6 +195,11 @@ export class PitchScene extends Phaser.Scene {
     window.addEventListener('keydown', (e: KeyboardEvent) => {
       this.soundPlayer.ensureStarted();
       if (e.code === 'KeyM') this.soundPlayer.setMuted(!this.soundPlayer.isMuted());
+      // ★練習モード (P キー)★ CPUがボールに一切関与しなくなる。動き・ボタンの効きを
+      // 相手に邪魔されず確認するための開発/練習用トグル (GameState.cpuHandsOff 参照)。
+      if (e.code === 'KeyP') {
+        this.state = { ...this.state, cpuHandsOff: !this.state.cpuHandsOff };
+      }
     });
     window.addEventListener('pointerdown', () => this.soundPlayer.ensureStarted());
 
@@ -467,6 +474,19 @@ export class PitchScene extends Phaser.Scene {
     this.inputDebugText.setScrollFactor(0);
     this.inputDebugText.setDepth(DEPTH_HUD + 1);
 
+    // 練習モード表示 (Pキー)。ONの間だけ出す。誤って気付かないまま遊ばないよう目立たせる。
+    this.practiceText = this.add.text(VIEWPORT_WIDTH / 2, HUD_HEIGHT + 4, '練習モード: CPU非干渉 (P)', {
+      fontSize: '15px',
+      color: '#0b1a10',
+      backgroundColor: '#aaff33',
+      fontStyle: 'bold',
+      padding: { x: 6, y: 2 },
+    });
+    this.practiceText.setOrigin(0.5, 0);
+    this.practiceText.setScrollFactor(0);
+    this.practiceText.setDepth(DEPTH_HUD + 1);
+    this.practiceText.setVisible(false);
+
     this.goalText = this.add.text(VIEWPORT_WIDTH / 2, VIEWPORT_HEIGHT / 2 - 40, 'GOAL!', {
       fontSize: '68px',
       color: '#ffe680',
@@ -485,6 +505,7 @@ export class PitchScene extends Phaser.Scene {
       this.clockText,
       this.eventBannerText,
       this.inputDebugText,
+      this.practiceText,
       this.goalText,
     ]);
   }
@@ -679,6 +700,8 @@ export class PitchScene extends Phaser.Scene {
     this.inputDebugText.setText(
       `t${this.state.frame} dir:${dir} btn:[${held}] chg:${controlled?.kickChargeFrames ?? 0} tkl:${controlled?.tacklePhase ?? 0}`,
     );
+    // 練習モードの表示 (Pキーで切替)。ONの間は常時見えるようにする。
+    this.practiceText.setVisible(this.state.cpuHandsOff);
   }
 
   /**

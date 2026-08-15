@@ -109,6 +109,26 @@ export interface GameState {
   /** オフサイドルールのON/OFF。試合開始時に決定、以後不変。 */
   readonly offsideEnabled: boolean;
   /**
+   * ★練習モード★ true の間、CPU(Team B)のフィールドプレイヤーはボールに一切関与しない
+   * (追跡権を持たない / touch-priority を取れない / タックル・チャージを仕掛けない)。
+   *
+   * 目的: 操作の手触り・スプライトの動き・ボタンの効きを、相手に邪魔されずに確認するため
+   * (ユーザー要望「動きやボタンを確認したいのでCPUがボールを取らないトグルスイッチも
+   * 実装して。テストにならないから」)。
+   *
+   * GKのセーブだけは通常どおり動かす — シュートの確認ができなくなるため。
+   * 試合中にキーで切り替えられるが、GameState の一部なので simulate() は純関数のまま
+   * (決定論を壊さない。ただしリプレイはこのフラグの切替タイミングまでは記録しないため、
+   * 練習モードを使った試合のリプレイは再現性を保証しない)。
+   */
+  readonly cpuHandsOff: boolean;
+  /**
+   * キック入力のバッファ (★17周目★)。ボールが射程外の時に押された B を短時間だけ覚えておき、
+   * 射程に入った瞬間に蹴る。「押したのに無反応」を無くすための、格闘ゲーム等と同じ入力バッファ。
+   * KICK_INPUT_BUFFER_TICKS のコメントも参照。
+   */
+  readonly pendingKick: PendingKick | null;
+  /**
    * リスタート直後の追跡権フェアネス猶予 (Phase 5)。再開してから restartGraceTicksLeft の間、
    * computeChaseRightIndices(teamAI.ts) がこのチームの相手の追跡権をゼロにする。
    *
@@ -200,6 +220,17 @@ export interface SetPieceLock {
   readonly elapsedTicks: number;
 }
 
+/** キック入力のバッファ (GameState.pendingKick)。 */
+export interface PendingKick {
+  /** 残り有効tick。0になったら破棄する。 */
+  readonly ticksLeft: number;
+  /** 押された時の方向入力 (キック方向・強弱の判定に使う)。 */
+  readonly direction: Direction8;
+  /** シフトキック (L/R) の押下状態。 */
+  readonly shiftL: boolean;
+  readonly shiftR: boolean;
+}
+
 export interface CreateInitialStateOptions {
   readonly difficulty?: Difficulty;
   readonly offsideEnabled?: boolean;
@@ -239,6 +270,8 @@ export function createInitialState(seed: number, options: CreateInitialStateOpti
     prevTouchPlayerIndex: null,
     difficulty: options.difficulty ?? 'medium',
     offsideEnabled: options.offsideEnabled ?? true,
+    cpuHandsOff: false,
+    pendingKick: null,
     restartGraceTeam: kickoffTeam,
     restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
     lastEvent: null,
