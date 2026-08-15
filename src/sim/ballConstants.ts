@@ -10,9 +10,52 @@ import type { Fixed } from '../core/types';
 /** ボールの当たり半径 (px, 仮値)。描画スプライトの見た目半径(7px)に合わせた。 */
 export const BALL_RADIUS_FIXED: Fixed = toFixed(7);
 
-/** ドリブルタッチが発生する中心間距離のしきい値 (px, 仮値)。 */
+/**
+ * 「このボールに対してプレーできる」間合い (px)。キック/パス/タックル対象判定など、
+ * touch-priority 全般の判定半径。
+ */
 export const DRIBBLE_RADIUS_FIXED: Fixed = toFixed(20);
 export const DRIBBLE_RADIUS_SQ_FIXED: Fixed = fixedMul(DRIBBLE_RADIUS_FIXED, DRIBBLE_RADIUS_FIXED);
+
+/**
+ * ★重要なバグ修正 (実プレイ報告「キックの反応しない」の主因)★
+ * 実際に足がボールに当たって蹴り出す接触半径 (px)。上の DRIBBLE_RADIUS (プレー可能な間合い)
+ * より内側にする、という2段構えが必須。
+ *
+ * 旧実装は「DRIBBLE_RADIUS(20px)以内なら毎tickボール速度を3.6へ上書き」だった。選手速度は
+ * 3.0なので、ドリブル中はボールが毎tick 0.6pxずつ確実に前へ逃げていき、約33tick(0.55秒)で
+ * 20pxを越えて touch-priority を失う。その結果:
+ *   - 走りながらBを押しても「保持していない」判定になりキックが出ない
+ *   - キック溜め中に見失うと、update.ts が溜めを無言で破棄する (nextControlledKickChargeFrames=0)
+ * という「ボタンが効かない」体験になっていた (計測: 120tickの前進ドリブル中68tickで保持喪失)。
+ *
+ * 接触半径を内側に置くと「触れる→少し前に転がる→転がり摩擦で減速→選手が追いつく→また触れる」
+ * という実際のドリブルのサイクルになり、ボールは 12〜16px の範囲で往復して 20px を越えない。
+ * CLAUDE.md「ボールが足元に吸着しすぎない。触れると少し前に転がる」も満たす。
+ */
+export const DRIBBLE_CONTACT_RADIUS_FIXED: Fixed = toFixed(12);
+export const DRIBBLE_CONTACT_RADIUS_SQ_FIXED: Fixed = fixedMul(
+  DRIBBLE_CONTACT_RADIUS_FIXED,
+  DRIBBLE_CONTACT_RADIUS_FIXED,
+);
+
+/**
+ * 接触距離より外・プレー可能な間合いの内 (12〜20px) でボールに触れた時に与える速度 (px/tick)。
+ *
+ * PLAYER_SPEED_FIXED(3.0) より意図的に「わずかに遅く」する。これが
+ * 「ボールが永久に逃げる」バグの本質的な修正:
+ *   - 足元 (<12px) では 3.6 で前へ転がる → CLAUDE.md「触れると少し前に転がる」を満たす
+ *   - 離れかけ (12〜20px) では 2.8 に落ちる → 選手 (3.0) が必ず追いつき、20px を越えない
+ * 結果、ボールは 12〜15px の帯を往復し、touch-priority を失わない。
+ *
+ * 「12px以内でしか触れない」方式(初回の修正案)にしなかった理由: AI選手は
+ * AI_BALL_DEADZONE_PRIMARY (9px) で足を止めるため、12px以内に入らないまま静止して
+ * **AIがボールを運べなくなり、CPUのシュートが 34本→2本 に崩壊した** (観戦シミュレーターで計測)。
+ * 旧実装の「ボールが逃げ続ける」挙動が、皮肉にもAIの推進力として機能していた。
+ * 距離で速度を variable にする本方式なら、ボールは常に押され続けるのでAIは追い続けられ、
+ * かつ人間のボールは足元から離れない。
+ */
+export const DRIBBLE_KEEP_SPEED_FIXED: Fixed = toFixed(2.8);
 
 /** これ以下の高さのボールのみドリブルタッチの対象とする (px, 仮値)。浮き球はキックのみで触れる。 */
 export const DRIBBLE_TOUCH_MAX_HEIGHT_FIXED: Fixed = toFixed(2.0);
@@ -48,8 +91,22 @@ export const GRAVITY_FIXED: Fixed = toFixed(0.35);
 export const BOUNCE_DAMPING_FIXED: Fixed = toFixed(0.5);
 /** これ未満の着地速度はバウンドさせず静止させる (px/tick, 仮値)。無限微小バウンド防止。 */
 export const BOUNCE_MIN_VEL_FIXED: Fixed = toFixed(0.5);
-/** 接地中、毎tick水平速度に掛ける減衰係数 (仮値)。 */
-export const ROLLING_FRICTION_FIXED: Fixed = toFixed(0.96);
+/**
+ * 接地中、毎tick水平速度に掛ける減衰係数。
+ *
+ * ★重要なバグ修正 (実プレイ報告「キーパーがキャッチしない」の主因の一つ)★
+ * 旧値0.96は減衰が強すぎた。転がるボールの総移動距離は v*f/(1-f) なので、
+ * 強キック(9px/tick)でも 9*0.96/0.04 = **216px しか転がらない**。ピッチ全長1800px、
+ * ペナルティエリア外からのシュートは物理的にゴールへ到達できず、到達しても速度が
+ * セーブ文脈の下限(4.5px/tick)を割っていてキーパーが反応対象とすら認識しない、
+ * という二重の破綻を起こしていた。
+ *
+ * 0.985 なら 9*0.985/0.015 ≈ **591px** 転がる。ミドルシュート・サイドチェンジの
+ * ロングパスが成立する現実的な範囲になる。
+ * (ドリブル制御への影響は DRIBBLE_CONTACT_RADIUS_FIXED 側で吸収済み:
+ *  接触半径12pxから押し出されたボールは約16pxで選手に追いつかれ、20pxを越えない)
+ */
+export const ROLLING_FRICTION_FIXED: Fixed = toFixed(0.985);
 
 /**
  * カーブ(続編仕様③)関連の定数。すべて仮値(実機データ無し、プレイフィールで調整する対象。

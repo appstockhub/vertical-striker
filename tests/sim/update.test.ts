@@ -878,27 +878,30 @@ describe('simulate — bug regression: a decelerating rolling shot must still be
   // 残り速度がボール半径未満まで減速した時点でクランプに押し戻され続け、
   // 二度とラインちょうどまで到達できずゴール判定が永久に発火しない「詰み」状態があった。
   it('a shot that decelerates to a near-stop right at the goal line still registers as a goal', () => {
+    // このテストの主題は「クランプ境界と判定しきい値のズレでゴール判定が永久に発火しない」
+    // 詰みバグの回帰。CPUの照準や物理定数に左右されないよう、狙った状況
+    // (ほぼ止まりかけのボールがゴールライン直前にある) を直接組み立てる。
+    // 全選手をゴールから遠ざけ、GKのセーブや味方の接触が混ざらないようにする。
     const base = createInitialState(1, { difficulty: 'hard' });
-    const carrierIdx = TeamId.B * 11 + 9;
     let state: GameState = {
       ...base,
-      players: base.players.map((p, i) => {
-        if (i === carrierIdx) return { ...p, pos: { x: toFixed(240), y: toFixed(1750) } };
-        if (p.team === TeamId.A && !p.isGoalkeeper) return { ...p, pos: { x: toFixed(20), y: toFixed(20) } };
-        return p; // GKはホームのまま
-      }),
-      ball: { ...base.ball, pos: { x: toFixed(240), y: toFixed(1755) } },
+      players: base.players.map((p) => ({
+        ...p,
+        pos: { x: toFixed(20 + (p.slotIndex % 4) * 25), y: toFixed(p.team === TeamId.A ? 300 : 200) },
+      })),
+      ball: {
+        ...base.ball,
+        pos: { x: toFixed(240), y: toFixed(1790) }, // 南=Team Aの自陣ゴールライン(1800)直前
+        vel: { x: ZERO_FIXED, y: toFixed(0.6) }, // 減速しきる寸前の遅さ
+      },
       lastTouchTeam: TeamId.B,
     };
     let scored = false;
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40 && !scored; i++) {
       state = simulate(state, inputs(Direction8.None));
-      if (state.score[1] > 0) {
-        scored = true;
-        break;
-      }
+      if (state.score[1] > 0) scored = true;
     }
-    expect(scored).toBe(true);
+    expect(scored, '減速したボールがゴールライン手前で止まり、ゴール判定が発火しない (詰みバグの再発)').toBe(true);
   });
 });
 

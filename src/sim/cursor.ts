@@ -160,14 +160,16 @@ export function resolveCursor(
     return { controlledPlayerIndex: carrierIndex, passTriggered: false, passTargetIndex: null };
   }
 
-  // Team A がボールを保持していない (守備文脈)
-  if (yEdge) {
-    // 手動切替: 現在の操作選手以外で最も近い候補へヒステリシス無視で強制切替する
-    const manualTarget = findNearestTeamAOutfield(players, ballPos, currentControlledIndex);
-    return manualTarget !== null
-      ? { controlledPlayerIndex: manualTarget, passTriggered: false, passTargetIndex: null }
-      : noSwitch;
-  }
+  // Team A がボールを保持していない (守備文脈)。
+  //
+  // ★バグ修正 (実プレイ報告「チャージもない」の直接原因)★
+  // 旧実装はここで「Y edge = 操作選手の手動切替」を行っていた。しかしこれは
+  // Phase 2 時点の仮実装であり、公式説明書では **守備時のYはショルダータックル** で、
+  // ボタンによる手動の選手切替は存在しない (ゼッケン表示選手への自動追従のみ) と
+  // 判明していた (CLAUDE.md「実装ギャップ」4)。この仮実装が残っていたため、守備中に
+  // Yを押すとチャージが出る代わりに操作選手がすり替わり、
+  // 「Yを押しても何も起きない(どころか操作対象が飛ぶ)」体験になっていた。
+  // 手動切替を廃止し、Yを守備アクションへ明け渡す。
 
   // 自動追従: 最も近い候補がヒステリシス閾値を超えて現在より近い場合のみ切り替える
   const candidate = findNearestTeamAOutfield(players, ballPos, null);

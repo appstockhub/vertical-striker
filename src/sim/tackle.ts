@@ -4,6 +4,8 @@ import { Direction8 } from '../input/types';
 import { DIRECTION_VECTORS } from './constants';
 import { TacklePhase, type BallState, type PlayerState } from './state';
 import {
+  CHARGE_RANGE_SQ_FIXED,
+  CHARGE_WIN_SPEED_FIXED,
   TACKLE_ACTIVE_FRAMES,
   TACKLE_CONE_COS_THRESHOLD_SQ_FIXED,
   TACKLE_RANGE_SQ_FIXED,
@@ -75,6 +77,35 @@ export function checkTackleSuccess(
 ): boolean {
   const carrier = resolveOpposingCarrier(tackler, players, touchPriorityIndex);
   return carrier !== null && isBehindInSameDirection(tackler, carrier);
+}
+
+/**
+ * ショルダーチャージ (続編仕様、Y/X) の発動判定。実プレイ報告「チャージもない」への対応で新設。
+ *
+ * スライディング(B)との違いは意図的:
+ * - 背後コーンを要求しない (肩をぶつける動作なので、横並び・正面からでも当たる)
+ * - 溜め(Windup)が無く、押した瞬間に判定される
+ * - 間合いが短く、奪ったボールの勢いも弱い
+ * つまり「密着した競り合いで使う低リスク低リターンの選択肢」として、スライディングと
+ * 住み分ける。ファウルは当プロジェクトの設計方針どおり発生しない (CLAUDE.md参照)。
+ */
+export function checkShoulderChargeEligibility(
+  charger: PlayerState,
+  players: readonly PlayerState[],
+  touchPriorityIndex: number | null,
+): boolean {
+  const carrier = resolveOpposingCarrier(charger, players, touchPriorityIndex);
+  if (carrier === null) return false;
+  return (distSqFixed(charger.pos, carrier.pos) as number) <= (CHARGE_RANGE_SQ_FIXED as number);
+}
+
+/**
+ * ショルダーチャージ成功時のボール奪取。チャージした選手の向き (方向入力が無ければ facing)
+ * へ押し出す。スライディングより弱い速度で、こぼれ球寄りの奪い方になる。
+ */
+export function applyShoulderCharge(ball: BallState, chargeDirection: Direction8): BallState {
+  const vel = vScaleFixed(DIRECTION_VECTORS[chargeDirection], CHARGE_WIN_SPEED_FIXED);
+  return { ...ball, vel };
 }
 
 export interface TackleAdvance {

@@ -81,6 +81,27 @@ export function isInSaveRange(goalkeeper: PlayerState, ballPos: Vec2Fixed): bool
   return (distSqFixed(goalkeeper.pos, ballPos) as number) <= (GK_SAVE_RANGE_SQ_FIXED as number);
 }
 
+/**
+ * そのボールが「このキーパーの自陣ゴールへ向かってきている」か。
+ *
+ * ★バグ修正 (実プレイ報告「キーパーはキャッチしない」の主因の一つ)★
+ * 旧実装の自動GKは「ボール速度 > 4.5px/tick」だけを反応条件にしていた。転がり摩擦で
+ * 減速して到達したシュート(遠目からのシュートは到達時に4.5を割る)を**セーブ対象として
+ * 認識すらせず素通りさせていた**。かといって速度条件を単純に外すと、GK自身が足元に
+ * 収めた/ドリブルしているボールを毎tickキャッチし直して固まる既知のデッドロックが
+ * 再発する (goalkeeperConstants.ts の SAVE_CONTEXT_MIN_BALL_SPEED_FIXED のコメント参照)。
+ *
+ * そこで速度の大小ではなく「自陣ゴール方向へ動いているか」という向きで判定する。
+ * 静止球・GK自身が前へ運んでいる球は自陣方向ではないので対象外になり、デッドロックを
+ * 構造的に避けたまま、遅く到達したシュートにもきちんと反応できる。
+ */
+export function isBallApproachingOwnGoal(goalkeeper: PlayerState, ball: BallState, half: Half): boolean {
+  const towardOwnGoalIsNegativeY = teamDefendsNorth(goalkeeper.team, half);
+  const velY = ball.vel.y as number;
+  if (velY === 0) return false;
+  return towardOwnGoalIsNegativeY ? velY < 0 : velY > 0;
+}
+
 export type SaveOutcome = 'secured' | 'deflected' | 'missed';
 
 /**

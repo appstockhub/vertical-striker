@@ -144,13 +144,18 @@ describe('resolveCursor', () => {
     expect(result.controlledPlayerIndex).toBe(1); // 僅差なので切り替わらない
   });
 
-  it('manual switch on Y-edge picks the nearest candidate other than the current one', () => {
-    const controlled = makePlayer(0, 0, TeamId.A, 1); // 自分自身は除外される
+  it('★仕様変更★ 守備中のYはカーソルを切り替えない (Yはショルダータックル用に明け渡す)', () => {
+    // 旧テストは「Y edgeで最寄り候補へ手動切替」を期待していたが、これはPhase 2の仮実装。
+    // 公式説明書では守備時のYはショルダータックルで、ボタンによる手動の選手切替は存在しない
+    // (CLAUDE.md「実装ギャップ」4)。仮実装が残っていたため実プレイで「Yを押しても
+    // チャージが出ず操作対象が飛ぶ」不具合になっていた。切り替わらないことを回帰として固定する。
+    const controlled = makePlayer(0, 0, TeamId.A, 1);
     const nearest = makePlayer(0, 10, TeamId.A, 2);
     const ballPos = { x: ZERO_FIXED, y: ZERO_FIXED };
     const roster = makeRoster({ 1: controlled, 2: nearest });
     const result = resolveCursor(roster, 1, null, ballPos, buttonsY, buttonsNone);
-    expect(result.controlledPlayerIndex).toBe(2);
+    expect(result.controlledPlayerIndex).toBe(1);
+    expect(result.passTriggered).toBe(false);
   });
 
   it('does not switch or pass while the controlled player is charging a kick', () => {
@@ -163,15 +168,16 @@ describe('resolveCursor', () => {
     expect(result.passTriggered).toBe(false);
   });
 
-  it('breaks exact-tie candidate distances by the lowest index', () => {
-    const controlled = makePlayer(0, 0, TeamId.A, 1);
+  it('breaks exact-tie candidate distances by the lowest index (自動追従の同点処理)', () => {
+    // 手動切替(Y)を廃止したため、同点タイブレークは自動追従の経路で検証する。
+    // 現在の操作選手(1)をボールから遠くに置き、同距離のtiedA(2)/tiedB(3)のどちらが
+    // 選ばれるかを見る -> 昇順走査+strict `<` により小さいindexの2が勝つ。
+    const controlled = makePlayer(0, 200, TeamId.A, 1);
     const tiedA = makePlayer(-10, 0, TeamId.A, 2);
     const tiedB = makePlayer(10, 0, TeamId.A, 3);
     const ballPos = { x: ZERO_FIXED, y: ZERO_FIXED };
     const roster = makeRoster({ 1: controlled, 2: tiedA, 3: tiedB });
-    // controlled(1)自身も距離0で候補になり得るが、excludeIndex=controlledで除外されるので
-    // tiedA(2)とtiedB(3)が同点 -> 手動切替(Y edge)では小さいindexの2が選ばれる
-    const result = resolveCursor(roster, 1, null, ballPos, buttonsY, buttonsNone);
+    const result = resolveCursor(roster, 1, null, ballPos, buttonsNone, buttonsNone);
     expect(result.controlledPlayerIndex).toBe(2);
   });
 });

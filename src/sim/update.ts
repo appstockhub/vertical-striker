@@ -16,7 +16,7 @@ import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, emptyButtonState, type ButtonState } from '../input/types';
 import type { BallState, GameState, PlayerState, SetPieceLock } from './state';
 import { PLAYERS_PER_TEAM, TacklePhase, TeamId } from './state';
-import { attackingIsUpward, getHomePosition, opponentOf } from './formations';
+import { attackingIsUpward, getHomePosition, opponentOf, type Half } from './formations';
 import { PITCH_HEIGHT } from '../config/pitch';
 import { checkOffside } from './offsideRule';
 import { DIRECTION_VECTORS, PLAYER_RADIUS_FIXED, PLAYER_SPEED_FIXED } from './constants';
@@ -29,7 +29,7 @@ import {
   LIFT_Z_VEL_FIXED,
   LONG_DRIBBLE_PLAYER_SPEED_FIXED,
 } from './ballConstants';
-import { applyDribbleTouch, computeKickDribbleState } from './dribble';
+import { applyDribbleTouch, computeKickDribbleState, isInDribbleContact } from './dribble';
 import { applyKick, updateKickCharge } from './kick';
 import { clampToPitchBounds, stepBallPhysicsDetailed } from './ballPhysics';
 import { findTouchPriorityPlayer } from './ballTouch';
@@ -40,6 +40,7 @@ import { quantizeToDirection8 } from './steering';
 import {
   applySave,
   computeGoalkeeperAutoDirection,
+  isBallApproachingOwnGoal,
   isInSaveRange,
   resolveSaveOutcome,
   shouldTakeOverGoalkeeper,
@@ -60,13 +61,15 @@ import {
 } from './teamAIConstants';
 import {
   advanceTacklePhase,
+  applyShoulderCharge,
   applyTackleWin,
+  checkShoulderChargeEligibility,
   checkTackleEligibility,
   checkTackleSuccess,
   getTackleMovementOverride,
   type TackleAdvance,
 } from './tackle';
-import { TACKLE_RECOVERY_FRAMES } from './tackleConstants';
+import { CHARGE_RECOVERY_FRAMES, TACKLE_RECOVERY_FRAMES } from './tackleConstants';
 import { getHalf, isFulltime } from './matchClock';
 import { placeKickoffFormation } from './kickoff';
 import { detectBoundaryEvent } from './bounds';
@@ -155,13 +158,22 @@ function applySetPieceExclusion(moved: PlayerState, lock: SetPieceLock): PlayerS
   return { ...moved, pos: pushedPos };
 }
 
-/** team に属する選手のうち pos に最も近いものの players[] index を返す (同点は小さいindex)。 */
-function findNearestTeamPlayerIndex(players: readonly PlayerState[], pos: Vec2Fixed, team: TeamId): number | null {
+/**
+ * team に属する選手のうち pos に最も近いものの players[] index を返す (同点は小さいindex)。
+ * excludeGoalkeeper=true ならGKを候補から外す (スローイン/コーナーはGKが蹴らないため)。
+ */
+function findNearestTeamPlayerIndex(
+  players: readonly PlayerState[],
+  pos: Vec2Fixed,
+  team: TeamId,
+  excludeGoalkeeper = false,
+): number | null {
   let bestIndex: number | null = null;
   let bestDistSq = 0;
   for (let i = 0; i < players.length; i++) {
     const player = players[i];
     if (!player || player.team !== team) continue;
+    if (excludeGoalkeeper && player.isGoalkeeper) continue;
     const distSq = distSqFixed(pos, player.pos) as number;
     if (bestIndex === null || distSq < bestDistSq) {
       bestIndex = i;
@@ -169,6 +181,39 @@ function findNearestTeamPlayerIndex(players: readonly PlayerState[], pos: Vec2Fi
     }
   }
   return bestIndex;
+}
+
+/**
+ * セットプレーのキッカーを決め、ボールのすぐ脇へ配置する。
+ *
+ * ★重要なバグ修正 (実プレイ報告「ゴールキックとかアホな動きしている」の直接原因)★
+ * 旧実装はボールだけを再開位置へテレポートし、キッカーは「AIが自然にボールへ寄ってくる」
+ * のを待っていた。しかし setPieceLock は touch-priority を再開チームに制限するうえ
+ * 時間切れも無いため、再開チームの誰もボールの近くに居ない状況では
+ * **ボールが再開位置に置かれたまま延々と誰も蹴りに来ない**停止状態が発生する
+ * (トレースで再現: ゴールキック発生後19tick以上ボールが1pxも動かない)。
+ * さらにゴールキックの場合、自動GKは「ゴールライン上でボールのxを追う」ステアリングしか
+ * 持たないため、再開位置(深さ60px)まで前に出てくること自体が構造的に不可能だった。
+ * 見た目には「守備側が誰も蹴らずウロウロする」= まさに報告どおりの挙動になる。
+ *
+ * ボール自体を既に瞬間移動させている設計 (試合を止めない方針) と一貫させ、キッカーも
+ * 同じtickでボール脇へ配置する。ゴールキックはGK、スローイン/コーナーは最寄りの
+ * フィールドプレイヤーが蹴る、という実際のサッカーの役割分担にも合う。
+ */
+function resolveSetPieceKicker(
+  players: readonly PlayerState[],
+  event: { readonly type: 'throwIn' | 'goalKick' | 'corner'; readonly restartTeam: TeamId; readonly pos: Vec2Fixed },
+  half: Half,
+): { index: number; facing: Direction8 } | null {
+  const facing = attackingIsUpward(event.restartTeam, half) ? Direction8.Up : Direction8.Down;
+  // ゴールキックはGK、スローイン/コーナーは最寄りのフィールドプレイヤーが蹴る、という
+  // 実際のサッカーの役割分担に合わせる (players[]のindex規約: team*11 が各チームのGK)。
+  const index =
+    event.type === 'goalKick'
+      ? event.restartTeam * PLAYERS_PER_TEAM
+      : findNearestTeamPlayerIndex(players, event.pos, event.restartTeam, true);
+  if (index === null || !players[index]) return null;
+  return { index, facing };
 }
 
 /**
@@ -301,7 +346,10 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     !!controlledPlayer &&
     controlledPlayer.isGoalkeeper &&
     isInSaveRange(controlledPlayer, state.ball.pos) &&
-    ballSpeedSqForSave > (SAVE_CONTEXT_MIN_BALL_SPEED_SQ_FIXED as number);
+    ballSpeedSqForSave > (SAVE_CONTEXT_MIN_BALL_SPEED_SQ_FIXED as number) &&
+    // 向きの条件も併用する: 自陣から遠ざかっていくボール (自分で前へ運んでいる球や、
+    // 既に弾き返した球) がセーブ文脈に居座ると、人間GKがそのボールを蹴れなくなる。
+    isBallApproachingOwnGoal(controlledPlayer, state.ball, half);
 
   // マイルストーン6: touch-priorityをTeam B(CPU)が保持している時だけ攻撃AIの判断を1回だけ計算する。
   // resolveCursorの設計上、Team Aの誰かがtouch-priorityを持てば操作対象は即座にそちらへ
@@ -447,6 +495,44 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // players.map内で強制的にfalseへリセットする(過去に保持していた時の値が残らないように)。
   let kickDribbleCarrier: { index: number; active: boolean } | null = null;
 
+  // ================================================================================
+  // 非操作GKの自動セーブ。**ドリブルタッチより先に**評価するのが必須。
+  //
+  // ★重要なバグ修正 (実プレイ報告「キーパーはキャッチしない」の直接原因)★
+  // 旧実装はこのブロックがドリブルタッチとキック処理の「後」にあった。飛んできたシュートは
+  // GKに近づいた瞬間にまずGKへtouch-priorityが渡り、CPU攻撃AIの判断でGKが
+  // **そのボールを「ドリブル」してしまい**、セーブ判定に到達する前にボールを弾き返して
+  // いた (トレースで t36→t37 に再現: 距離7.5pxまで来たボールをGKが触って逆方向へ転がした)。
+  // 見た目には「キーパーが軽く触るだけでキャッチしない」になる。
+  // セーブは常にドリブルより優先されるべきなので、順序ごと前へ移した。
+  //
+  // 反応条件は「速いか」ではなく「自陣ゴールへ向かってきているか」(isBallApproachingOwnGoal)。
+  // 加えて「直前にこのGK自身が最後に触ったボールではない」ことを要求する。これにより
+  // 確保後/前へ運び出し中の自分のボールを毎tickキャッチし直して固まる既知のデッドロックを
+  // 構造的に防ぎつつ、減速して到達したシュートにもきちんと反応できる。
+  // players[] 昇順 (A GK=0 → B GK=11) で処理する決定論的順序。
+  // ================================================================================
+  let gkSavedThisTick = false;
+  for (const gkIndex of [TeamId.A * PLAYERS_PER_TEAM, TeamId.B * PLAYERS_PER_TEAM]) {
+    if (gkIndex === controlledPlayerIndex) continue; // 人間操作中のGKは手動セーブ(下記)のみ
+    if (state.lastTouchPlayerIndex === gkIndex) continue; // 自分が最後に触った=自分のボール
+    const gk = state.players[gkIndex];
+    if (!gk || !gk.isGoalkeeper) continue;
+    if (!isInSaveRange(gk, ball.pos)) continue;
+    if (!isBallApproachingOwnGoal(gk, ball, half)) continue;
+    const ballSpeedSq = dotFixed(ball.vel, ball.vel) as number;
+    const catchable = ballSpeedSq <= (fixedMul(CATCH_MAX_SPEED_FIXED, CATCH_MAX_SPEED_FIXED) as number);
+    const outcome = resolveSaveOutcome(gk, ball, catchable ? 'catch' : 'punch');
+    if (outcome !== 'missed') {
+      ball = applySave(ball, gk, outcome, half);
+      lastTouchTeam = gk.team;
+      gkSavedThisTick = true;
+      // secured (真のキャッチ) のみ知覚可能イベントとして記録する。これにより
+      // CPU/非操作GKのキャッチも人間の目に見えるようになる (視認性向上、実プレイ報告への対応)。
+      if (outcome === 'secured') lastEvent = { kind: 'gkCatch', team: gk.team, atFrame: nextFrame };
+    }
+  }
+
   // ワンツー (続編仕様⑤): 「ボールを受ける瞬間にA/Yを押していると、受けた選手がそのまま
   // すぐパスを出す」。ドリブルタッチ/通常のカーソルパス/チャージキックより先に判定し、
   // 発火したら以降のボール処理(このtickぶん)をスキップする。セーブ文脈(inSaveRange)とは
@@ -489,12 +575,22 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   }
 
   const touchInputs = touchPriorityIndex !== null ? effectiveInputs[touchPriorityIndex] : undefined;
-  if (!oneTwoFired && touchInputs && touchPriorityIndex !== null) {
+  // gkSavedThisTick / inSaveRange のときはドリブルタッチを行わない。セーブしたボールを
+  // 同じtickで「ドリブル」して弾き飛ばしてしまうと、キャッチが成立しないため
+  // (上記の自動セーブブロックのコメント参照。人間GKも同じ理由で除外する)。
+  if (!oneTwoFired && !gkSavedThisTick && !inSaveRange && touchInputs && touchPriorityIndex !== null) {
     const touchPlayer = state.players[touchPriorityIndex];
     const prevKickDribbleActive = touchPlayer?.kickDribbleActive ?? false;
     const kickDribbleActive = computeKickDribbleState(prevKickDribbleActive, true, touchInputs.buttons);
     kickDribbleCarrier = { index: touchPriorityIndex, active: kickDribbleActive };
-    ball = applyDribbleTouch(ball, true, touchInputs.direction, kickDribbleActive);
+    // ★重要★ 蹴り出しは「プレー可能な間合い(20px)」ではなく「接触距離(12px)」でのみ行う。
+    // ここに true (=常に接触) を渡していたのが、ボールが永久に逃げ続けて
+    // 「走りながらキックできない」実プレイ不具合の直接原因だった (ballConstants.ts参照)。
+    const inContact = !!touchPlayer && isInDribbleContact(touchPlayer.pos, ball.pos);
+    ball = applyDribbleTouch(ball, true, inContact, touchInputs.direction, kickDribbleActive);
+    // 接触距離の内外に関わらず、プレー可能な間合いで実際にボールを動かしたなら「触れた」。
+    // inContact だけで判定すると、12〜20px で押している選手が lastTouchTeam に反映されず、
+    // 支配率・スローイン相手判定・ライン押し引きがすべてズレる。
     if (touchPlayer) lastTouchTeam = touchPlayer.team;
   }
 
@@ -617,39 +713,37 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
             };
           }
         }
+
+        // ショルダーチャージ (続編仕様、Y または X)。実プレイ報告「チャージもない」への対応。
+        // スライディングと違い溜めが無く、押した瞬間に判定して即座に短い隙へ入る。
+        // タックル進行中(None以外)は発動しない = 両者を同時に出すことはできない。
+        const chargeEdge =
+          (inputs.buttons.Y && !state.prevButtons.Y) || (inputs.buttons.X && !state.prevButtons.X);
+        if (
+          chargeEdge &&
+          tackleAdvance.tacklePhase === TacklePhase.None &&
+          checkShoulderChargeEligibility(controlledPlayer, state.players, touchPriorityIndex)
+        ) {
+          const chargeDirection =
+            inputs.direction !== Direction8.None ? inputs.direction : controlledPlayer.facing;
+          ball = applyShoulderCharge(ball, chargeDirection);
+          lastTouchTeam = controlledPlayer.team;
+          tackleAdvance = {
+            tacklePhase: TacklePhase.Recovery,
+            tackleFrames: CHARGE_RECOVERY_FRAMES,
+            tackleDirection: chargeDirection,
+          };
+        }
       }
     }
   }
 
-  // 非操作GKの自動セーブ (観戦シミュレーターで発覚したギャップの修正): applySaveは従来
-  // 「人間が操作しているGK」の Y/B 入力からしか呼ばれず、AI制御のGK (Team BのGKは常時、
-  // Team AのGKも自動交代が発動していない間) はシュートに一切反応できなかった。
-  // CLAUDE.mdのキーパーAI仕様「シュートコースへの反応」に沿い、非操作GKはセーブ範囲に
-  // ボールが入ったら自動でセーブを試みる: キャッチ可能な遅さならキャッチ、速ければ
-  // パンチング (人間の Y/B の使い分けと同じリスクリターン構造を決定論的に適用)。
-  // players[] 昇順 (A GK=0 → B GK=11) で処理する決定論的順序。
-  for (const gkIndex of [TeamId.A * PLAYERS_PER_TEAM, TeamId.B * PLAYERS_PER_TEAM]) {
-    if (gkIndex === controlledPlayerIndex) continue; // 人間操作中のGKは従来どおり手動セーブのみ
-    const gk = state.players[gkIndex];
-    if (!gk || !gk.isGoalkeeper) continue;
-    if (!isInSaveRange(gk, ball.pos)) continue;
-    const ballSpeedSq = dotFixed(ball.vel, ball.vel) as number;
-    // 人間のセーブ文脈と同じ速度ゲート: 遅い/静止ボールは「セーブ対象」ではなく「拾って
-    // プレーするボール」。ゲート無しだと、自動GKが自分でドリブルし始めたボールや
-    // 確保済みのボールを毎tickキャッチし直し、その場で永久に固まる (観戦シミュレーターで発覚)。
-    if (ballSpeedSq <= (SAVE_CONTEXT_MIN_BALL_SPEED_SQ_FIXED as number)) continue;
-    const catchable = ballSpeedSq <= (fixedMul(CATCH_MAX_SPEED_FIXED, CATCH_MAX_SPEED_FIXED) as number);
-    const outcome = resolveSaveOutcome(gk, ball, catchable ? 'catch' : 'punch');
-    if (outcome !== 'missed') {
-      ball = applySave(ball, gk, outcome, half);
-      lastTouchTeam = gk.team;
-      // secured (真のキャッチ) のみ知覚可能イベントとして記録する。これにより
-      // CPU/非操作GKのキャッチも人間の目に見えるようになる (視認性向上、実プレイ報告への対応)。
-      if (outcome === 'secured') lastEvent = { kind: 'gkCatch', team: gk.team, atFrame: nextFrame };
-    }
-  }
-
-  if (cpuDecision && touchPriorityIndex !== null && (cpuDecision.action === 'shoot' || cpuDecision.action === 'pass')) {
+  if (
+    !gkSavedThisTick &&
+    cpuDecision &&
+    touchPriorityIndex !== null &&
+    (cpuDecision.action === 'shoot' || cpuDecision.action === 'pass')
+  ) {
     // CPU(Team B)のシュート/パス実行。オフサイド判定はTeam Aの2箇所(カーソルパス/チャージキック)と
     // 同じ扱いにする (計画セクションF、offsideフックをCPUのキックにも適用)。溜め無し・
     // 即座グラウンダー固定 (計画の仮定8、弾道バリエーションはPhase 4に先送り)。
@@ -725,17 +819,10 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       pos: boundaryEvent.pos,
       northEnd: (boundaryEvent.pos.y as number) < (toFixed(PITCH_HEIGHT / 2) as number),
     };
-    // キッカーを攻撃方向へ向かせる (CLAUDE.md「実装ギャップ」1)。再開チームの中で
-    // 再開スポットに最も近い選手を「キッカー」とみなし、その場でfacingを上書きする
-    // (以後は通常どおり本人の入力方向で更新される、kickoffのplaceKickoffFormationと
-    // 同種の「初期値としての1回だけの上書き」)。
-    const kickerIndex = findNearestTeamPlayerIndex(state.players, boundaryEvent.pos, boundaryEvent.restartTeam);
-    if (kickerIndex !== null) {
-      restartFacingOverride = {
-        index: kickerIndex,
-        facing: attackingIsUpward(boundaryEvent.restartTeam, half) ? Direction8.Up : Direction8.Down,
-      };
-    }
+    // キッカーを決めてボール脇へ配置し、攻撃方向を向かせる。
+    // ボールだけをテレポートしてキッカーの到着をAI任せにしていた旧実装は、再開チームの誰も
+    // 近くに居ない時にボールが置き去りのまま試合が停止した (resolveSetPieceKicker のコメント参照)。
+    restartFacingOverride = resolveSetPieceKicker(state.players, boundaryEvent, half);
     // リスタート猶予 (Phase 5): この再開チームの相手の追跡権をRESTART_GRACE_TICKSの間ゼロにする
     // (上記setPieceLockと併用、後退させない)。同じtickで上の通常減衰(restartGraceTicksLeft--)を
     // 上書きする — 新しいリスタートが最優先。

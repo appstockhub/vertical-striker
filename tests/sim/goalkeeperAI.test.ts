@@ -127,7 +127,10 @@ describe('isInSaveRange / resolveSaveOutcome', () => {
   });
 
   it('catch misses when the ball is outside the (short) catch range', () => {
-    const ball = makeBall(20, 0, 1, 0); // catch rangeより遠いがpunch rangeよりは近い
+    // CATCH_RANGE を 14→20px に広げたため (実プレイ「キーパーがキャッチしない」対応、
+    // goalkeeperConstants.ts 参照)、旧値20pxは今や範囲「内」。範囲外の例を 26px に更新する
+    // (PUNCH_RANGE=30px よりは近い、という元テストの意図は維持)。
+    const ball = makeBall(26, 0, 1, 0);
     expect(resolveSaveOutcome(gk, ball, 'catch')).toBe('missed');
   });
 

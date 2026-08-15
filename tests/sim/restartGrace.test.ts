@@ -66,22 +66,26 @@ describe('restart grace: kickoff fairness (bug regression)', () => {
 
 describe('restart grace: who gets it', () => {
   it('post-goal kickoff grants grace to the opponent of the scorer', () => {
-    // Team Bがすぐ得点できる位置にボールとキャリアを置く。
+    // このテストの主題は「得点後に猶予がどちらへ与えられるか」。CPUの照準や物理定数に
+    // 左右されないよう、Team Bの得点そのものを直接組み立てる (全選手をゴールから遠ざけ、
+    // GKのセーブや味方の接触が混ざらないようにする)。
     const base = createInitialState(1, { difficulty: 'hard' });
-    const carrierIdx = TeamId.B * 11 + 9;
     const state: GameState = {
       ...base,
-      players: base.players.map((p, i) => {
-        if (i === carrierIdx) return { ...p, pos: { x: toFixed(240), y: toFixed(1750) } };
-        if (p.team === TeamId.A && !p.isGoalkeeper) return { ...p, pos: { x: toFixed(20), y: toFixed(20) } };
-        return p;
-      }),
-      ball: { ...base.ball, pos: { x: toFixed(240), y: toFixed(1755) } },
+      players: base.players.map((p) => ({
+        ...p,
+        pos: { x: toFixed(20 + (p.slotIndex % 4) * 25), y: toFixed(p.team === TeamId.A ? 300 : 200) },
+      })),
+      ball: {
+        ...base.ball,
+        pos: { x: toFixed(240), y: toFixed(1790) }, // 南=Team Aの自陣ゴールライン直前
+        vel: { x: ZERO_FIXED, y: toFixed(4) },
+      },
       lastTouchTeam: TeamId.B,
     };
     let next = state;
     let scored = false;
-    for (let i = 0; i < 20 && !scored; i++) {
+    for (let i = 0; i < 40 && !scored; i++) {
       next = simulate(next, { direction: Direction8.None, buttons: emptyButtonState() });
       if (next.score[1] > 0) scored = true;
     }

@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { fixedAdd, toFixed, ZERO_FIXED } from '../../src/core/fixed';
+import { fixedAdd, toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
 import { applyDribbleTouch, computeKickDribbleState, isNearBall } from '../../src/sim/dribble';
 import { Direction8, emptyButtonState } from '../../src/input/types';
 import type { BallState } from '../../src/sim/state';
 import {
+  DRIBBLE_KEEP_SPEED_FIXED,
   DRIBBLE_TOUCH_MAX_HEIGHT_FIXED,
   DRIBBLE_TOUCH_SPEED_FIXED,
   LONG_DRIBBLE_TOUCH_SPEED_FIXED,
 } from '../../src/sim/ballConstants';
+import { PLAYER_SPEED_FIXED } from '../../src/sim/constants';
 
 function ball(overrides: Partial<BallState> = {}): BallState {
   return {
@@ -30,35 +32,44 @@ describe('isNearBall', () => {
 });
 
 describe('applyDribbleTouch', () => {
-  it('overwrites ball velocity toward the movement direction when near and moving', () => {
+  it('足元(接触距離内)では前へ転がす速度で押し出す', () => {
     const b = ball({ vel: { x: ZERO_FIXED, y: ZERO_FIXED } });
-    const next = applyDribbleTouch(b, true, Direction8.Right, false);
+    const next = applyDribbleTouch(b, true, true, Direction8.Right, false);
     expect(next.vel.x).toBe(DRIBBLE_TOUCH_SPEED_FIXED);
     expect(next.vel.y).toBe(ZERO_FIXED);
   });
 
+  it('★逃げ防止★ 離れかけ(接触距離外・プレー可能な間合い内)では選手速度より遅い値に落とす', () => {
+    // これが「ボールが永久に逃げてキックが効かない」実プレイ不具合の構造的な修正。
+    // 押し出す速度が選手速度(3.0)を下回るので、選手は必ず追いつける。
+    const b = ball({ vel: { x: ZERO_FIXED, y: ZERO_FIXED } });
+    const next = applyDribbleTouch(b, true, false, Direction8.Right, false);
+    expect(next.vel.x).toBe(DRIBBLE_KEEP_SPEED_FIXED);
+    expect(toFloat(DRIBBLE_KEEP_SPEED_FIXED)).toBeLessThan(toFloat(PLAYER_SPEED_FIXED));
+  });
+
   it('does not change the ball when the player is stationary (direction=None)', () => {
     const b = ball({ vel: { x: toFixed(1), y: toFixed(1) } });
-    const next = applyDribbleTouch(b, true, Direction8.None, false);
+    const next = applyDribbleTouch(b, true, true, Direction8.None, false);
     expect(next).toEqual(b);
   });
 
   it('does not change the ball when not near', () => {
     const b = ball({ vel: { x: toFixed(1), y: toFixed(1) } });
-    const next = applyDribbleTouch(b, false, Direction8.Right, false);
+    const next = applyDribbleTouch(b, false, false, Direction8.Right, false);
     expect(next).toEqual(b);
   });
 
   it('does not touch an airborne ball (height above the touch threshold)', () => {
     const airborne = ball({ height: fixedAdd(DRIBBLE_TOUCH_MAX_HEIGHT_FIXED, toFixed(5)) });
-    const next = applyDribbleTouch(airborne, true, Direction8.Right, false);
+    const next = applyDribbleTouch(airborne, true, true, Direction8.Right, false);
     expect(next).toEqual(airborne);
   });
 
-  it('uses the faster kick-dribble speed when kickDribbleActive is true', () => {
+  it('蹴り出しドリブル中は距離に関わらず速い値のまま (意図的にボールを足元から離す仕様)', () => {
     const b = ball();
-    const next = applyDribbleTouch(b, true, Direction8.Right, true);
-    expect(next.vel.x).toBe(LONG_DRIBBLE_TOUCH_SPEED_FIXED);
+    expect(applyDribbleTouch(b, true, true, Direction8.Right, true).vel.x).toBe(LONG_DRIBBLE_TOUCH_SPEED_FIXED);
+    expect(applyDribbleTouch(b, true, false, Direction8.Right, true).vel.x).toBe(LONG_DRIBBLE_TOUCH_SPEED_FIXED);
   });
 });
 

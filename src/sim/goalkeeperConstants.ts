@@ -25,15 +25,36 @@ export const GK_AUTO_TAKEOVER_RADIUS_SQ_FIXED: Fixed = fixedMul(
   GK_AUTO_TAKEOVER_RADIUS_FIXED,
 );
 
-/** キャッチ (Y) が届く範囲 (px, 仮値。短い)。 */
-export const CATCH_RANGE_FIXED: Fixed = toFixed(14);
+/**
+ * キャッチ (Y) が届く範囲 (px)。
+ * 旧値14pxは、強シュート(9px/tick)が範囲内に居るのが実質1〜2tickしかなく、
+ * 「反応する隙が無いうちに通過する」状態だった。ボール半径(7)+GKの腕のリーチ、として
+ * 20pxに広げる (パンチングの30pxより短い、という関係は維持)。
+ */
+export const CATCH_RANGE_FIXED: Fixed = toFixed(20);
 export const CATCH_RANGE_SQ_FIXED: Fixed = fixedMul(CATCH_RANGE_FIXED, CATCH_RANGE_FIXED);
 
-/** キャッチで確保できる上限速度 (px/tick, 仮値)。これを超える速いボールは弾いてしまう。 */
-export const CATCH_MAX_SPEED_FIXED: Fixed = toFixed(7);
+/**
+ * キャッチで確保できる上限速度 (px/tick)。これを超える速いボールは弾いてしまう。
+ *
+ * ★重要なバグ修正 (実プレイ報告「キーパーはキャッチしない」の直接原因)★
+ * 旧値7は STRONG_KICK_SPEED_FIXED(9) より小さかった。つまり**まともなシュートは
+ * 100%「弾く」に分岐し、キャッチという操作が構造的に一度も成立しない**状態だった。
+ * CLAUDE.mdの「速いボールはキャッチを試みても弾いてしまう」という意図自体は正しいが、
+ * その閾値は強キック速度より「上」に置かないと、意図した読み合いではなく単なる死に機能になる。
+ *
+ * 9.5 = 強キック(9)をわずかに上回る値。これにより:
+ * - 素の強シュート/減速したシュート → キャッチできる (確保して攻撃に移れる)
+ * - 至近距離からの強シュートや、カーブ/シフトで速度が乗ったボール → 弾く
+ * という「ギリギリなら弾く」設計本来の読み合いが実際に発生する。
+ */
+export const CATCH_MAX_SPEED_FIXED: Fixed = toFixed(9.5);
 
-/** パンチング (B) が届く範囲 (px, 仮値。キャッチより長い)。この範囲=セーブ文脈に入る外縁でもある。 */
-export const PUNCH_RANGE_FIXED: Fixed = toFixed(24);
+/**
+ * パンチング (B) が届く範囲 (px。キャッチより長い)。この範囲=セーブ文脈に入る外縁でもある。
+ * 旧値24pxは、9px/tickのシュートに対し反応可能時間が短すぎたため30pxへ広げた。
+ */
+export const PUNCH_RANGE_FIXED: Fixed = toFixed(30);
 export const PUNCH_RANGE_SQ_FIXED: Fixed = fixedMul(PUNCH_RANGE_FIXED, PUNCH_RANGE_FIXED);
 
 /** Y/Bがキャッチ/パンチングの文脈になる外縁 (パンチング届く範囲と同じにする)。 */
