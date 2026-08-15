@@ -825,6 +825,52 @@ describe('simulate — 続編仕様⑤: ワンツー', () => {
   });
 });
 
+describe('simulate — 続編仕様⑥: リフティング', () => {
+  const CARRIER = TeamId.A * 11 + 9;
+
+  function baseCarryingState(facing: Direction8, ballHeight = 0): GameState {
+    const base = createInitialState(1, { difficulty: 'easy', offsideEnabled: false });
+    const pos = { x: toFixed(240), y: toFixed(900) };
+    return {
+      ...base,
+      controlledPlayerIndex: CARRIER,
+      ball: { ...base.ball, pos, vel: { x: ZERO_FIXED, y: ZERO_FIXED }, height: toFixed(ballHeight), zVel: ZERO_FIXED },
+      players: base.players.map((p, i) => (i === CARRIER ? { ...p, pos, facing } : p)),
+    };
+  }
+
+  it('reversing direction + a fresh B press while carrying pops the ball up, without starting a charge', () => {
+    const state = baseCarryingState(Direction8.Up);
+    const next = simulate(state, { direction: Direction8.Down, buttons: { ...emptyButtonState(), B: true } });
+    expect(toFloat(next.ball.zVel)).toBeGreaterThan(0);
+    expect(next.players[CARRIER]!.kickChargeFrames).toBe(0);
+  });
+
+  it('does not fire without a direction reversal (same direction as facing + B starts a normal charge instead)', () => {
+    const state = baseCarryingState(Direction8.Up);
+    const next = simulate(state, { direction: Direction8.Up, buttons: { ...emptyButtonState(), B: true } });
+    expect(next.ball.zVel).toBe(ZERO_FIXED);
+    expect(next.players[CARRIER]!.kickChargeFrames).toBeGreaterThan(0);
+  });
+
+  it('does not fire on a held B (not a fresh edge), even with a reversal — normal charge continues', () => {
+    let state = baseCarryingState(Direction8.Up);
+    state = simulate(state, { direction: Direction8.Up, buttons: { ...emptyButtonState(), B: true } });
+    const chargedFrames = state.players[CARRIER]!.kickChargeFrames;
+    expect(chargedFrames).toBeGreaterThan(0);
+
+    const next = simulate(state, { direction: Direction8.Down, buttons: { ...emptyButtonState(), B: true } });
+    expect(next.ball.zVel).toBe(ZERO_FIXED);
+    expect(next.players[CARRIER]!.kickChargeFrames).toBeGreaterThan(chargedFrames);
+  });
+
+  it('does not fire while the ball is already well above the ground (a normal charge proceeds instead)', () => {
+    const state = baseCarryingState(Direction8.Up, 20);
+    const next = simulate(state, { direction: Direction8.Down, buttons: { ...emptyButtonState(), B: true } });
+    expect(next.players[CARRIER]!.kickChargeFrames).toBeGreaterThan(0);
+  });
+});
+
 describe('simulate — bug regression: a decelerating rolling shot must still be able to cross the goal line (goal-line dead-zone bug)', () => {
   // 発見の経緯: ボールが減速しながらゴールラインに近づく実際の物理挙動で、
   // clampToPitchBounds のクランプ境界(ライン手前ボール半径ぶん)と

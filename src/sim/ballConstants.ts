@@ -73,3 +73,10 @@ export const CURVE_DURATION_TICKS = 24;
  * 大幅に下げた)。
  */
 export const CURVE_ACCEL_FIXED: Fixed = toFixed(0.04);
+
+/**
+ * リフティング(続編仕様⑥)で頭上へ蹴り上げる際の垂直初速 (px/tick、仮値)。
+ * KICK_Z_VEL_MAX_FIXED(6.0、キック弾道軸の最大)の約半分にし、「強いキックの浮き球」
+ * ではなく「軽く浮かせて保持を継続する」動作であることを表現した。
+ */
+export const LIFT_Z_VEL_FIXED: Fixed = toFixed(3.0);

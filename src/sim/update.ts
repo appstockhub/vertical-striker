@@ -7,6 +7,7 @@ import {
   fixedSub,
   toFixed,
   vAdd,
+  vScaleFixed,
   vSub,
   vZero,
   ZERO_FIXED,
@@ -22,7 +23,10 @@ import { DIRECTION_VECTORS, PLAYER_RADIUS_FIXED, PLAYER_SPEED_FIXED } from './co
 import {
   CURVE_DURATION_TICKS,
   CURVE_INPUT_WINDOW_TICKS,
+  DRIBBLE_TOUCH_MAX_HEIGHT_FIXED,
+  DRIBBLE_TOUCH_SPEED_FIXED,
   KICK_MIN_CHARGE_FRAMES,
+  LIFT_Z_VEL_FIXED,
   LONG_DRIBBLE_PLAYER_SPEED_FIXED,
 } from './ballConstants';
 import { applyDribbleTouch, computeKickDribbleState } from './dribble';
@@ -85,6 +89,19 @@ const NO_TACKLE: TackleAdvance = { tacklePhase: TacklePhase.None, tackleFrames: 
 /** オフサイド成立時のリスタート用ボール状態 (該当選手の位置へ速度0で置く、間接FK相当)。 */
 function offsideRestartBall(offsidePlayer: PlayerState): BallState {
   return { pos: offsidePlayer.pos, vel: vZero(), height: ZERO_FIXED, zVel: ZERO_FIXED };
+}
+
+/**
+ * 2つの方向がほぼ正反対かどうか (リフティング/続編仕様⑥の「急な方向転換」検出用)。
+ * DIRECTION_VECTORSの成分の和がゼロベクトルになる組を正反対と判定する
+ * (Up⇔Down、Left⇔Right、斜め4方向の組も同様)。Direction8.Noneはどちらの引数でも
+ * 対象外(基準となる向き自体が無いため常にfalse)。
+ */
+function isOppositeDirection8(a: Direction8, b: Direction8): boolean {
+  if (a === Direction8.None || b === Direction8.None) return false;
+  const va = DIRECTION_VECTORS[a];
+  const vb = DIRECTION_VECTORS[b];
+  return (va.x as number) + (vb.x as number) === 0 && (va.y as number) + (vb.y as number) === 0;
 }
 
 /**
@@ -526,29 +543,49 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       const isCarryingBall = touchPriorityIndex === controlledPlayerIndex;
 
       if (isCarryingBall) {
-        // ボール保持中: 既存のチャージキック (タックル状態は自然にNoneへ収束させる)。
-        const charge = updateKickCharge(controlledPlayer.kickChargeFrames, inputs.buttons.B);
-        nextControlledKickChargeFrames = charge.nextFrames;
-        if (charge.releasedFrames > 0) {
-          const offside = state.offsideEnabled
-            ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
-            : { offside: false, offsidePlayerIndex: null };
-          const offsidePlayer =
-            offside.offside && offside.offsidePlayerIndex !== null ? state.players[offside.offsidePlayerIndex] : undefined;
-          if (offsidePlayer) {
-            ball = offsideRestartBall(offsidePlayer);
-            lastTouchTeam = opponentOf(controlledPlayer.team);
-          } else {
-            ball = applyKick(ball, controlledPlayer, charge.releasedFrames, inputs.direction, inputs.buttons);
-            // カーブ(続編仕様③)の入力受付ウィンドウを新たに開く。このキック自体には
-            // カーブは掛からない(このtickの方向入力は既にショットの照準に使われているため)。
-            // 直前に別のカーブが効いていた場合はこの新しいキックで上書きする。
-            ball = {
-              ...ball,
-              curveDirection: Direction8.None,
-              curveTicksLeft: 0,
-              curveWindowTicksLeft: CURVE_INPUT_WINDOW_TICKS,
-            };
+        // リフティング (続編仕様⑥): 「急な方向転換(ターンアクション)中にキックボタンを
+        // 押すと、保持を継続したまま頭上へ軽く浮かせる」。CLAUDE.mdの実装方針どおり、
+        // 専用のターンアクション停止状態は実装せず(選手の移動自体は通常どおり進む)、
+        // 「直前の向き(facing)と今回の入力方向がほぼ正反対」を検出条件として使う。
+        // Bのedge(フレッシュな押下)を要求することで、既にB長押し中(通常のチャージキック
+        // 進行中)の途中で反転しても誤発火しない。
+        const isReversal = isOppositeDirection8(inputs.direction, controlledPlayer.facing);
+        const bEdge = inputs.buttons.B && !state.prevButtons.B;
+        const liftEligible = isReversal && bEdge && (ball.height as number) <= (DRIBBLE_TOUCH_MAX_HEIGHT_FIXED as number);
+
+        if (liftEligible) {
+          // 水平速度は「新しい入力方向へ通常のドリブルタッチと同じ速さ」にしておく
+          // (浮いている間も選手についてくるように近似。着地後は通常のドリブルタッチへ
+          // 自然に戻る、DRIBBLE_TOUCH_MAX_HEIGHT_FIXED以下になった時点でapplyDribbleTouch
+          // が再び作用するため)。
+          const liftVel = vScaleFixed(DIRECTION_VECTORS[inputs.direction], DRIBBLE_TOUCH_SPEED_FIXED);
+          ball = { ...ball, vel: liftVel, zVel: LIFT_Z_VEL_FIXED };
+          lastTouchTeam = controlledPlayer.team;
+        } else {
+          // 既存のチャージキック (タックル状態は自然にNoneへ収束させる)。
+          const charge = updateKickCharge(controlledPlayer.kickChargeFrames, inputs.buttons.B);
+          nextControlledKickChargeFrames = charge.nextFrames;
+          if (charge.releasedFrames > 0) {
+            const offside = state.offsideEnabled
+              ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
+              : { offside: false, offsidePlayerIndex: null };
+            const offsidePlayer =
+              offside.offside && offside.offsidePlayerIndex !== null ? state.players[offside.offsidePlayerIndex] : undefined;
+            if (offsidePlayer) {
+              ball = offsideRestartBall(offsidePlayer);
+              lastTouchTeam = opponentOf(controlledPlayer.team);
+            } else {
+              ball = applyKick(ball, controlledPlayer, charge.releasedFrames, inputs.direction, inputs.buttons);
+              // カーブ(続編仕様③)の入力受付ウィンドウを新たに開く。このキック自体には
+              // カーブは掛からない(このtickの方向入力は既にショットの照準に使われているため)。
+              // 直前に別のカーブが効いていた場合はこの新しいキックで上書きする。
+              ball = {
+                ...ball,
+                curveDirection: Direction8.None,
+                curveTicksLeft: 0,
+                curveWindowTicksLeft: CURVE_INPUT_WINDOW_TICKS,
+              };
+            }
           }
         }
         tackleAdvance = advanceTacklePhase(controlledPlayer, false, Direction8.None);
