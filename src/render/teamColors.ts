@@ -28,3 +28,9 @@ export const PASS_MARKER_COLOR = 0xff3df0;
 export const PLAYER_HEAD_COLOR = 0xfff2d9;
 /** ゴールネットの線色 (仮値、控えめな白の半透明)。 */
 export const GOAL_NET_COLOR = 0xffffff;
+
+/** キック溜めメーターの色 (実プレイ「反応しない」対策の視覚フィードバック)。
+ *  チーム色・カーソル色のいずれとも競合しない黄緑にする。 */
+export const KICK_CHARGE_COLOR = 0xaaff33;
+/** キックした瞬間に広がる輪の色 (溜めメーターと対、視認しやすい白寄り)。 */
+export const KICK_FLASH_COLOR = 0xffffff;

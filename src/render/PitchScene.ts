@@ -14,6 +14,8 @@ import {
   BALL_COLOR,
   CURSOR_RING_COLOR,
   PASS_MARKER_COLOR,
+  KICK_CHARGE_COLOR,
+  KICK_FLASH_COLOR,
   GOAL_NET_COLOR,
 } from './teamColors';
 import { buildPlayerSpriteTextures, playerSpriteKey, resolveSpriteDirection, type AnimFrame } from './playerSprites';
@@ -21,6 +23,7 @@ import { findTouchPriorityPlayer } from '../sim/ballTouch';
 import { isTeamAInPossession, selectPassTarget } from '../sim/cursor';
 import { toFloat } from '../core/fixed';
 import { GOAL_WIDTH_FIXED } from '../sim/goalkeeperConstants';
+import { KICK_MAX_CHARGE_FRAMES } from '../sim/ballConstants';
 import { formatClockText, formatScoreText } from './scoreboard';
 import { formatEventBannerText } from './eventBanner';
 import { ReplayRecorder } from '../replay/ReplayRecorder';
@@ -52,6 +55,8 @@ const OUTFIELD_RADIUS = 14;
 const BALL_RADIUS_PX = 10;
 /** 選手の歩行アニメ切替間隔 (tick数)。60fps固定なので 8tick ≈ 133ms/フレームの歩行サイクル。 */
 const WALK_ANIM_TICKS_PER_FRAME = 8;
+/** キック解放時のインパクト表示の持続時間 (ms、実フレーム時間ベース。描画専用)。 */
+const KICK_FLASH_DURATION_MS = 180;
 /** この速度未満は「静止」とみなし、脚を閉じた基本姿勢(frame 0)に固定する (仮値)。 */
 const WALK_ANIM_MIN_SPEED = 0.15;
 /** ボールの見た目回転(仮の視覚効果、速度に比例。実際の物理スピンは追跡していない)の係数。 */
@@ -86,6 +91,14 @@ export class PitchScene extends Phaser.Scene {
   private playerSpriteKeys: string[] = [];
   private playerRadarDots: Phaser.GameObjects.Arc[] = [];
   private cursorRing!: Phaser.GameObjects.Arc;
+  /** キック溜めメーター (操作選手の足元、溜め量に応じて縮む輪)。描画専用。 */
+  private chargeMeter!: Phaser.GameObjects.Arc;
+  /** キックした瞬間にボール位置で広がる輪。描画専用。 */
+  private kickFlash!: Phaser.GameObjects.Arc;
+  /** キックフラッシュの残り表示時間 (ms、実フレーム時間ベース)。 */
+  private kickFlashMs = 0;
+  /** 前フレームの操作選手のキック溜め量 (解放= キック実行の検出用)。 */
+  private prevKickChargeFrames = 0;
   private passMarker!: Phaser.GameObjects.Text;
   /** カーソル視認性向上用のパルスアニメーション経過時間 (実フレーム時間、シミュレーションには影響しない)。 */
   private cursorPulseMs = 0;
@@ -313,6 +326,20 @@ export class PitchScene extends Phaser.Scene {
 
     // ボール (サッカーボール模様のテクスチャ。実物より大きめの表示サイズでピッチとの境界を明確にする)
     this.ballMain = this.add.image(0, 0, 'ball-texture');
+
+    // ★キック溜めメーター★ (実プレイ報告「キックの反応しない」への視覚面の対応)
+    // 溜めキックは「押している間は何も起きず、離した瞬間に飛ぶ」ため、押した瞬間に画面上の
+    // 変化が皆無だと「ボタンが効いていない」と感じる。押下が受理されていること・どれだけ
+    // 溜まったかを操作選手の足元のリングで常時可視化する。描画専用でGameStateには触らない。
+    this.chargeMeter = this.add.circle(0, 0, OUTFIELD_RADIUS + 10, 0x000000, 0);
+    this.chargeMeter.setStrokeStyle(3, KICK_CHARGE_COLOR, 1);
+    this.chargeMeter.setVisible(false);
+
+    // ★キック時のインパクト表示★ 蹴った瞬間にボール位置で一瞬だけ広がる輪。
+    // 「今のは蹴れた」という即時の手応えを返す (溜めメーターと対になる視覚フィードバック)。
+    this.kickFlash = this.add.circle(0, 0, BALL_RADIUS_PX, 0x000000, 0);
+    this.kickFlash.setStrokeStyle(3, KICK_FLASH_COLOR, 1);
+    this.kickFlash.setVisible(false);
   }
 
   private buildRadar(): void {
@@ -358,6 +385,8 @@ export class PitchScene extends Phaser.Scene {
       this.ballMain,
       this.ballShadow,
       this.cursorRing,
+      this.chargeMeter,
+      this.kickFlash,
       this.passMarker,
     ]);
   }
@@ -444,6 +473,7 @@ export class PitchScene extends Phaser.Scene {
       this.cursorRing.setAlpha(0.75 + pulse * 0.25);
     }
 
+    this.renderKickFeedback(controlled, delta);
     this.renderPassMarker();
 
     this.scoreText.setText(formatScoreText(this.state));
@@ -471,6 +501,49 @@ export class PitchScene extends Phaser.Scene {
     const targetVelY = this.state.ball.vel.y / 256;
     this.cameraY = computeCameraY(groundPx.y, targetVelY, this.cameraY, CAMERA_CONFIG);
     this.cameras.main.scrollY = this.cameraY;
+  }
+
+  /**
+   * キックの視覚フィードバック (実プレイ報告「キックの反応しない」への対応)。
+   *
+   * 溜めキックは「押している間は何も起きず、離した瞬間に飛ぶ」機構なので、押下中に画面が
+   * 無反応だと入力が受理されていないように見える。そこで:
+   *   - 溜め中: 操作選手の足元に、溜め量に応じて縮んでいくリングを出す (押下が効いている証拠)
+   *   - 解放時: ボール位置で一瞬だけ輪が広がる (蹴れたという手応え)
+   * どちらも描画専用で GameState には一切触らないため、決定論には影響しない。
+   */
+  private renderKickFeedback(controlled: PlayerState | undefined, delta: number): void {
+    const charge = controlled?.kickChargeFrames ?? 0;
+
+    if (controlled && charge > 0) {
+      const px = vecToPx(controlled.pos);
+      // 溜めが増えるほどリングが小さく締まっていく (弓を引く感覚の視覚化)。
+      const ratio = Math.min(1, charge / KICK_MAX_CHARGE_FRAMES);
+      this.chargeMeter.setPosition(px.x, px.y);
+      this.chargeMeter.setScale(1.45 - ratio * 0.55);
+      this.chargeMeter.setAlpha(0.45 + ratio * 0.55);
+      this.chargeMeter.setVisible(true);
+    } else {
+      this.chargeMeter.setVisible(false);
+    }
+
+    // 溜めが非ゼロから0へ落ちた = このフレームでキックが解放された。
+    if (this.prevKickChargeFrames > 0 && charge === 0) {
+      this.kickFlashMs = KICK_FLASH_DURATION_MS;
+      const ballPx = vecToPx(this.state.ball.pos);
+      this.kickFlash.setPosition(ballPx.x, ballPx.y);
+    }
+    this.prevKickChargeFrames = charge;
+
+    if (this.kickFlashMs > 0) {
+      this.kickFlashMs = Math.max(0, this.kickFlashMs - delta);
+      const t = this.kickFlashMs / KICK_FLASH_DURATION_MS; // 1 → 0
+      this.kickFlash.setScale(1 + (1 - t) * 2.2); // 広がりながら
+      this.kickFlash.setAlpha(t); // 薄れて消える
+      this.kickFlash.setVisible(true);
+    } else {
+      this.kickFlash.setVisible(false);
+    }
   }
 
   /**
