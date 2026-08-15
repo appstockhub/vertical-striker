@@ -304,7 +304,10 @@ describe('computeNonControlledDirection', () => {
   // 実プレイで発覚したバグの回帰テスト (Phase 3、2周目): 追跡権を持たない選手は
   // ボール引力を弱め、ホームポジション優先で「団子サッカー」を防ぐ。
   it('bug regression: without chase right, home-pull wins even when the ball is nearby in the opposite direction (prevents dogpiling)', () => {
-    const home = { x: 72, y: 1638 };
+    // 18周目: フォーメーションの深さをずらした (横一列の解消) ため、home座標を
+    // ハードコードせず定義から取る (getHomePosition が唯一の真実)。
+    const homePos = getHomePosition(TeamId.A, 1, FormationId.F442, 1);
+    const home = { x: toFloat(homePos.x), y: toFloat(homePos.y) };
     const player = makePlayer(home.x, home.y - 40, TeamId.A, 1); // homeより40px北 (=home方向はDown)
     const ballPos = { x: toFixed(home.x), y: toFixed(home.y - 200) }; // さらに北 (=ボール方向もUp寄り)
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));

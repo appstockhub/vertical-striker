@@ -551,6 +551,14 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   );
 
   const effectiveInputs: Inputs[] = state.players.map((player, index) => {
+    /**
+     * ★18周目の検証記録 (あえて実装しなかったこと)★
+     * 「無入力の間は操作選手もチームAIで動かす (オートパイロット)」を試したが、
+     *   - 無操作試合のスコア改善は 0-44 → 0-39 とほぼ無し (=守備崩壊の主因ではなかった)
+     *   - 逆に「スティックを離すと自分の選手が勝手に走り出す」操作感の劣化を招く
+     * ため撤回した。無操作試合の大量失点の真因は別にある (docs/original-gap-list.md の
+     * 保留項目を参照)。
+     */
     if (index === controlledPlayerIndex) return inputs;
     // CPU判断はGK自動ステアリングより優先する (順序バグの修正、観戦シミュレーターで発覚):
     // CPU側のGKがボールを確保して touch-priority 保持者になった場合、GK枝が先だと

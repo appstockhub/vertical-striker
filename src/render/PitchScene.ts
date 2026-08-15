@@ -38,6 +38,8 @@ import { formatButtonGuide } from './buttonGuide'; // ボタンガイド (文脈
 import { ReplayRecorder } from '../replay/ReplayRecorder';
 import { detectSoundEvents, SoundEventId } from './soundEvents';
 import { SoundPlayer } from './SoundPlayer';
+import { MusicPlayer, type MusicTrack } from './MusicPlayer';
+import { getHalf, isFulltime } from '../sim/matchClock';
 import {
   PITCH_HEIGHT,
   PITCH_WIDTH,
@@ -65,8 +67,15 @@ const DETERMINISTIC_SEED = 1; // Phase 0 は固定シード。Phase 3+ で試合
  *   - レーダーだけは従来どおりワールド座標のまま別カメラで描く (真上表示が正しいUI)。
  */
 const PROJECTION_CONFIG = DEFAULT_PROJECTION_CONFIG;
-/** 注視点 (ボール) を画面のどこに置くか。少し下寄りにして前方の視界を広く取る。 */
-const FOCUS_SCREEN_Y = VIEWPORT_HEIGHT * 0.66;
+/**
+ * 注視点 (ボール) を画面のどこに置くか。
+ *
+ * ★18周目に 0.66 → 0.76★ 自己観察 (PNGキャプチャ) で「画面の下半分に誰も居ない構図」が
+ * 頻発することが分かった (docs/original-gap-list.md V1)。ボールを下寄りに置くほど
+ * 「前方 = 攻撃方向」の情報量が増え、無駄な余白が減る。原作も画面いっぱいに選手が
+ * 動いている。
+ */
+const FOCUS_SCREEN_Y = VIEWPORT_HEIGHT * 0.76;
 /** カメラ追従のイージング係数 (0..1、1に近いほど速い)。 */
 const CAMERA_SMOOTHING = 0.12;
 /** 進行方向の先読みオフセット (px) と、その上限に達する速度 (px/tick)。 */
@@ -78,8 +87,12 @@ const BALL_RADIUS_PX = 8;
 const WALK_ANIM_TICKS_PER_FRAME = 6;
 /** キック解放時のインパクト表示の持続時間 (ms、実フレーム時間ベース。描画専用)。 */
 const KICK_FLASH_DURATION_MS = 180;
-/** ゴール演出の表示時間 (ms、実フレーム時間ベース)。 */
-const GOAL_CELEBRATION_MS = 1600;
+/**
+ * ゴール演出の表示時間 (ms、実フレーム時間ベース)。
+ * ★18周目に 1600 → 1100★ 巨大な文字が画面を1.6秒覆い、プレーが見えなかった
+ * (自己観察 V3)。短く・小さく・上寄りにして、プレーの視界を優先する。
+ */
+const GOAL_CELEBRATION_MS = 1100;
 /** この速度未満は「静止」とみなし、脚を閉じた基本姿勢に固定する。 */
 const WALK_ANIM_MIN_SPEED = 0.15;
 /** ボールの見た目回転(視覚効果のみ)の係数。 */
@@ -161,6 +174,12 @@ export class PitchScene extends Phaser.Scene {
 
   private replayRecorder = new ReplayRecorder();
   private soundPlayer!: SoundPlayer;
+  /** 試合中のBGM (前半/後半で別曲)。原作の「アップテンポなBGM」に対応 (MusicPlayer.ts)。 */
+  private musicPlayer = new MusicPlayer();
+  /** いま再生中のBGMトラック (前半/後半で切り替える)。 */
+  private musicTrack: MusicTrack | null = null;
+  /** フルタイム表示 (結果 + リマッチ導線)。 */
+  private fulltimeText!: Phaser.GameObjects.Text;
 
   private matchStarted = false;
   private matchSetupOverlay: MatchSetupOverlay | null = null;
@@ -190,6 +209,8 @@ export class PitchScene extends Phaser.Scene {
         // 試合開始のキー入力は「ユーザー操作」なので、ここが AudioContext を起こす正規の
         // タイミング (ブラウザの自動再生ポリシー上、操作ハンドラ内でしか resume できない)。
         this.soundPlayer.ensureStarted();
+        this.musicPlayer.ensureStarted();
+        this.musicPlayer.play('firstHalf');
       });
     } else {
       this.matchStarted = true;
@@ -197,11 +218,27 @@ export class PitchScene extends Phaser.Scene {
 
     window.addEventListener('keydown', (e: KeyboardEvent) => {
       this.soundPlayer.ensureStarted();
-      if (e.code === 'KeyM') this.soundPlayer.setMuted(!this.soundPlayer.isMuted());
+      this.musicPlayer.ensureStarted();
+      if (e.code === 'KeyM') {
+        const muted = !this.soundPlayer.isMuted();
+        this.soundPlayer.setMuted(muted);
+        this.musicPlayer.setMuted(muted);
+      }
       // ★練習モード (P キー)★ CPUがボールに一切関与しなくなる。動き・ボタンの効きを
       // 相手に邪魔されず確認するための開発/練習用トグル (GameState.cpuHandsOff 参照)。
       if (e.code === 'KeyP') {
         this.state = { ...this.state, cpuHandsOff: !this.state.cpuHandsOff };
+      }
+      // ★リマッチ (R キー)★ フルタイム後に同じ設定でもう1試合始める
+      // (原作は試合が終わったら次へ行ける。現状は時計が止まるだけだった)。
+      if (e.code === 'KeyR' && isFulltime(this.state.frame)) {
+        this.state = createInitialState(DETERMINISTIC_SEED, {
+          difficulty: this.state.difficulty,
+          offsideEnabled: this.state.offsideEnabled,
+        });
+        this.replayRecorder.start(DETERMINISTIC_SEED, this.state.difficulty, this.state.offsideEnabled);
+        this.musicTrack = null;
+        this.goalCelebrationMs = 0;
       }
     });
     window.addEventListener('pointerdown', () => this.soundPlayer.ensureStarted());
@@ -503,8 +540,8 @@ export class PitchScene extends Phaser.Scene {
     this.practiceText.setDepth(DEPTH_HUD + 1);
     this.practiceText.setVisible(false);
 
-    this.goalText = this.add.text(VIEWPORT_WIDTH / 2, VIEWPORT_HEIGHT / 2 - 40, 'GOAL!', {
-      fontSize: '68px',
+    this.goalText = this.add.text(VIEWPORT_WIDTH / 2, HUD_HEIGHT + 70, 'GOAL!', {
+      fontSize: '46px',
       color: '#ffe680',
       fontStyle: 'bold',
       stroke: '#22160a',
@@ -515,7 +552,24 @@ export class PitchScene extends Phaser.Scene {
     this.goalText.setDepth(DEPTH_HUD + 2);
     this.goalText.setVisible(false);
 
+    // フルタイム画面 (結果 + リマッチ導線)。原作調査 G1 への対応。
+    this.fulltimeText = this.add.text(VIEWPORT_WIDTH / 2, VIEWPORT_HEIGHT / 2, '', {
+      fontSize: '30px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      align: 'center',
+      backgroundColor: '#05080deb',
+      padding: { x: 22, y: 18 },
+      stroke: '#000000',
+      strokeThickness: 4,
+    });
+    this.fulltimeText.setOrigin(0.5, 0.5);
+    this.fulltimeText.setScrollFactor(0);
+    this.fulltimeText.setDepth(DEPTH_HUD + 3);
+    this.fulltimeText.setVisible(false);
+
     this.radarCamera.ignore([
+      this.fulltimeText,
       this.hudBar,
       this.scoreText,
       this.clockText,
@@ -568,6 +622,7 @@ export class PitchScene extends Phaser.Scene {
     this.renderGoalCelebration(delta);
     this.renderInputDebug(controlled);
     this.renderPassMarker();
+    this.renderMatchFlow();
 
     this.scoreText.setText(formatScoreText(this.state));
     this.clockText.setText(formatClockText(this.state));
@@ -690,6 +745,38 @@ export class PitchScene extends Phaser.Scene {
     this.cursorRing.setDepth(world.y - 0.6);
   }
 
+  /**
+   * ★18周目: 試合の流れの演出 (BGM切替 + フルタイム画面 + リマッチ導線)★
+   *
+   * 原作調査より:
+   *   - BGMは「試合の前半後半で異なる曲」(当時のレビュー) → ハーフタイムで切り替える
+   *   - 試合が終わったら結果を見せて次へ行ける (現状はフルタイムで時計が止まるだけだった、
+   *     docs/original-gap-list.md G1)
+   */
+  private renderMatchFlow(): void {
+    const half = getHalf(this.state.frame);
+    const finished = isFulltime(this.state.frame);
+
+    if (finished) {
+      if (this.musicTrack !== null) {
+        this.musicPlayer.stop();
+        this.musicTrack = null;
+      }
+      const [a, b] = this.state.score;
+      const result = a > b ? 'WIN' : a < b ? 'LOSE' : 'DRAW';
+      this.fulltimeText.setText(`FULL TIME\n${a} - ${b}\n${result}\n\nR キーでもう一度`);
+      this.fulltimeText.setVisible(true);
+      return;
+    }
+
+    this.fulltimeText.setVisible(false);
+    const wanted: MusicTrack = half === 1 ? 'firstHalf' : 'secondHalf';
+    if (this.musicTrack !== wanted) {
+      this.musicTrack = wanted;
+      this.musicPlayer.play(wanted);
+    }
+  }
+
   /** ゴール演出 (得点時に大きく出して素早く落ち着く)。描画専用、試合は止めない。 */
   private renderGoalCelebration(delta: number): void {
     if (this.goalCelebrationMs <= 0) {
@@ -698,7 +785,7 @@ export class PitchScene extends Phaser.Scene {
     }
     this.goalCelebrationMs = Math.max(0, this.goalCelebrationMs - delta);
     const t = this.goalCelebrationMs / GOAL_CELEBRATION_MS; // 1 → 0
-    const pop = 1 + Math.max(0, t - 0.75) * 3.2;
+    const pop = 1 + Math.max(0, t - 0.75) * 2.0;
     this.goalText.setScale(pop);
     this.goalText.setAlpha(t < 0.25 ? t / 0.25 : 1);
     this.goalText.setVisible(true);

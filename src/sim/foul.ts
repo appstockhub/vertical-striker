@@ -30,8 +30,15 @@ import type { PlayerState } from './state';
  * レッドカード・退場4名までの仕様は docs/soccer-rules-audit.md に記録済み)。
  */
 
-/** 選手同士が「接触した」とみなす距離 (px)。選手の当たり半径(10px)の合計より少し内側。 */
-export const FOUL_CONTACT_RADIUS_FIXED: Fixed = toFixed(17);
+/**
+ * 選手同士が「接触した」とみなす距離 (px)。
+ *
+ * ★18周目に 17 → 12★ 観戦シミュレーターの計測でファウルが**前半だけで22回**発生していた
+ * (実サッカーは1試合で10〜15回)。スライディングの終端が相手の近くを通るだけで反則に
+ * なっていたため、明確に「当たった」と言える距離まで絞る (選手の当たり半径10px + 少し)。
+ * docs/original-gap-list.md T3。
+ */
+export const FOUL_CONTACT_RADIUS_FIXED: Fixed = toFixed(12);
 const FOUL_CONTACT_RADIUS_SQ = fixedMul(FOUL_CONTACT_RADIUS_FIXED, FOUL_CONTACT_RADIUS_FIXED) as number;
 
 /** ペナルティエリアの寸法 (render/pitchGeometry.ts の描画と一致させること)。 */

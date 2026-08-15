@@ -46,64 +46,76 @@ export interface Formation {
 const GK_SLOT: FormationSlot = { xFrac: 0.5, depthFrac: 0.04 };
 
 const FORMATIONS: Readonly<Record<FormationId, Formation>> = {
+  /**
+   * ★18周目: 「横一列」の解消★
+   *
+   * 自己観察 (PNGキャプチャ) で、選手が同じYに4人並ぶ「壁」に見えることが分かった
+   * (docs/original-gap-list.md V2)。原因は全DFが depthFrac 0.18、全MFが 0.55 と
+   * **完全に同一の深さ**だったこと。実際のサッカーの陣形は必ず前後にずれている:
+   *   - サイドバックはセンターバックより少し前
+   *   - サイドハーフはセントラルハーフより少し前
+   *   - 2トップは横並びでもわずかにずらす
+   * 深さをずらすだけで、画面上は一気に「陣形」に見える。
+   * (xFrac は左右対称のまま維持する — 公平性に関わるため)
+   */
   [FormationId.F442]: {
     gk: GK_SLOT,
     outfieldSlots: [
-      { xFrac: 0.15, depthFrac: 0.18 },
-      { xFrac: 0.38, depthFrac: 0.18 },
-      { xFrac: 0.62, depthFrac: 0.18 },
-      { xFrac: 0.85, depthFrac: 0.18 },
-      { xFrac: 0.15, depthFrac: 0.55 },
-      { xFrac: 0.38, depthFrac: 0.55 },
-      { xFrac: 0.62, depthFrac: 0.55 },
-      { xFrac: 0.85, depthFrac: 0.55 },
-      { xFrac: 0.35, depthFrac: 0.85 },
-      { xFrac: 0.65, depthFrac: 0.85 },
+      { xFrac: 0.15, depthFrac: 0.22 }, // 左SB (前めに張る)
+      { xFrac: 0.38, depthFrac: 0.15 }, // 左CB (最終ライン)
+      { xFrac: 0.62, depthFrac: 0.15 }, // 右CB
+      { xFrac: 0.85, depthFrac: 0.22 }, // 右SB
+      { xFrac: 0.15, depthFrac: 0.6 }, // 左SH (幅を取って前へ)
+      { xFrac: 0.38, depthFrac: 0.48 }, // 左CH (底で組み立て)
+      { xFrac: 0.62, depthFrac: 0.52 }, // 右CH (相方より半歩前)
+      { xFrac: 0.85, depthFrac: 0.6 }, // 右SH
+      { xFrac: 0.35, depthFrac: 0.88 }, // FW (前に張る方)
+      { xFrac: 0.65, depthFrac: 0.8 }, // FW (少し引いて受ける方)
     ],
   },
   [FormationId.F433]: {
     gk: GK_SLOT,
     outfieldSlots: [
-      { xFrac: 0.15, depthFrac: 0.18 },
-      { xFrac: 0.38, depthFrac: 0.18 },
-      { xFrac: 0.62, depthFrac: 0.18 },
-      { xFrac: 0.85, depthFrac: 0.18 },
-      { xFrac: 0.25, depthFrac: 0.5 },
-      { xFrac: 0.5, depthFrac: 0.5 },
-      { xFrac: 0.75, depthFrac: 0.5 },
-      { xFrac: 0.15, depthFrac: 0.85 },
-      { xFrac: 0.5, depthFrac: 0.85 },
-      { xFrac: 0.85, depthFrac: 0.85 },
+      { xFrac: 0.15, depthFrac: 0.22 },
+      { xFrac: 0.38, depthFrac: 0.15 },
+      { xFrac: 0.62, depthFrac: 0.15 },
+      { xFrac: 0.85, depthFrac: 0.22 },
+      { xFrac: 0.25, depthFrac: 0.55 },
+      { xFrac: 0.5, depthFrac: 0.44 }, // アンカー (最も低い位置)
+      { xFrac: 0.75, depthFrac: 0.55 },
+      { xFrac: 0.15, depthFrac: 0.82 }, // ウイングは中央FWより少し引く
+      { xFrac: 0.5, depthFrac: 0.9 }, // CF
+      { xFrac: 0.85, depthFrac: 0.82 },
     ],
   },
   [FormationId.F352]: {
     gk: GK_SLOT,
     outfieldSlots: [
-      { xFrac: 0.25, depthFrac: 0.18 },
-      { xFrac: 0.5, depthFrac: 0.18 },
-      { xFrac: 0.75, depthFrac: 0.18 },
-      { xFrac: 0.1, depthFrac: 0.5 },
-      { xFrac: 0.3, depthFrac: 0.5 },
-      { xFrac: 0.5, depthFrac: 0.5 },
-      { xFrac: 0.7, depthFrac: 0.5 },
-      { xFrac: 0.9, depthFrac: 0.5 },
-      { xFrac: 0.35, depthFrac: 0.85 },
-      { xFrac: 0.65, depthFrac: 0.85 },
+      { xFrac: 0.25, depthFrac: 0.2 },
+      { xFrac: 0.5, depthFrac: 0.14 }, // 3バックの中央は一番深い
+      { xFrac: 0.75, depthFrac: 0.2 },
+      { xFrac: 0.1, depthFrac: 0.58 }, // ウイングバックは高い位置
+      { xFrac: 0.3, depthFrac: 0.46 },
+      { xFrac: 0.5, depthFrac: 0.52 },
+      { xFrac: 0.7, depthFrac: 0.46 },
+      { xFrac: 0.9, depthFrac: 0.58 },
+      { xFrac: 0.35, depthFrac: 0.88 },
+      { xFrac: 0.65, depthFrac: 0.8 },
     ],
   },
   [FormationId.F532]: {
     gk: GK_SLOT,
     outfieldSlots: [
-      { xFrac: 0.1, depthFrac: 0.15 },
-      { xFrac: 0.3, depthFrac: 0.15 },
-      { xFrac: 0.5, depthFrac: 0.15 },
-      { xFrac: 0.7, depthFrac: 0.15 },
-      { xFrac: 0.9, depthFrac: 0.15 },
-      { xFrac: 0.25, depthFrac: 0.5 },
-      { xFrac: 0.5, depthFrac: 0.5 },
-      { xFrac: 0.75, depthFrac: 0.5 },
-      { xFrac: 0.35, depthFrac: 0.85 },
-      { xFrac: 0.65, depthFrac: 0.85 },
+      { xFrac: 0.1, depthFrac: 0.22 }, // ウイングバック
+      { xFrac: 0.3, depthFrac: 0.14 },
+      { xFrac: 0.5, depthFrac: 0.12 }, // スイーパー相当 (最深)
+      { xFrac: 0.7, depthFrac: 0.14 },
+      { xFrac: 0.9, depthFrac: 0.22 },
+      { xFrac: 0.25, depthFrac: 0.54 },
+      { xFrac: 0.5, depthFrac: 0.46 },
+      { xFrac: 0.75, depthFrac: 0.54 },
+      { xFrac: 0.35, depthFrac: 0.88 },
+      { xFrac: 0.65, depthFrac: 0.8 },
     ],
   },
 };

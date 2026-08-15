@@ -36,7 +36,10 @@ const CONTEXT_LABEL: Record<BallContext, string> = {
   defending: '相手球',
 };
 
-/** 文脈ごとのボタンの役割 (CLAUDE.md 続編仕様のボタン表そのもの)。 */
+/**
+ * 文脈ごとのボタンの役割 (CLAUDE.md 続編仕様のボタン表そのもの)。
+ * 文言は画面幅480pxに収まるよう最小限に切り詰める (自己観察で見切れを確認済み)。
+ */
 const BUTTON_ROLES: Record<BallContext, ReadonlyArray<readonly [string, string]>> = {
   loose: [
     ['B(Z)', 'クリア'],
