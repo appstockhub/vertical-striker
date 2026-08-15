@@ -25,6 +25,8 @@ describe('gamepadToButtonState', () => {
     // LB/RB -> L/R
     expect(gamepadToButtonState(makePad([4]))[LogicalButton.L]).toBe(true);
     expect(gamepadToButtonState(makePad([5]))[LogicalButton.R]).toBe(true);
+    // Start (W3C Standard Gamepad index 9、続編仕様④ライン操作)
+    expect(gamepadToButtonState(makePad([9]))[LogicalButton.Start]).toBe(true);
   });
 
   it('returns all-false when nothing is pressed', () => {

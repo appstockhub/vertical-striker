@@ -129,6 +129,67 @@ describe('computeLineAdjustedHomePosition (team line push/retreat, Phase 3 bug f
     // ボール深度の32pxグリッド量子化(ジッター防止)によりサブピクセルの差は出るため精度0(±0.5px)
     expect(toFloat(gkAdjusted.y)).toBeCloseTo(toFloat(gkHome.y), 0);
   });
+
+  describe('manualLineOffset (続編仕様④: ライン操作、STARTボタン)', () => {
+    const ballPos = { x: toFixed(240), y: toFixed(900) };
+
+    it('Team A: a positive offset pushes the line further forward than with no offset', () => {
+      const noOffset = computeLineAdjustedHomePosition(TeamId.A, 9, FormationId.F442, 1, ballPos, TeamId.B);
+      const withOffset = computeLineAdjustedHomePosition(
+        TeamId.A,
+        9,
+        FormationId.F442,
+        1,
+        ballPos,
+        TeamId.B, // 守備中(相手Bが保持)
+        toFixed(50),
+      );
+      // half=1でTeam Aは南側(y大)を自陣とする -> 前進(押し上げ)はyが減る方向。
+      expect(toFloat(withOffset.y)).toBeLessThan(toFloat(noOffset.y));
+    });
+
+    it('Team A: a negative offset pulls the line back further than with no offset', () => {
+      const noOffset = computeLineAdjustedHomePosition(TeamId.A, 9, FormationId.F442, 1, ballPos, TeamId.A);
+      const withOffset = computeLineAdjustedHomePosition(
+        TeamId.A,
+        9,
+        FormationId.F442,
+        1,
+        ballPos,
+        TeamId.A,
+        toFixed(-50),
+      );
+      expect(toFloat(withOffset.y)).toBeGreaterThan(toFloat(noOffset.y));
+    });
+
+    it('Team B (CPU) is never affected by manualLineOffset, even if nonzero', () => {
+      const noOffset = computeLineAdjustedHomePosition(TeamId.B, 9, FormationId.F442, 1, ballPos, TeamId.B);
+      const withOffset = computeLineAdjustedHomePosition(
+        TeamId.B,
+        9,
+        FormationId.F442,
+        1,
+        ballPos,
+        TeamId.B,
+        toFixed(50),
+      );
+      expect(withOffset).toEqual(noOffset);
+    });
+
+    it('defaults to no offset when the parameter is omitted (existing callers unaffected)', () => {
+      const withDefault = computeLineAdjustedHomePosition(TeamId.A, 9, FormationId.F442, 1, ballPos, TeamId.B);
+      const withExplicitZero = computeLineAdjustedHomePosition(
+        TeamId.A,
+        9,
+        FormationId.F442,
+        1,
+        ballPos,
+        TeamId.B,
+        ZERO_FIXED,
+      );
+      expect(withDefault).toEqual(withExplicitZero);
+    });
+  });
 });
 
 describe('computeNonControlledDirection', () => {

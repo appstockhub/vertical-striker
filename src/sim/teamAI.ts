@@ -200,6 +200,7 @@ export function computeLineAdjustedHomePosition(
   half: Half,
   ballPos: Vec2Fixed,
   possessionTeam: TeamId | null,
+  manualLineOffset: Fixed = ZERO_FIXED,
 ): Vec2Fixed {
   const home = getHomePosition(team, slotIndex, formationId, half);
   if (possessionTeam === null) return home;
@@ -215,9 +216,13 @@ export function computeLineAdjustedHomePosition(
   // (「ボールの後方に支援ラインを敷く」近似。ボール深度に密着させると同深度の味方が
   // ボール周辺に常時複数入り、団子度が悪化する — 観戦シミュレーターで発覚)。
   const pushTargetDepth = ballDepth - (LINE_PUSH_STANDOFF_FIXED as number);
-  const targetDepth = (
-    teamHasBall ? Math.max(homeDepth, pushTargetDepth) : Math.min(homeDepth, ballDepth)
-  ) as Fixed;
+  // ライン操作 (続編仕様④、STARTボタン): 人間(Team A)のみが対象。GameState.manualLineOffset
+  // は符号付きのdepth値(+=ディフェンスラインを押し上げる/-=オフェンスラインを下げる、
+  // 符号の決定自体はupdate.ts側が担う)で、targetDepthへそのまま加算する。
+  const manualOffsetForTeam = team === TeamId.A ? (manualLineOffset as number) : 0;
+  const targetDepth = ((teamHasBall
+    ? Math.max(homeDepth, pushTargetDepth)
+    : Math.min(homeDepth, ballDepth)) + manualOffsetForTeam) as Fixed;
 
   // 追従率 = このスロットのホーム深さ / ハーフの深さ (0..1にクランプ、GKはほぼ0、FWは大きい)。
   const followFraction = clampFixed(fixedDiv(homeDepth as Fixed, HALF_PITCH_DEPTH_FIXED), ZERO_FIXED, toFixed(1));
@@ -295,6 +300,7 @@ export function computeNonControlledDirection(
   possessionTeam: TeamId | null,
   chaseRole: ChaseRole | null,
   markTargetIndex: number | null = null,
+  manualLineOffset: Fixed = ZERO_FIXED,
 ): Direction8 {
   const lineHome = computeLineAdjustedHomePosition(
     player.team,
@@ -303,6 +309,7 @@ export function computeNonControlledDirection(
     half,
     ballPos,
     possessionTeam,
+    manualLineOffset,
   );
 
   // ホーム目標の差し替え (Phase 4): 新しい力項は追加せず、ホーム復元力が収束する目標点だけを

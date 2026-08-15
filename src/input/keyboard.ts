@@ -34,6 +34,10 @@ const BUTTON_KEYS: Record<string, LogicalButton> = {
   KeyV: LogicalButton.X,
   KeyQ: LogicalButton.L,
   KeyE: LogicalButton.R,
+  // 続編仕様④(ライン操作)。Enter/Spaceは試合前設定オーバーレイ(matchSetupOverlay.ts)が
+  // 既に「試合開始」に使っているため(このKeyboardSourceとは別の独立したリスナーだが、
+  // 混同を避けるため)、WASD操作から押しやすいShiftを割り当てる。
+  ShiftLeft: LogicalButton.Start,
 };
 
 export class KeyboardSource {

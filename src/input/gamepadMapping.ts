@@ -24,6 +24,8 @@ const XBOX_BUTTON = {
   DPAD_DOWN: 13,
   DPAD_LEFT: 14,
   DPAD_RIGHT: 15,
+  /** W3C Standard Gamepadレイアウトの「Start/Options」ボタン。 */
+  START: 9,
 } as const;
 
 /**
@@ -38,6 +40,7 @@ const LOGICAL_TO_XBOX_INDEX: Record<LogicalButton, number> = {
   [LogicalButton.X]: XBOX_BUTTON.Y, // 上 (推測)
   [LogicalButton.L]: XBOX_BUTTON.LB,
   [LogicalButton.R]: XBOX_BUTTON.RB,
+  [LogicalButton.Start]: XBOX_BUTTON.START,
 };
 
 function isButtonPressed(pad: RawPadLike, index: number): boolean {

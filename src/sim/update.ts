@@ -1,4 +1,16 @@
-import { distSqFixed, dotFixed, fixedAdd, fixedMul, fixedSub, toFixed, vAdd, vSub, vZero, ZERO_FIXED } from '../core/fixed';
+import {
+  clampFixed,
+  distSqFixed,
+  dotFixed,
+  fixedAdd,
+  fixedMul,
+  fixedSub,
+  toFixed,
+  vAdd,
+  vSub,
+  vZero,
+  ZERO_FIXED,
+} from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, emptyButtonState, type ButtonState } from '../input/types';
 import type { BallState, GameState, PlayerState, SetPieceLock } from './state';
@@ -34,7 +46,14 @@ import {
   SAVE_CONTEXT_MIN_BALL_SPEED_SQ_FIXED,
 } from './goalkeeperConstants';
 import { GOAL_KICK_EXCLUSION_DEPTH_FIXED, SET_PIECE_EXCLUSION_RADIUS_FIXED } from './boundsConstants';
-import { KICKOFF_GRACE_TICKS, LINE_POSSESSION_SWITCH_TICKS, RESTART_GRACE_TICKS } from './teamAIConstants';
+import {
+  KICKOFF_GRACE_TICKS,
+  LINE_POSSESSION_SWITCH_TICKS,
+  MANUAL_LINE_OFFSET_DECAY_FIXED,
+  MANUAL_LINE_OFFSET_MAX_FIXED,
+  MANUAL_LINE_OFFSET_STEP_FIXED,
+  RESTART_GRACE_TICKS,
+} from './teamAIConstants';
 import {
   advanceTacklePhase,
   applyTackleWin,
@@ -202,6 +221,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
       lastEvent: null,
       setPieceLock: null,
+      manualLineOffset: ZERO_FIXED,
     };
   }
 
@@ -285,6 +305,30 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       linePossessionSwitchTicks = 0;
     }
   }
+
+  // ライン操作 (続編仕様④、STARTボタン)。人間(Team A)のみが対象。既にライン計算が
+  // 使っている linePossessionTeam (ヒステリシス付き) を文脈判定にも流用し、自動ラインの
+  // 動きと手動オフセットがちぐはぐにならないようにする。Team Aが保持中にSTARTを押し続けると
+  // オフェンスラインを下げる(-方向)、非保持(守備)中に押し続けるとディフェンスラインを
+  // 上げる(+方向)。押していない間はゆっくり中立(0)へ減衰する。
+  let manualLineOffset = state.manualLineOffset;
+  const teamAAttacking = linePossessionTeam === TeamId.A;
+  const teamADefending = linePossessionTeam === TeamId.B;
+  if (inputs.buttons.Start && (teamAAttacking || teamADefending)) {
+    const step = MANUAL_LINE_OFFSET_STEP_FIXED as number;
+    const delta = (teamAAttacking ? -step : step) as Fixed;
+    manualLineOffset = clampFixed(
+      fixedAdd(manualLineOffset, delta),
+      -(MANUAL_LINE_OFFSET_MAX_FIXED as number) as Fixed,
+      MANUAL_LINE_OFFSET_MAX_FIXED,
+    );
+  } else {
+    const decay = MANUAL_LINE_OFFSET_DECAY_FIXED as number;
+    const current = manualLineOffset as number;
+    if (current > 0) manualLineOffset = Math.max(0, current - decay) as Fixed;
+    else if (current < 0) manualLineOffset = Math.min(0, current + decay) as Fixed;
+  }
+
   const cpuDecision =
     touchPriorityIndex !== null && touchPlayerForCpu && !isTeamAInPossession(touchPriorityIndex)
       ? decideCpuAttack(touchPriorityIndex, state.players, half, state.difficulty, state.rngState, prevTouchPlayerIndex)
@@ -350,6 +394,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       linePossessionTeam,
       chaseRightIndices.get(index) ?? null,
       markAssignments.get(index) ?? null,
+      manualLineOffset,
     );
     return { direction, buttons: NO_BUTTONS };
   });
@@ -566,6 +611,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
       lastEvent: null,
       setPieceLock: null,
+      manualLineOffset: ZERO_FIXED,
     };
   }
 
@@ -691,6 +737,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     restartGraceTicksLeft,
     lastEvent,
     setPieceLock,
+    manualLineOffset,
   };
 }
 

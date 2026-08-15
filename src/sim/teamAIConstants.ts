@@ -313,3 +313,26 @@ export const KICKOFF_GRACE_TICKS = 15;
  * (goal-kick専用)、同じ猶予tick数を流用する — 妥当性は要プレイテスト確認。
  */
 export const RESTART_GRACE_TICKS = 63;
+
+// ============================================================================
+// ライン操作 (続編仕様④、GameState.manualLineOffset、STARTボタン) 用の定数。
+// すべて仮値 (実機データ無し、要プレイテスト調整)。
+// ============================================================================
+
+/**
+ * 手動ラインオフセットの上限/下限 (px、仮値)。LINE_PUSH_STANDOFF_FIXED(190px)より
+ * 小さくし、「自動のライン計算を覆すほどの極端な操作」にはならない範囲に留めた
+ * (オフサイドトラップは強力な戦術のはずだが、既存の自動ライン計算(押し上げ/引き下げ)
+ * 自体を過剰に上書きしてピッチ外相当の不自然な位置まで押し出すのは避けたい)。
+ */
+export const MANUAL_LINE_OFFSET_MAX_FIXED: Fixed = toFixed(150);
+/**
+ * STARTを押している間、1tickあたりオフセットが変化する量 (px/tick、仮値)。
+ * PLAYER_SPEED_FIXED(3px/tick)と同程度にし、選手の実際の移動速度で追随できる範囲にした。
+ */
+export const MANUAL_LINE_OFFSET_STEP_FIXED: Fixed = toFixed(3);
+/**
+ * STARTを押していない間、1tickあたりオフセットが中立(0)へ戻る量 (px/tick、仮値)。
+ * STEPよりやや遅くし、「離した瞬間に一瞬で元に戻る」不自然さを避けた。
+ */
+export const MANUAL_LINE_OFFSET_DECAY_FIXED: Fixed = toFixed(2);

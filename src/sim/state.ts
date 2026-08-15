@@ -1,4 +1,5 @@
 import type { Fixed, Vec2Fixed } from '../core/types';
+import { ZERO_FIXED } from '../core/fixed';
 import { createRng, type RngState } from '../core/rng';
 import { emptyButtonState, type ButtonState, type Direction8 } from '../input/types';
 import { FormationId, PLAYERS_PER_TEAM, TeamId } from './formations';
@@ -151,6 +152,15 @@ export interface GameState {
    * null = ロック無し。
    */
   readonly setPieceLock: SetPieceLock | null;
+  /**
+   * ライン操作(続編仕様④、STARTボタン)の手動オフセット。人間(Team A)のみが対象
+   * (CPUはSTART概念を持たない)。符号付きのdepth値で、+方向はディフェンスラインを
+   * 押し上げる(オフサイドトラップ)、-方向はオフェンスラインを下げる(トラップ回避)。
+   * Team Aが保持中にSTARTを押し続けると-方向へ、非保持(守備)中に押し続けると+方向へ
+   * 変化し、押していない間はゆっくり0(中立)へ減衰する(update.ts参照)。
+   * computeLineAdjustedHomePosition(teamAI.ts)がtargetDepthに加算する。
+   */
+  readonly manualLineOffset: Fixed;
 }
 
 /** GameState.lastEvent の種別。goalはscoreの変化で既に検出可能なため対象外。 */
@@ -211,5 +221,6 @@ export function createInitialState(seed: number, options: CreateInitialStateOpti
     restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
     lastEvent: null,
     setPieceLock: null,
+    manualLineOffset: ZERO_FIXED,
   };
 }

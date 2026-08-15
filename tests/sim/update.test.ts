@@ -6,6 +6,7 @@ import { Direction8, emptyButtonState, LogicalButton, type ButtonState } from '.
 import { FULL_MATCH_DURATION_FRAMES, HALF_DURATION_FRAMES } from '../../src/sim/matchClock';
 import { PITCH_HEIGHT, PITCH_WIDTH } from '../../src/config/pitch';
 import { CURVE_DURATION_TICKS, CURVE_INPUT_WINDOW_TICKS } from '../../src/sim/ballConstants';
+import { MANUAL_LINE_OFFSET_MAX_FIXED } from '../../src/sim/teamAIConstants';
 
 function inputs(direction: Direction8) {
   return { direction, buttons: emptyButtonState() };
@@ -705,6 +706,68 @@ describe('simulate — Phase 3: team line push/retreat fixes "Team B doesn\'t at
       stateB = simulate(stateB, inputs(Direction8.None));
     }
     expect(stateA).toEqual(stateB);
+  });
+});
+
+describe('simulate — 続編仕様④: ライン操作 (STARTボタン)', () => {
+  // touch-priority(ドリブル半径20px以内)が誰にも発生しないよう、ボールを全選手から
+  // 離れたピッチ隅に置く。これでpossessionTeamはstate.lastTouchTeamにフォールバックし、
+  // linePossessionTeamのヒステリシス(90tick)を待たずに文脈を確定できる。
+  function stateWithPossession(team: TeamId): GameState {
+    const base = createInitialState(1, { difficulty: 'easy' });
+    return {
+      ...base,
+      ball: { ...base.ball, pos: { x: toFixed(10), y: toFixed(10) } },
+      lastTouchTeam: team,
+      linePossessionTeam: team,
+      linePossessionSwitchTicks: 0,
+    };
+  }
+
+  it('Team Aが攻撃中にSTARTを押し続けるとmanualLineOffsetが負方向(オフェンスラインを下げる)へ変化する', () => {
+    let state = stateWithPossession(TeamId.A);
+    state = simulate(state, inputsWithButtons(Direction8.None, { Start: true }));
+    expect(toFloat(state.manualLineOffset)).toBeLessThan(0);
+  });
+
+  it('Team Aが守備中にSTARTを押し続けるとmanualLineOffsetが正方向(ディフェンスラインを上げる)へ変化する', () => {
+    let state = stateWithPossession(TeamId.B);
+    state = simulate(state, inputsWithButtons(Direction8.None, { Start: true }));
+    expect(toFloat(state.manualLineOffset)).toBeGreaterThan(0);
+  });
+
+  it('STARTを離すとゆっくり中立(0)へ減衰する', () => {
+    let state = stateWithPossession(TeamId.B);
+    for (let i = 0; i < 10; i++) {
+      state = simulate(state, inputsWithButtons(Direction8.None, { Start: true }));
+    }
+    const peak = state.manualLineOffset as number;
+    expect(peak).toBeGreaterThan(0);
+    for (let i = 0; i < 30; i++) {
+      state = simulate(state, inputs(Direction8.None));
+    }
+    expect(state.manualLineOffset as number).toBeLessThan(peak);
+  });
+
+  it('MANUAL_LINE_OFFSET_MAX_FIXEDでクランプされる(押し続けても際限なく増えない)', () => {
+    let state = stateWithPossession(TeamId.B);
+    for (let i = 0; i < 200; i++) {
+      state = simulate(state, inputsWithButtons(Direction8.None, { Start: true }));
+    }
+    expect(state.manualLineOffset).toBe(MANUAL_LINE_OFFSET_MAX_FIXED);
+  });
+
+  it('possessionTeamが不明(null)な間はSTARTを押していても変化しない', () => {
+    const base = createInitialState(1, { difficulty: 'easy' });
+    let state: GameState = {
+      ...base,
+      ball: { ...base.ball, pos: { x: toFixed(10), y: toFixed(10) } },
+      lastTouchTeam: null,
+      linePossessionTeam: null,
+      linePossessionSwitchTicks: 0,
+    };
+    state = simulate(state, inputsWithButtons(Direction8.None, { Start: true }));
+    expect(state.manualLineOffset).toBe(ZERO_FIXED);
   });
 });
 

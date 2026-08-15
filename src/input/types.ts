@@ -9,6 +9,10 @@ export enum LogicalButton {
   X = 'X',
   L = 'L',
   R = 'R',
+  /** 続編仕様④(ライン操作)で新設。相手保持中=ディフェンスライン上げ、自チーム保持中=
+   * オフェンスライン下げ(sim/update.tsのGameState.manualLineOffset参照)。SELECT(ポーズ)は
+   * まだ未実装 — このプロジェクトはPause機能自体を持たないため、当面は追加しない。 */
+  Start = 'Start',
 }
 
 export const ALL_LOGICAL_BUTTONS: readonly LogicalButton[] = [
@@ -18,6 +22,7 @@ export const ALL_LOGICAL_BUTTONS: readonly LogicalButton[] = [
   LogicalButton.X,
   LogicalButton.L,
   LogicalButton.R,
+  LogicalButton.Start,
 ];
 
 export enum Direction8 {
@@ -35,7 +40,7 @@ export enum Direction8 {
 export type ButtonState = Readonly<Record<LogicalButton, boolean>>;
 
 export function emptyButtonState(): ButtonState {
-  return { B: false, Y: false, A: false, X: false, L: false, R: false };
+  return { B: false, Y: false, A: false, X: false, L: false, R: false, Start: false };
 }
 
 /** 1フレーム分の入力。sim/update.ts の Inputs はこの形をベースにする。 */
