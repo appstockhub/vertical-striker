@@ -5,7 +5,7 @@ import { simulate } from '../../src/sim/update';
 import { Direction8, emptyButtonState, LogicalButton, type ButtonState } from '../../src/input/types';
 import { FULL_MATCH_DURATION_FRAMES, HALF_DURATION_FRAMES } from '../../src/sim/matchClock';
 import { PITCH_HEIGHT, PITCH_WIDTH } from '../../src/config/pitch';
-import { CURVE_DURATION_TICKS, CURVE_INPUT_WINDOW_TICKS } from '../../src/sim/ballConstants';
+import { CURVE_DURATION_TICKS, CURVE_INPUT_WINDOW_TICKS, STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
 import { MANUAL_LINE_OFFSET_MAX_FIXED } from '../../src/sim/teamAIConstants';
 
 function inputs(direction: Direction8) {
@@ -768,6 +768,60 @@ describe('simulate — 続編仕様④: ライン操作 (STARTボタン)', () =>
     };
     state = simulate(state, inputsWithButtons(Direction8.None, { Start: true }));
     expect(state.manualLineOffset).toBe(ZERO_FIXED);
+  });
+});
+
+describe('simulate — 続編仕様⑤: ワンツー', () => {
+  const RECEIVER = TeamId.A * 11 + 1; // Team A DF1
+  const TEAMMATE = TeamId.A * 11 + 2; // Team A DF2、Yのパス先候補 (真右、射程内)
+
+  function baseReceivingState(): GameState {
+    const base = createInitialState(1, { difficulty: 'easy', offsideEnabled: false });
+    const ballPos = { x: toFixed(200), y: toFixed(900) };
+    return {
+      ...base,
+      ball: { ...base.ball, pos: ballPos, vel: { x: ZERO_FIXED, y: ZERO_FIXED } },
+      players: base.players.map((p, i) => {
+        if (i === RECEIVER) return { ...p, pos: ballPos, facing: Direction8.Right };
+        if (i === TEAMMATE) return { ...p, pos: { x: toFixed(260), y: toFixed(900) } };
+        return p;
+      }),
+      // 直前の保持者は別人 (=このtickで新たに受け取ったことにする、ワンツー発火の前提)。
+      lastTouchPlayerIndex: TEAMMATE,
+      lastTouchTeam: TeamId.A,
+    };
+  }
+
+  it('A held at the moment of reception passes immediately in the +字 direction, bypassing the charge/dribble step', () => {
+    const state = baseReceivingState();
+    const next = simulate(state, { direction: Direction8.Right, buttons: { ...emptyButtonState(), A: true } });
+    expect(toFloat(next.ball.vel.x)).toBeGreaterThan(0); // +字=Right方向へ即座に蹴られている
+    expect(next.lastTouchTeam).toBe(TeamId.A);
+    expect(next.players[RECEIVER]!.kickChargeFrames).toBe(0); // チャージには入っていない
+  });
+
+  it('Y held at the moment of reception passes immediately toward the pass-cursor target', () => {
+    const state = baseReceivingState();
+    const next = simulate(state, { direction: Direction8.None, buttons: { ...emptyButtonState(), Y: true } });
+    expect(toFloat(next.ball.vel.x)).toBeGreaterThan(0); // TEAMMATEは受け手から見て右方向
+  });
+
+  it('does nothing extra when neither A nor Y is held at reception (falls through to a normal dribble touch)', () => {
+    const state = baseReceivingState();
+    const next = simulate(state, { direction: Direction8.Right, buttons: emptyButtonState() });
+    // 通常のドリブルタッチ速度であり、ワンツーのキック速度(STRONG_KICK_SPEED)ではない。
+    expect(toFloat(next.ball.vel.x)).toBeLessThan(toFloat(STRONG_KICK_SPEED_FIXED));
+  });
+
+  it('does not re-fire on a later tick: holding A while already carrying (not freshly received) behaves normally', () => {
+    let state = baseReceivingState();
+    // 1tick目: 入力なしで受け取る (ワンツー不発、通常のドリブルタッチで保持継続)。
+    state = simulate(state, inputs(Direction8.None));
+    expect(state.lastTouchPlayerIndex).toBe(RECEIVER);
+    // 2tick目: 同じ選手がAを押すが、「受けた瞬間」ではないので既存のA挙動(未実装、無視)になる
+    // だけで、ワンツーのパス速度(STRONG_KICK_SPEED)では飛ばない。
+    const next = simulate(state, { direction: Direction8.Right, buttons: { ...emptyButtonState(), A: true } });
+    expect(toFloat(next.ball.vel.x)).toBeLessThan(toFloat(STRONG_KICK_SPEED_FIXED));
   });
 });
 

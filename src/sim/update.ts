@@ -31,7 +31,7 @@ import { clampToPitchBounds, stepBallPhysicsDetailed } from './ballPhysics';
 import { findTouchPriorityPlayer } from './ballTouch';
 import { computeChaseRightIndices, computeNonControlledDirection } from './teamAI';
 import { computeMarkAssignments } from './marking';
-import { isTeamAInPossession, resolveCursor } from './cursor';
+import { isTeamAInPossession, resolveCursor, selectPassTarget } from './cursor';
 import { quantizeToDirection8 } from './steering';
 import {
   applySave,
@@ -268,6 +268,14 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   const controlledPlayerIndex = cursor.controlledPlayerIndex;
   const controlledPlayer = state.players[controlledPlayerIndex];
 
+  // ワンツー (続編仕様⑤) の判定に使う「ボールを受けた瞬間」フラグ。touch-priorityが
+  // このtickで新たに操作選手へ切り替わったかどうかを、再代入前のstate.lastTouchPlayerIndex
+  // と比較して検出する(人間操作選手のみが対象。A/Yは人間入力の概念のため)。
+  const justReceivedByControlled =
+    touchPriorityIndex !== null &&
+    touchPriorityIndex === controlledPlayerIndex &&
+    touchPriorityIndex !== state.lastTouchPlayerIndex;
+
   // セーブ文脈は「速いボールが飛んできている」時のみ。遅い/静止ボールがGKの足元にある時は
   // 通常のキック文脈のままにする (速度条件なしだと、GKは確保したボールを永遠に蹴れず、
   // ドリブルで運ぶしかなくなる詰みがあった — 観戦シミュレーターで発覚した実プレイ直結の欠陥)。
@@ -422,8 +430,49 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // players.map内で強制的にfalseへリセットする(過去に保持していた時の値が残らないように)。
   let kickDribbleCarrier: { index: number; active: boolean } | null = null;
 
+  // ワンツー (続編仕様⑤): 「ボールを受ける瞬間にA/Yを押していると、受けた選手がそのまま
+  // すぐパスを出す」。ドリブルタッチ/通常のカーソルパス/チャージキックより先に判定し、
+  // 発火したら以降のボール処理(このtickぶん)をスキップする。セーブ文脈(inSaveRange)とは
+  // 排他 — 速いボールが飛んできている時は常にセーブ判定を優先する。
+  let oneTwoFired = false;
+  if (justReceivedByControlled && !inSaveRange && controlledPlayer) {
+    const offside = state.offsideEnabled
+      ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
+      : { offside: false, offsidePlayerIndex: null };
+    const offsidePlayer =
+      offside.offside && offside.offsidePlayerIndex !== null ? state.players[offside.offsidePlayerIndex] : undefined;
+
+    if (inputs.buttons.Y) {
+      // Y = パスカーソル先の選手へ。受け手が見つからなければワンツーは発火せず、
+      // このtickは通常のドリブルタッチ等へフォールスルーする。
+      const targetIndex = selectPassTarget(controlledPlayerIndex, state.players);
+      const receiver = targetIndex !== null ? state.players[targetIndex] : undefined;
+      if (receiver) {
+        if (offsidePlayer) {
+          ball = offsideRestartBall(offsidePlayer);
+          lastTouchTeam = opponentOf(controlledPlayer.team);
+        } else {
+          const passDirection = quantizeToDirection8(vSub(receiver.pos, controlledPlayer.pos), ZERO_FIXED);
+          ball = applyKick(ball, controlledPlayer, KICK_MIN_CHARGE_FRAMES, passDirection);
+          lastTouchTeam = controlledPlayer.team;
+        }
+        oneTwoFired = true;
+      }
+    } else if (inputs.buttons.A) {
+      // A = +字入力方向へ (方向が無ければ既存のapplyKickのフォールバックでfacing方向)。
+      if (offsidePlayer) {
+        ball = offsideRestartBall(offsidePlayer);
+        lastTouchTeam = opponentOf(controlledPlayer.team);
+      } else {
+        ball = applyKick(ball, controlledPlayer, KICK_MIN_CHARGE_FRAMES, inputs.direction);
+        lastTouchTeam = controlledPlayer.team;
+      }
+      oneTwoFired = true;
+    }
+  }
+
   const touchInputs = touchPriorityIndex !== null ? effectiveInputs[touchPriorityIndex] : undefined;
-  if (touchInputs && touchPriorityIndex !== null) {
+  if (!oneTwoFired && touchInputs && touchPriorityIndex !== null) {
     const touchPlayer = state.players[touchPriorityIndex];
     const prevKickDribbleActive = touchPlayer?.kickDribbleActive ?? false;
     const kickDribbleActive = computeKickDribbleState(prevKickDribbleActive, true, touchInputs.buttons);
@@ -432,7 +481,11 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     if (touchPlayer) lastTouchTeam = touchPlayer.team;
   }
 
-  if (inSaveRange && controlledPlayer) {
+  if (oneTwoFired) {
+    // ワンツーが発火済みなので、この後のセーブ/カーソルパス/チャージキック分岐は
+    // 一切通さない (二重処理防止)。tackleAdvance/nextControlledKickChargeFramesは
+    // 初期値(NO_TACKLE/現状維持)のまま players.map へ渡る。
+  } else if (inSaveRange && controlledPlayer) {
     // セーブ文脈: Y=キャッチ/B=パンチングのみを処理する (カーソルパス/キック溜め/タックルは行わない)。
     const yEdge = inputs.buttons.Y && !state.prevButtons.Y;
     const bEdge = inputs.buttons.B && !state.prevButtons.B;
