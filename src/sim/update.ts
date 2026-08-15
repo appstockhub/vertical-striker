@@ -177,6 +177,20 @@ function applySetPieceExclusion(moved: PlayerState, lock: SetPieceLock): PlayerS
  * placeKickoffFormation(half, formations, kickoffTeam) と必ずセットで使うこと
  * (あちらがキッカーをボール脇へ置き、こちらが相手をセンターサークルの外へ縛る)。
  */
+/**
+ * キーパーがボールを手中に確保している間のロック (競技規則 第12条: 相手はキーパーが
+ * 持っているボールにチャレンジできない)。
+ *
+ * ★実プレイで壊れて見える欠落★ 旧実装では applySave の 'secured' が「キーパーの位置に
+ * 速度0で置く」だけだったため、目の前に詰めていた攻撃側が**次のtickにそのまま奪えた**
+ * (テスト: tests/sim/goalkeeperPossession.test.ts で t0 に奪取を再現)。
+ * セットプレーのロックと同じ「touch-priorityを1チームに制限し、ボールが動いたら解除」
+ * 機構をそのまま使う。押し出しは行わない (相手はその場に居てよい)。
+ */
+function createGoalkeeperHoldLock(gkTeam: TeamId, ballPos: Vec2Fixed): SetPieceLock {
+  return { kind: 'gkHold', restartTeam: gkTeam, pos: ballPos, northEnd: false, elapsedTicks: 0 };
+}
+
 function createKickoffLock(kickoffTeam: TeamId, ballPos: Vec2Fixed): SetPieceLock {
   return {
     kind: 'kickoff',
@@ -486,7 +500,12 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // 「相手は触れられず、自チームも誰も取りに行かない」永久デッドロックになる。ロック中は
   // まだ誰も実際には触れていない(=真の意味でルーズボール)ため、possessionTeamをnull扱いにして
   // DEFENDING同様2人へ増やし、少なくとも1人は非操作AIが自律的に収束できるようにする。
-  const chasePossessionTeam = setPieceLock && possessionTeam === setPieceLock.restartTeam ? null : possessionTeam;
+  // gkHold は除外する: キーパーが確保している間は「本当にそのチームの保持」なので、
+  // 相手の追跡権を2人に増やす上記の理屈 (=まだ誰も触っていないルーズボール扱い) は当てはまらない。
+  const chasePossessionTeam =
+    setPieceLock && setPieceLock.kind !== 'gkHold' && possessionTeam === setPieceLock.restartTeam
+      ? null
+      : possessionTeam;
   const chaseRightIndices = computeChaseRightIndices(state.players, state.ball.pos, chasePossessionTeam, suppressedTeam);
 
   // マーク割り当て (Phase 4): 守備側のDFライン(追跡権なし)に相手侵入者を1:1で割り当てる。
@@ -585,7 +604,10 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       gkSavedThisTick = true;
       // secured (真のキャッチ) のみ知覚可能イベントとして記録する。これにより
       // CPU/非操作GKのキャッチも人間の目に見えるようになる (視認性向上、実プレイ報告への対応)。
-      if (outcome === 'secured') lastEvent = { kind: 'gkCatch', team: gk.team, atFrame: nextFrame };
+      if (outcome === 'secured') {
+        lastEvent = { kind: 'gkCatch', team: gk.team, atFrame: nextFrame };
+        setPieceLock = createGoalkeeperHoldLock(gk.team, ball.pos);
+      }
     }
   }
 
@@ -663,7 +685,10 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       ball = applySave(ball, controlledPlayer, outcome, half);
       if (outcome !== 'missed') lastTouchTeam = controlledPlayer.team;
       // secured (真のキャッチ) のみ知覚可能イベントとして記録する (視認性向上、実プレイ報告への対応)。
-      if (outcome === 'secured') lastEvent = { kind: 'gkCatch', team: controlledPlayer.team, atFrame: nextFrame };
+      if (outcome === 'secured') {
+        lastEvent = { kind: 'gkCatch', team: controlledPlayer.team, atFrame: nextFrame };
+        setPieceLock = createGoalkeeperHoldLock(controlledPlayer.team, ball.pos);
+      }
     } else if (bEdge) {
       const outcome = resolveSaveOutcome(controlledPlayer, ball, 'punch');
       ball = applySave(ball, controlledPlayer, outcome, half);
@@ -749,15 +774,23 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         // 二度と切り替わらなくなる不具合があった (実プレイで発覚)。
         nextControlledKickChargeFrames = 0;
 
+        // ロック中 (キーパーの保持・セットプレー再開待ち) は相手チームからのボールへの
+        // チャレンジを一切通さない。touch-priority制限だけでは、タックル/チャージが
+        // ボール速度を直接書き換える経路を通ってすり抜けてしまう
+        // (キーパーの手中のボールを次のtickで奪えるバグとして実測、競技規則 第12条)。
+        const challengeBlockedByLock =
+          setPieceLock !== null && controlledPlayer.team !== setPieceLock.restartTeam;
+
         // Bのedgeでタックルを新規発動できる (既にNoneの時のみ)。
         const bEdge = inputs.buttons.B && !state.prevButtons.B;
         const wantsTackle =
           bEdge &&
+          !challengeBlockedByLock &&
           controlledPlayer.tacklePhase === TacklePhase.None &&
           checkTackleEligibility(controlledPlayer, state.players, touchPriorityIndex, inputs.direction);
         tackleAdvance = advanceTacklePhase(controlledPlayer, wantsTackle, inputs.direction);
 
-        if (tackleAdvance.tacklePhase === TacklePhase.Active) {
+        if (tackleAdvance.tacklePhase === TacklePhase.Active && !challengeBlockedByLock) {
           if (checkTackleSuccess(controlledPlayer, state.players, touchPriorityIndex)) {
             ball = applyTackleWin(ball, tackleAdvance.tackleDirection);
             lastTouchTeam = controlledPlayer.team;
@@ -777,6 +810,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
           (inputs.buttons.Y && !state.prevButtons.Y) || (inputs.buttons.X && !state.prevButtons.X);
         if (
           chargeEdge &&
+          !challengeBlockedByLock &&
           tackleAdvance.tacklePhase === TacklePhase.None &&
           checkShoulderChargeEligibility(controlledPlayer, state.players, touchPriorityIndex)
         ) {
@@ -962,7 +996,13 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     // キャンプ」問題の修正、CLAUDE.md「実装ギャップ」1でスローイン/コーナーにも拡大)。
     // 即時テレポート復帰+ピッチ全域プレスの組み合わせでは、相手の追跡権保持者が再開
     // スポットに張り付き、再開した瞬間に奪う→シュートのループが成立してしまう。
-    if (setPieceLock && player.team !== setPieceLock.restartTeam && !player.isGoalkeeper) {
+    // gkHold は「触れないだけ」で位置の拘束は無い (実サッカーでも相手はその場に居てよい)。
+    if (
+      setPieceLock &&
+      setPieceLock.kind !== 'gkHold' &&
+      player.team !== setPieceLock.restartTeam &&
+      !player.isGoalkeeper
+    ) {
       moved = applySetPieceExclusion(moved, setPieceLock);
     }
 

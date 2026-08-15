@@ -179,7 +179,14 @@ export interface SetPieceLock {
    * サッカーのルール(第8条: 相手はセンターサークルの外、蹴られるまで触れない)が
    * 一つも実装されていなかった (ユーザー報告「こちらのキックオフなのに敵が奪取できる」)。
    */
-  readonly kind: 'throwIn' | 'goalKick' | 'corner' | 'kickoff';
+  /**
+   * 'gkHold' はセットプレーではなく「キーパーがボールを手中に確保している間」(競技規則
+   * 第12条: 相手はキーパーが持っているボールにチャレンジできない)。ロック機構の
+   * 「touch-priorityを1チームに制限し、ボールが動いたら解除」という性質がそのまま使えるため
+   * 同じ仕組みに相乗りしている。押し出し (applySetPieceExclusion) は行わない
+   * — 相手はその場に居てよく、ボールに触れないだけなので。
+   */
+  readonly kind: 'throwIn' | 'goalKick' | 'corner' | 'kickoff' | 'gkHold';
   /** このチーム以外の選手 (人間操作含む) が押し出し/touch-priority制限の対象。 */
   readonly restartTeam: TeamId;
   /** ボールの静止位置 (再開スポット)。ここから動いたらロック解除 (update.ts参照)。 */
