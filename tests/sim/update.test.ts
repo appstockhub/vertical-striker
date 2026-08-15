@@ -140,7 +140,7 @@ describe('simulate — Phase 1/2: dribble + kick integration (controlled player 
   it('is deterministic across a sequence including a charged kick and long dribble', () => {
     const sequence: Array<{ direction: Direction8; held: Partial<Record<LogicalButton, boolean>> }> = [
       { direction: Direction8.Up, held: {} },
-      { direction: Direction8.Up, held: { L: true } }, // ロングドリブル
+      { direction: Direction8.Up, held: { L: true } }, // L単独(蹴り出しドリブルは未トリガー、決定論確認が目的なので無関係)
       { direction: Direction8.None, held: { B: true } }, // キック溜め開始
       { direction: Direction8.None, held: { B: true } },
       { direction: Direction8.None, held: { B: true } },
@@ -172,19 +172,38 @@ describe('simulate — Phase 1/2: dribble + kick integration (controlled player 
     expect(toFloat(next.ball.vel.x)).toBeGreaterThan(0);
   });
 
-  it('long dribble (L held) pushes the ball further per tick than plain dribble', () => {
+  it('kick-out dribble (続編仕様): L alone (never L+R) does NOT trigger it — must start with L+R together', () => {
     const base = withPositions(1, { x: 100, y: 100 }, { x: 105, y: 100 });
-
     const plain = simulate(base, inputs(Direction8.Right));
-    const long = simulate(base, inputsWithButtons(Direction8.Right, { L: true }));
+    const lOnly = simulate(base, inputsWithButtons(Direction8.Right, { L: true }));
+    expect(toFloat(lOnly.ball.pos.x)).toBeCloseTo(toFloat(plain.ball.pos.x), 5);
+  });
 
+  it('kick-out dribble: L+R together triggers it, then holding just L sustains it across ticks', () => {
+    const base = withPositions(1, { x: 100, y: 100 }, { x: 105, y: 100 });
+    const plain = simulate(base, inputs(Direction8.Right));
+
+    // 1tick目: L+Rで新規トリガー。
+    const triggered = simulate(base, inputsWithButtons(Direction8.Right, { L: true, R: true }));
     const plainDelta = toFloat(plain.ball.pos.x) - toFloat(base.ball.pos.x);
-    const longDelta = toFloat(long.ball.pos.x) - toFloat(base.ball.pos.x);
-    expect(longDelta).toBeGreaterThan(plainDelta);
+    const triggeredDelta = toFloat(triggered.ball.pos.x) - toFloat(base.ball.pos.x);
+    expect(triggeredDelta).toBeGreaterThan(plainDelta);
+    expect(controlled(triggered).kickDribbleActive).toBe(true);
 
+    const triggeredPlayerDelta = toFloat(controlled(triggered).pos.x) - toFloat(controlled(base).pos.x);
     const plainPlayerDelta = toFloat(controlled(plain).pos.x) - toFloat(controlled(base).pos.x);
-    const longPlayerDelta = toFloat(controlled(long).pos.x) - toFloat(controlled(base).pos.x);
-    expect(longPlayerDelta).toBeGreaterThan(plainPlayerDelta);
+    expect(triggeredPlayerDelta).toBeGreaterThan(plainPlayerDelta);
+
+    // 2tick目: Lだけを押し続けても継続する(ボールに再度触れる位置まで少し離しておく必要は
+    // 無い。ドリブル半径内なので毎tick触れ続ける)。
+    const sustained = simulate(triggered, inputsWithButtons(Direction8.Right, { L: true }));
+    expect(controlled(sustained).kickDribbleActive).toBe(true);
+    const sustainedPlayerDelta = toFloat(controlled(sustained).pos.x) - toFloat(controlled(triggered).pos.x);
+    expect(sustainedPlayerDelta).toBeGreaterThan(plainPlayerDelta);
+
+    // 3tick目: L/Rどちらも離すと解除される。
+    const released = simulate(sustained, inputs(Direction8.Right));
+    expect(controlled(released).kickDribbleActive).toBe(false);
   });
 
   it('charging B then releasing with a direction launches the ball airborne toward that direction', () => {

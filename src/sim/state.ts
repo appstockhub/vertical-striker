@@ -25,6 +25,14 @@ export interface PlayerState {
   readonly tacklePhase: TacklePhase;
   readonly tackleFrames: number;
   readonly tackleDirection: Direction8;
+  /**
+   * 蹴り出しドリブル(続編仕様)が現在有効かどうか。L+R同時押しで新規トリガーし、以後
+   * L/Rどちらか片方を押し続けている間は継続、両方離すと解除する(update.tsの
+   * computeKickDribbleState参照)。実際のシミュレーション経路(kickoff.ts/update.ts)では
+   * 常に明示的な値を持つが、既存のテストコード互換のためoptionalにしてある
+   * (省略時は`?? false`として扱う)。
+   */
+  readonly kickDribbleActive?: boolean;
 }
 
 export interface BallState {

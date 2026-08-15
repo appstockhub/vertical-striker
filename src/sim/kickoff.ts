@@ -44,6 +44,7 @@ function createPlayerAtKickoff(
     tacklePhase: TacklePhase.None,
     tackleFrames: 0,
     tackleDirection: Direction8.None,
+    kickDribbleActive: false,
   };
 }
 

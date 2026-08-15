@@ -8,7 +8,7 @@ import { PITCH_HEIGHT } from '../config/pitch';
 import { checkOffside } from './offsideRule';
 import { DIRECTION_VECTORS, PLAYER_RADIUS_FIXED, PLAYER_SPEED_FIXED } from './constants';
 import { KICK_MIN_CHARGE_FRAMES, LONG_DRIBBLE_PLAYER_SPEED_FIXED } from './ballConstants';
-import { applyDribbleTouch, isLongDribbleActive } from './dribble';
+import { applyDribbleTouch, computeKickDribbleState } from './dribble';
 import { applyKick, updateKickCharge } from './kick';
 import { clampToPitchBounds, stepBallPhysicsDetailed } from './ballPhysics';
 import { findTouchPriorityPlayer } from './ballTouch';
@@ -357,11 +357,17 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // セットプレー再開時、キッカーを攻撃方向へ向かせる (実装ギャップ1、最優先)。
   // boundaryEvent発生時にのみ設定し、players.map内で該当選手のfacingを上書きする。
   let restartFacingOverride: { index: number; facing: Direction8 } | null = null;
+  // 蹴り出しドリブル(続編仕様①②)。保持者(touch-priority)のみが対象で、他の選手は
+  // players.map内で強制的にfalseへリセットする(過去に保持していた時の値が残らないように)。
+  let kickDribbleCarrier: { index: number; active: boolean } | null = null;
 
   const touchInputs = touchPriorityIndex !== null ? effectiveInputs[touchPriorityIndex] : undefined;
-  if (touchInputs) {
-    ball = applyDribbleTouch(ball, true, touchInputs.direction, touchInputs.buttons);
-    const touchPlayer = touchPriorityIndex !== null ? state.players[touchPriorityIndex] : undefined;
+  if (touchInputs && touchPriorityIndex !== null) {
+    const touchPlayer = state.players[touchPriorityIndex];
+    const prevKickDribbleActive = touchPlayer?.kickDribbleActive ?? false;
+    const kickDribbleActive = computeKickDribbleState(prevKickDribbleActive, true, touchInputs.buttons);
+    kickDribbleCarrier = { index: touchPriorityIndex, active: kickDribbleActive };
+    ball = applyDribbleTouch(ball, true, touchInputs.direction, kickDribbleActive);
     if (touchPlayer) lastTouchTeam = touchPlayer.team;
   }
 
@@ -599,8 +605,10 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
 
   const players = state.players.map((player, index) => {
     const playerInputs = effectiveInputs[index] ?? { direction: Direction8.None, buttons: NO_BUTTONS };
-    const longDribble =
-      index === touchPriorityIndex && isLongDribbleActive(true, playerInputs.direction, playerInputs.buttons);
+    // 蹴り出しドリブル中かどうかはtouch-priority保持者のみが対象。それ以外の選手は
+    // 過去に保持していた時の値を持ち越さないよう常にfalseへ強制する。
+    const kickDribbleActive =
+      index === touchPriorityIndex && kickDribbleCarrier ? kickDribbleCarrier.active : false;
     const isAutoGoalkeeper = player.isGoalkeeper && index !== controlledPlayerIndex;
 
     let effectiveDirection = playerInputs.direction;
@@ -612,7 +620,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       if (movementOverride.speed !== undefined) speedOverride = movementOverride.speed;
     }
 
-    let moved = updatePlayer(player, effectiveDirection, longDribble, speedOverride);
+    let moved = updatePlayer(player, effectiveDirection, kickDribbleActive, speedOverride);
+    moved = { ...moved, kickDribbleActive };
 
     // セットプレー再開ロック中の相手押し出し (観戦シミュレーターで発覚した「リスタート・
     // キャンプ」問題の修正、CLAUDE.md「実装ギャップ」1でスローイン/コーナーにも拡大)。
@@ -663,14 +672,14 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
 function updatePlayer(
   player: PlayerState,
   direction: Direction8,
-  longDribble: boolean,
+  kickDribbleActive: boolean,
   speedOverride?: Fixed,
 ): PlayerState {
   // dir は「Fixed スケールでの単位ベクトル成分」(1.0 = FIXED_ONE)、
   // 速度定数は px 単位の Fixed 値。両者とも FIXED_ONE スケールなので
   // 通常の fixedMul (a*b / FIXED_ONE) でそのまま「速度(px)」が得られる。
   const dir = DIRECTION_VECTORS[direction];
-  const speed = speedOverride ?? (longDribble ? LONG_DRIBBLE_PLAYER_SPEED_FIXED : PLAYER_SPEED_FIXED);
+  const speed = speedOverride ?? (kickDribbleActive ? LONG_DRIBBLE_PLAYER_SPEED_FIXED : PLAYER_SPEED_FIXED);
   const vel: Vec2Fixed = {
     x: fixedMul(dir.x, speed),
     y: fixedMul(dir.y, speed),
