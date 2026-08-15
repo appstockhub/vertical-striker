@@ -19,6 +19,8 @@ const KIND_LABEL: Record<NotableEventKind, string> = {
   goalKick: 'ゴールキック',
   corner: 'コーナーキック',
   gkCatch: 'キャッチ！',
+  foul: 'ファウル！ フリーキック',
+  penalty: 'ペナルティキック！',
 };
 
 /** GameState.lastEvent が無い、または表示期限(EVENT_BANNER_DURATION_TICKS)切れなら null。 */

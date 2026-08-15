@@ -184,7 +184,7 @@ export interface GameState {
 }
 
 /** GameState.lastEvent の種別。goalはscoreの変化で既に検出可能なため対象外。 */
-export type NotableEventKind = 'throwIn' | 'goalKick' | 'corner' | 'gkCatch';
+export type NotableEventKind = 'throwIn' | 'goalKick' | 'corner' | 'gkCatch' | 'foul' | 'penalty';
 
 export interface NotableEvent {
   readonly kind: NotableEventKind;
@@ -206,7 +206,12 @@ export interface SetPieceLock {
    * 同じ仕組みに相乗りしている。押し出し (applySetPieceExclusion) は行わない
    * — 相手はその場に居てよく、ボールに触れないだけなので。
    */
-  readonly kind: 'throwIn' | 'goalKick' | 'corner' | 'kickoff' | 'gkHold';
+  /**
+   * 'freeKick' / 'penalty' は17周目に追加 (競技規則 第13〜14条)。ファウル判定
+   * (sim/foul.ts) から発生する。他のセットプレーと同じ「蹴るまで相手は触れない」
+   * 拘束をそのまま使う。
+   */
+  readonly kind: 'throwIn' | 'goalKick' | 'corner' | 'kickoff' | 'gkHold' | 'freeKick' | 'penalty';
   /** このチーム以外の選手 (人間操作含む) が押し出し/touch-priority制限の対象。 */
   readonly restartTeam: TeamId;
   /** ボールの静止位置 (再開スポット)。ここから動いたらロック解除 (update.ts参照)。 */

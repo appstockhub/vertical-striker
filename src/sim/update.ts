@@ -83,6 +83,8 @@ import { KICKOFF_TAKER_SLOT_INDEX, placeKickoffFormation } from './kickoff';
 import { detectBoundaryEvent } from './bounds';
 import { decideCpuAttack } from './cpuAttackAI';
 import { decideCpuDefense } from './cpuDefenseAI';
+import { detectFoul, type FoulEvent } from './foul';
+import { placeFreeKick, placePenaltyKick } from './setPieceFormation';
 
 /**
  * 1tick分の入力。InputFrame のサブセット (sim/ は入力の生成元を知らない)。
@@ -604,6 +606,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // 構造的に防ぎつつ、減速して到達したシュートにもきちんと反応できる。
   // players[] 昇順 (A GK=0 → B GK=11) で処理する決定論的順序。
   // ================================================================================
+  let tackleWonBall = false;
   let gkSavedThisTick = false;
   for (const gkIndex of [TeamId.A * PLAYERS_PER_TEAM, TeamId.B * PLAYERS_PER_TEAM]) {
     if (gkIndex === controlledPlayerIndex) continue; // 人間操作中のGKは手動セーブ(下記)のみ
@@ -857,6 +860,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
           if (checkTackleSuccess(controlledPlayer, state.players, touchPriorityIndex)) {
             ball = applyTackleWin(ball, tackleAdvance.tackleDirection);
             lastTouchTeam = controlledPlayer.team;
+            tackleWonBall = true;
             // 成功した瞬間にRecoveryへ短絡する (Activeの残り時間を待たない)。
             tackleAdvance = {
               tacklePhase: TacklePhase.Recovery,
@@ -916,6 +920,24 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     }
   }
 
+  // ★ファウル判定 (競技規則 第12条、sim/foul.ts)★
+  // 「ボールに行っていないスライディングが相手に当たった」ときだけファウルにする。
+  // 現状スライディングの状態機械を持つのは人間の操作選手のみ (CPUはショルダーチャージのみ)
+  // なので、実質的に人間側の反則判定になる。CPU側のファウルは選手個性/カード実装時に拡張する。
+  let foulEvent: FoulEvent | null = null;
+  if (controlledPlayer && tackleAdvance.tacklePhase === TacklePhase.Active) {
+    // 位置は「このtickでスライドした後」で判定する必要がある (Active中は毎tick6px滑るため、
+    // tick開始時の位置だと接触を1tick取りこぼす)。
+    const slid = getTackleMovementOverride(tackleAdvance.tacklePhase, tackleAdvance.tackleDirection);
+    const slidPlayer = updatePlayer(
+      controlledPlayer,
+      slid.direction ?? Direction8.None,
+      false,
+      slid.speed ?? undefined,
+    );
+    foulEvent = detectFoul(controlledPlayerIndex, slidPlayer, state.players, tackleWonBall, half);
+  }
+
   // CPU守備チャレンジ (cpuDefenseAI.ts)。相手保持者に密着したCPU守備者が確率でショルダー
   // チャージを仕掛ける。これが無いと、人間が静止しているだけでCPUは至近距離で永久に何も
   // せず試合が停止する (観戦シミュレーターで実測、cpuDefenseAI.ts のコメント参照)。
@@ -938,6 +960,47 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         lastTouchPlayerIndex = defense.chargerIndex;
       }
     }
+  }
+
+  /**
+   * ★ファウル成立時の再開 (競技規則 第13条 FK / 第14条 PK)★
+   * ボール物理より前に確定させ、このtickはボールを動かさず「笛が鳴って止まった」状態にする。
+   * 配置はセットプレー共通の方針 (ボールもキッカーも即座に置く) に合わせる。
+   */
+  let foulPlacement: { players: PlayerState[]; kickerIndex: number } | null = null;
+  if (foulEvent) {
+    const isPenalty = foulEvent.isPenalty;
+    if (isPenalty) {
+      const pk = placePenaltyKick(state.players, foulEvent.restartTeam, half);
+      foulPlacement = pk.placement;
+      ball = { pos: pk.ballPos, vel: vZero(), height: ZERO_FIXED, zVel: ZERO_FIXED };
+    } else {
+      foulPlacement = placeFreeKick(state.players, foulEvent.pos, foulEvent.restartTeam, half);
+      ball = { pos: foulEvent.pos, vel: vZero(), height: ZERO_FIXED, zVel: ZERO_FIXED };
+    }
+    setPieceLock = {
+      kind: isPenalty ? 'penalty' : 'freeKick',
+      restartTeam: foulEvent.restartTeam,
+      pos: ball.pos,
+      northEnd: (ball.pos.y as number) < (toFixed(PITCH_HEIGHT / 2) as number),
+      elapsedTicks: 0,
+    };
+    // 反則した側はその場で規定距離まで下がる (第13条「9.15m」)。以後のtickは通常の
+    // applySetPieceExclusion が毎tick押し戻すが、笛が鳴ったtickにも適用しておかないと
+    // 「壁が近すぎるまま蹴れる」1tickが生まれる。
+    const lockForPush = setPieceLock;
+    foulPlacement = {
+      ...foulPlacement,
+      players: foulPlacement.players.map((p) =>
+        p.team === lockForPush.restartTeam || p.isGoalkeeper ? p : applySetPieceExclusion(p, lockForPush),
+      ),
+    };
+    lastTouchTeam = foulEvent.restartTeam;
+    restartGraceTeam = foulEvent.restartTeam;
+    restartGraceTicksLeft = RESTART_GRACE_TICKS;
+    lastEvent = { kind: isPenalty ? 'penalty' : 'foul', team: foulEvent.restartTeam, atFrame: nextFrame };
+    // 反則した選手のタックルは即座に終了させる (滑り続けたまま再開しない)。
+    tackleAdvance = NO_TACKLE;
   }
 
   const ballStep = stepBallPhysicsDetailed(ball);
@@ -1088,18 +1151,24 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     };
   });
 
+  // ファウル成立tickは、そのtickの通常移動を破棄して「笛で止まった」配置に置き換える
+  // (得点時のキックオフリセットと同じ扱い)。
+  const finalPlayers = foulPlacement ? foulPlacement.players : players;
+
   // Team A (人間側) の再開では、次のtickからカーソルをキッカーへ乗せる。
   // キッカーをボール脇へ置いてもカーソルが別の選手に乗ったままだと、人間は
   // 「自分のスローインなのに蹴れない」状態になる (キックオフのカーソルスナップと同じ理屈)。
   const nextControlledPlayerIndex =
-    restartKickerOverride && state.players[restartKickerOverride.index]?.team === TeamId.A
-      ? restartKickerOverride.index
-      : controlledPlayerIndex;
+    foulPlacement && finalPlayers[foulPlacement.kickerIndex]?.team === TeamId.A
+      ? foulPlacement.kickerIndex
+      : restartKickerOverride && state.players[restartKickerOverride.index]?.team === TeamId.A
+        ? restartKickerOverride.index
+        : controlledPlayerIndex;
 
   return {
     frame: nextFrame,
     rngState,
-    players,
+    players: finalPlayers,
     ball,
     controlledPlayerIndex: nextControlledPlayerIndex,
     prevButtons: inputs.buttons,
