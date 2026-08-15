@@ -14,13 +14,12 @@ import {
   BALL_COLOR,
   CURSOR_RING_COLOR,
   PASS_MARKER_COLOR,
-  PLAYER_HEAD_COLOR,
   GOAL_NET_COLOR,
 } from './teamColors';
+import { buildPlayerSpriteTextures, playerSpriteKey, resolveSpriteDirection, type AnimFrame } from './playerSprites';
 import { findTouchPriorityPlayer } from '../sim/ballTouch';
 import { isTeamAInPossession, selectPassTarget } from '../sim/cursor';
 import { toFloat } from '../core/fixed';
-import { DIRECTION_VECTORS } from '../sim/constants';
 import { GOAL_WIDTH_FIXED } from '../sim/goalkeeperConstants';
 import { formatClockText, formatScoreText } from './scoreboard';
 import { formatEventBannerText } from './eventBanner';
@@ -46,19 +45,15 @@ const CAMERA_CONFIG: CameraConfig = {
   smoothing: 0.12,
 };
 
+// 選手の当たり半径 (px)。ドット絵スプライト化後も、カーソルリング/パスマーカーの
+// 位置合わせ用の「footprint」半径としてそのまま使う (スプライト自体の見た目サイズは
+// playerSprites.ts 側のキャンバス寸法で管理する)。
 const OUTFIELD_RADIUS = 14;
-const GK_RADIUS = 15;
 const BALL_RADIUS_PX = 10;
-/**
- * 選手の「頭」(人型シルエットの最小表現): 胴体(既存の円)の前面に、向いている方向へ
- * 少しオフセットした小さな円を重ねる。「〇だけでは人に見えず、上下の向きも分からない」
- * という指摘への対応。頭がある方向 = 向いている方向、という一目で読める表現にする
- * (三角形の矢羽根より「人」として直感的に読めるという判断で、旧実装のpipから変更した)。
- */
-const PLAYER_HEAD_RADIUS_OUTFIELD = 6;
-const PLAYER_HEAD_RADIUS_GK = 7;
-/** 頭を胴体の中心からどれだけオフセットするか (胴体半径に対する比率、仮値)。 */
-const PLAYER_HEAD_OFFSET_FRAC = 0.72;
+/** 選手の歩行アニメ切替間隔 (tick数)。60fps固定なので 8tick ≈ 133ms/フレームの歩行サイクル。 */
+const WALK_ANIM_TICKS_PER_FRAME = 8;
+/** この速度未満は「静止」とみなし、脚を閉じた基本姿勢(frame 0)に固定する (仮値)。 */
+const WALK_ANIM_MIN_SPEED = 0.15;
 /** ボールの見た目回転(仮の視覚効果、速度に比例。実際の物理スピンは追跡していない)の係数。 */
 const BALL_VISUAL_SPIN_PER_PX = 0.09;
 /** ゴールネットの奥行き(px、仮値)。ピッチ境界内側に収める(境界外はカメラに映らないため)。 */
@@ -83,10 +78,12 @@ export class PitchScene extends Phaser.Scene {
   // プール化された表示オブジェクト。生成は buildEntities()/buildRadar() で1回だけ行い、
   // render() では setPosition()/setVisible() のみを呼ぶ (60fps維持のガードレール、
   // 毎フレーム Arc/Text を生成/破棄しない)。
-  private playerArcs: Phaser.GameObjects.Arc[] = [];
-  /** 選手の「頭」(人型シルエットの最小表現)。playerArcsと1:1対応、player.facingに応じて
-   * 毎フレーム胴体前面へオフセットする(向き表示も兼ねる)。 */
-  private playerHeads: Phaser.GameObjects.Arc[] = [];
+  /** 選手のドット絵風スプライト (playerSprites.ts で焼き込んだテクスチャを貼る)。
+   * 向き(8方向)×歩行アニメ(2フレーム)に応じて毎フレーム setTexture() のみで切り替える
+   * (Graphics再生成なし、既存の60fps方針を維持)。 */
+  private playerSprites: Phaser.GameObjects.Sprite[] = [];
+  /** 直前に適用したテクスチャキー (同一キーへの無意味な setTexture() 呼び出しを避ける)。 */
+  private playerSpriteKeys: string[] = [];
   private playerRadarDots: Phaser.GameObjects.Arc[] = [];
   private cursorRing!: Phaser.GameObjects.Arc;
   private passMarker!: Phaser.GameObjects.Text;
@@ -154,6 +151,7 @@ export class PitchScene extends Phaser.Scene {
     }
 
     this.buildBallTexture();
+    buildPlayerSpriteTextures(this);
     this.buildPitch();
     this.buildEntities();
     this.buildRadar();
@@ -291,20 +289,12 @@ export class PitchScene extends Phaser.Scene {
     // 影 (地面位置に描画、疑似3D高さの手がかり)。ボール本体より先に描画して下に敷く。
     this.ballShadow = this.add.ellipse(0, 0, 20, 10, 0x000000, 0.35);
 
-    // 選手22人ぶんを1回だけ生成してプールする。
+    // 選手22人ぶんを1回だけ生成してプールする (ドット絵風スプライト、頭・肩・胴体・脚)。
     for (const player of this.state.players) {
-      const radius = player.isGoalkeeper ? GK_RADIUS : OUTFIELD_RADIUS;
-      const arc = this.add.circle(0, 0, radius, this.colorFor(player));
-      arc.setStrokeStyle(2, 0x1a1a1a, 0.8);
-      this.playerArcs.push(arc);
-
-      // 頭 (人型シルエットの最小表現): 胴体の前面(向いている方向)に重ねる小さな円。
-      // 「〇だけでは人に見えず、上下の向きも分からない」への対応 (旧実装は三角形のpipだったが、
-      // 「頭」の方が一目で人だと分かるという判断で置き換えた)。
-      const headRadius = player.isGoalkeeper ? PLAYER_HEAD_RADIUS_GK : PLAYER_HEAD_RADIUS_OUTFIELD;
-      const head = this.add.circle(0, 0, headRadius, PLAYER_HEAD_COLOR);
-      head.setStrokeStyle(1, 0x1a1a1a, 0.7);
-      this.playerHeads.push(head);
+      const key = playerSpriteKey(player.team, player.isGoalkeeper, resolveSpriteDirection(player.facing), 0);
+      const sprite = this.add.sprite(0, 0, key);
+      this.playerSprites.push(sprite);
+      this.playerSpriteKeys.push(key);
     }
 
     // カーソルハイライト (縁取りのみのリング、常に操作選手の位置に表示)。太めのストロークにして
@@ -363,8 +353,7 @@ export class PitchScene extends Phaser.Scene {
     // オブジェクト数が増えるほど漏れの元になるため)。
     this.cameras.main.ignore([...this.playerRadarDots, this.ballRadarDot]);
     this.radarCamera.ignore([
-      ...this.playerArcs,
-      ...this.playerHeads,
+      ...this.playerSprites,
       ...this.goalNets,
       this.ballMain,
       this.ballShadow,
@@ -427,19 +416,20 @@ export class PitchScene extends Phaser.Scene {
   private render(delta: number): void {
     this.state.players.forEach((player, index) => {
       const px = vecToPx(player.pos);
-      this.playerArcs[index]?.setPosition(px.x, px.y);
+      this.playerSprites[index]?.setPosition(px.x, px.y);
       this.playerRadarDots[index]?.setPosition(px.x, px.y);
 
-      // 頭: player.facingのベクトルをそのまま向きに使う (sim/の決定論的DIRECTION_VECTORSを
-      // 描画側で読むだけで、simulate()の入出力には一切影響しない)。胴体前面へオフセットする
-      // ことで「頭がある方向 = 向いている方向」を一目で読めるようにする。
-      const head = this.playerHeads[index];
-      if (head) {
-        const dir = DIRECTION_VECTORS[player.facing];
-        const dx = toFloat(dir.x);
-        const dy = toFloat(dir.y);
-        const radius = player.isGoalkeeper ? GK_RADIUS : OUTFIELD_RADIUS;
-        head.setPosition(px.x + dx * (radius * PLAYER_HEAD_OFFSET_FRAC), px.y + dy * (radius * PLAYER_HEAD_OFFSET_FRAC));
+      // 向き+歩行アニメ: player.facing/velをそのまま読むだけで、simulate()の入出力には
+      // 一切影響しない (描画専用の派生表示、GameStateには何も持たせない)。速度が閾値以上の
+      // 時だけ tick数ベースで2フレームの脚アニメを切り替える (実フレーム時間ではなく
+      // state.frameを使うため、リプレイ再生時も含め常に同じ見え方になる)。
+      const speed = Math.hypot(toFloat(player.vel.x), toFloat(player.vel.y));
+      const animFrame: AnimFrame =
+        speed >= WALK_ANIM_MIN_SPEED && Math.floor(this.state.frame / WALK_ANIM_TICKS_PER_FRAME) % 2 === 1 ? 1 : 0;
+      const key = playerSpriteKey(player.team, player.isGoalkeeper, resolveSpriteDirection(player.facing), animFrame);
+      if (this.playerSpriteKeys[index] !== key) {
+        this.playerSpriteKeys[index] = key;
+        this.playerSprites[index]?.setTexture(key);
       }
     });
 
