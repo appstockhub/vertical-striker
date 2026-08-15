@@ -28,3 +28,12 @@ export const CROSSBAR_HEIGHT_FIXED: Fixed = toFixed(5);
  * ゴールキックを毎回奪う「リスタート・キャンプ」が成立してしまう (観戦シミュレーターで発覚)。
  */
 export const GOAL_KICK_EXCLUSION_DEPTH_FIXED: Fixed = toFixed(250);
+
+/**
+ * スローイン/コーナーキック時、相手フィールドプレイヤーが再開スポットからこれ未満の
+ * 距離にいる場合、この距離まで押し出す (px、仮値)。ゴールキックのY軸ライン除外
+ * (GOAL_KICK_EXCLUSION_DEPTH_FIXED) と違い、スローイン/コーナーはピッチ上の任意の
+ * 地点で起きるため、円形(の正方形近似、sqrtを使わない)の除外ゾーンにする。
+ * 実サッカーの「相手は9.15m離れる」ルールの近似値。
+ */
+export const SET_PIECE_EXCLUSION_RADIUS_FIXED: Fixed = toFixed(130);

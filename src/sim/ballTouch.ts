@@ -1,6 +1,6 @@
 import { distSqFixed, fixedMul, toFixed } from '../core/fixed';
 import type { Vec2Fixed } from '../core/types';
-import type { PlayerState } from './state';
+import type { PlayerState, TeamId } from './state';
 import { DRIBBLE_RADIUS_SQ_FIXED } from './ballConstants';
 
 /**
@@ -27,11 +27,16 @@ const TOUCH_PRIORITY_HYSTERESIS_MARGIN_SQ_FIXED = fixedMul(toFixed(6), toFixed(6
  *
  * 決定論: players を厳密に昇順indexで走査し、同点(完全に同じ距離の二乗)は
  * 小さいindexが勝つ (strict `<` のみで更新するため自然にそうなる)。
+ *
+ * restrictToTeam (セットプレー再開ロック用、省略時は既存呼び出し無変更): 指定すると
+ * そのチーム以外の選手を候補から完全に除外する。「相手はキッカーが蹴るまでボールに
+ * 一切触れられない」を、押し出しの幾何的な際どさに頼らず構造的に保証するための制限。
  */
 export function findTouchPriorityPlayer(
   players: readonly PlayerState[],
   ballPos: Vec2Fixed,
   previousTouchIndex: number | null = null,
+  restrictToTeam?: TeamId,
 ): number | null {
   let bestIndex: number | null = null;
   let bestDistSq = 0;
@@ -40,6 +45,7 @@ export function findTouchPriorityPlayer(
   for (let i = 0; i < players.length; i++) {
     const player = players[i];
     if (!player) continue;
+    if (restrictToTeam !== undefined && player.team !== restrictToTeam) continue;
 
     const distSq = distSqFixed(ballPos, player.pos) as number;
 

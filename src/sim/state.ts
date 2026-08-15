@@ -114,17 +114,24 @@ export interface GameState {
    */
   readonly lastEvent: NotableEvent | null;
   /**
-   * ゴールキック時の相手退避ゾーン (B-5(b))。restartTeam以外の選手 (人間操作を含む、GK除く) を
-   * northEnd側/南側の GOAL_KICK_EXCLUSION_DEPTH_FIXED ラインまで押し出す。
+   * セットプレー(スローイン/ゴールキック/コーナー)の再開ロック。restartTeam以外の選手
+   * (人間操作を含む、GK除く) をボールに近づけないよう押し出し、かつ touch-priority も
+   * restartTeamに制限する。「キッカーが実際にボールを動かすまで解除されない」
+   * 状態ベースの仕組みで、固定tick数のタイマーではない (下記参照)。
    *
-   * 導入経緯: 元は「boundaryEvent発生tickのみ効く一発ティーポート押し出し」だったため、AIは
-   * restartGraceTeam/restartGraceTicksLeftによる追跡権抑制(継続的)で保護される一方、人間は
-   * その抑制の対象外(直接入力のため)で1tick後には自由に寄せて奪えてしまい、「人間がCPUの
-   * ゴールキックを狙って奪う単調な必勝法」が成立していた。restartGraceTicksLeftと同じ
-   * ticksLeftを持たせて毎tick再適用することで、AIと同じ長さだけ人間にも対称に適用する。
-   * null = 退避ゾーン無し。
+   * 導入経緯: B-5(b)時点では「ゴールキックのみ、RESTART_GRACE_TICKS(63tick)の間だけ毎tick
+   * 再適用する一発ティーポート押し出し」だった。任天堂公式説明書での仕様確定を受けたユーザー
+   * 報告により、(1) スローイン/コーナーには押し出し自体が無く相手が即座に触れてしまう、
+   * (2) ゴールキックも固定63tickで解除されるため人間の反応が遅いと結局間に合わない、
+   * の2点が実プレイの不具合として判明。ticksLeftによる時間切れを廃止し、「ボールが
+   * 静止位置から動く(=キッカーが実際に蹴った/ドリブルタッチした)」ことを解除条件にする
+   * 状態ベースの設計に変更した(update.tsの解除判定を参照)。あわせてtouch-priorityの
+   * team制限(findTouchPriorityPlayerのrestrictToTeam引数)を組み合わせることで、
+   * 押し出しの幾何的な際どさ(コーナー等ピッチ端付近では押し出し半径をピッチ境界内に
+   * クランプせざるを得ない)に依存せず「相手は絶対に触れない」ことを構造的に保証する。
+   * null = ロック無し。
    */
-  readonly goalKickExclusion: GoalKickExclusion | null;
+  readonly setPieceLock: SetPieceLock | null;
 }
 
 /** GameState.lastEvent の種別。goalはscoreの変化で既に検出可能なため対象外。 */
@@ -136,14 +143,15 @@ export interface NotableEvent {
   readonly atFrame: number;
 }
 
-/** GameState.goalKickExclusion の内容。B-5(b)。 */
-export interface GoalKickExclusion {
-  /** このチーム以外の選手 (人間操作含む) が退避ゾーンの対象。 */
+/** GameState.setPieceLock の内容。 */
+export interface SetPieceLock {
+  readonly kind: 'throwIn' | 'goalKick' | 'corner';
+  /** このチーム以外の選手 (人間操作含む) が押し出し/touch-priority制限の対象。 */
   readonly restartTeam: TeamId;
-  /** true ならゾーンは北側 (y小さい方) のゴールライン付近。 */
+  /** ボールの静止位置 (再開スポット)。ここから動いたらロック解除 (update.ts参照)。 */
+  readonly pos: Vec2Fixed;
+  /** true ならゾーンは北側 (y小さい方)。goalKindのY軸ライン押し出しでのみ使用する。 */
   readonly northEnd: boolean;
-  /** 残りtick数。0になったら無効。 */
-  readonly ticksLeft: number;
 }
 
 export interface CreateInitialStateOptions {
@@ -183,6 +191,6 @@ export function createInitialState(seed: number, options: CreateInitialStateOpti
     restartGraceTeam: TeamId.A,
     restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
     lastEvent: null,
-    goalKickExclusion: null,
+    setPieceLock: null,
   };
 }

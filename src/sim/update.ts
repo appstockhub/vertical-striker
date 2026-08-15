@@ -1,9 +1,9 @@
-import { dotFixed, fixedMul, toFixed, vAdd, vSub, vZero, ZERO_FIXED } from '../core/fixed';
+import { distSqFixed, dotFixed, fixedAdd, fixedMul, fixedSub, toFixed, vAdd, vSub, vZero, ZERO_FIXED } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, emptyButtonState, type ButtonState } from '../input/types';
-import type { BallState, GameState, GoalKickExclusion, PlayerState } from './state';
+import type { BallState, GameState, PlayerState, SetPieceLock } from './state';
 import { PLAYERS_PER_TEAM, TacklePhase, TeamId } from './state';
-import { getHomePosition, opponentOf } from './formations';
+import { attackingIsUpward, getHomePosition, opponentOf } from './formations';
 import { PITCH_HEIGHT } from '../config/pitch';
 import { checkOffside } from './offsideRule';
 import { DIRECTION_VECTORS, PLAYER_RADIUS_FIXED, PLAYER_SPEED_FIXED } from './constants';
@@ -28,7 +28,7 @@ import {
   GK_AUTO_SPEED_FIXED,
   SAVE_CONTEXT_MIN_BALL_SPEED_SQ_FIXED,
 } from './goalkeeperConstants';
-import { GOAL_KICK_EXCLUSION_DEPTH_FIXED } from './boundsConstants';
+import { GOAL_KICK_EXCLUSION_DEPTH_FIXED, SET_PIECE_EXCLUSION_RADIUS_FIXED } from './boundsConstants';
 import { KICKOFF_GRACE_TICKS, LINE_POSSESSION_SWITCH_TICKS, RESTART_GRACE_TICKS } from './teamAIConstants';
 import {
   advanceTacklePhase,
@@ -61,6 +61,73 @@ const NO_TACKLE: TackleAdvance = { tacklePhase: TacklePhase.None, tackleFrames: 
 /** オフサイド成立時のリスタート用ボール状態 (該当選手の位置へ速度0で置く、間接FK相当)。 */
 function offsideRestartBall(offsidePlayer: PlayerState): BallState {
   return { pos: offsidePlayer.pos, vel: vZero(), height: ZERO_FIXED, zVel: ZERO_FIXED };
+}
+
+/**
+ * pos が center を中心とする一辺2*radiusの正方形の内側にあれば、支配的な軸(絶対値が
+ * 大きい方)へ沿って境界まで押し出す (sqrtを使わない — quantizeToDirection8と同じ考え方)。
+ * ピッチ境界内に収めるため最後にclampToPitchBoundsを適用する: コーナーキックの再開
+ * スポットのようにピッチ端近くが除外中心になる場合、素の押し出し先が境界外になり得る
+ * ため (この場合、除外半径いっぱいまでは押し出せないことを許容する — 実サッカーの
+ * タッチライン際でも「規定距離」がピッチ外まで要求されないのと同じ理屈)。
+ *
+ * 判定を「円(距離の二乗)」ではなく「正方形(軸ごとの絶対値比較)」にしているのは意図的な
+ * バグ修正: 円判定+軸方向のみの押し出しの組み合わせだと、押し出し先(片方の軸だけ境界に
+ * 一致、もう片方の軸はそのまま)が円の外側でも正方形の内側になり得るため、AIが数tickかけて
+ * 押し出し境界へ戻ってくるたびに再び押し出される、という数tick周期の往復(=振動検出に
+ * 引っかかる境界バウンド)が実プレイ相当のテストで発覚した。判定・押し出しを同じ正方形
+ * 形状に揃えることで、押し出し直後は必ず正方形の外側になり、次にその軸へ1歩でも
+ * 踏み込めば即座に押し戻される(=既存のゴールキックY軸ラインクランプと同じ「毎tick
+ * 即時再クランプ」の安定構造)ようにした。
+ */
+function pushOutsideExclusionSquare(pos: Vec2Fixed, center: Vec2Fixed, radius: Fixed): Vec2Fixed {
+  const dx = fixedSub(pos.x, center.x);
+  const dy = fixedSub(pos.y, center.y);
+  const absDx = Math.abs(dx as number);
+  const absDy = Math.abs(dy as number);
+  const r = radius as number;
+  if (absDx >= r || absDy >= r) return pos;
+
+  const pushed: Vec2Fixed =
+    absDx >= absDy
+      ? { x: (dx as number) >= 0 ? fixedAdd(center.x, radius) : fixedSub(center.x, radius), y: pos.y }
+      : { x: pos.x, y: (dy as number) >= 0 ? fixedAdd(center.y, radius) : fixedSub(center.y, radius) };
+  return clampToPitchBounds(pushed, PLAYER_RADIUS_FIXED);
+}
+
+/**
+ * セットプレー再開ロック中の相手押し出し。goalKindは既存(B-5(b))のY軸ライン除外を
+ * そのまま踏襲する(挙動を変えない、検証済みのため)。throwIn/cornerはピッチ上の
+ * 任意地点で起きるため、再開スポットからの円形(近似)除外にする。
+ */
+function applySetPieceExclusion(moved: PlayerState, lock: SetPieceLock): PlayerState {
+  if (lock.kind === 'goalKick') {
+    const limitY = lock.northEnd
+      ? (GOAL_KICK_EXCLUSION_DEPTH_FIXED as number)
+      : (toFixed(PITCH_HEIGHT) as number) - (GOAL_KICK_EXCLUSION_DEPTH_FIXED as number);
+    const y = moved.pos.y as number;
+    const needsPush = lock.northEnd ? y < limitY : y > limitY;
+    if (!needsPush) return moved;
+    return { ...moved, pos: { x: moved.pos.x, y: limitY as Fixed } };
+  }
+  const pushedPos = pushOutsideExclusionSquare(moved.pos, lock.pos, SET_PIECE_EXCLUSION_RADIUS_FIXED);
+  return { ...moved, pos: pushedPos };
+}
+
+/** team に属する選手のうち pos に最も近いものの players[] index を返す (同点は小さいindex)。 */
+function findNearestTeamPlayerIndex(players: readonly PlayerState[], pos: Vec2Fixed, team: TeamId): number | null {
+  let bestIndex: number | null = null;
+  let bestDistSq = 0;
+  for (let i = 0; i < players.length; i++) {
+    const player = players[i];
+    if (!player || player.team !== team) continue;
+    const distSq = distSqFixed(pos, player.pos) as number;
+    if (bestIndex === null || distSq < bestDistSq) {
+      bestIndex = i;
+      bestDistSq = distSq;
+    }
+  }
+  return bestIndex;
 }
 
 /**
@@ -129,11 +196,18 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       restartGraceTeam: getHalf(nextFrame) === 1 ? TeamId.A : TeamId.B,
       restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
       lastEvent: null,
-      goalKickExclusion: null,
+      setPieceLock: null,
     };
   }
 
-  const touchPriorityIndex = findTouchPriorityPlayer(state.players, state.ball.pos, state.lastTouchPlayerIndex);
+  // セットプレー再開ロック中は touch-priority も restartTeam に制限する (相手は絶対に
+  // 触れられない、という保証を押し出しの幾何精度に頼らず構造的に成立させる)。
+  const touchPriorityIndex = findTouchPriorityPlayer(
+    state.players,
+    state.ball.pos,
+    state.lastTouchPlayerIndex,
+    state.setPieceLock?.restartTeam,
+  );
   const teamAInPossession = isTeamAInPossession(touchPriorityIndex);
   let lastTouchTeam = state.lastTouchTeam;
 
@@ -219,19 +293,23 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   const suppressedTeam =
     restartGraceTicksLeft > 0 && restartGraceTeam !== null ? opponentOf(restartGraceTeam) : null;
 
-  // ゴールキック退避ゾーンの減衰 (B-5(b))。相手の追跡権を止めるsuppressedTeamと違い、
-  // こちらは人間操作にも効く物理的な位置クランプなので、同じticksLeftの流儀で毎tick
-  // 再適用する (以前は発生tickのみの一発ティーポート押し出しだったため、人間は1tick後に
-  // 自由に寄せて奪えてしまっていた)。
-  let goalKickExclusion: GoalKickExclusion | null =
-    state.goalKickExclusion && state.goalKickExclusion.ticksLeft > 1
-      ? { ...state.goalKickExclusion, ticksLeft: state.goalKickExclusion.ticksLeft - 1 }
-      : null;
+  // セットプレー再開ロックの持ち越し (時間切れなし、下記のボール移動検知で解除する)。
+  let setPieceLock: SetPieceLock | null = state.setPieceLock;
 
   // 「団子サッカー」防止: 守備側は最寄り2人(プレス+カバー)、保持側は最寄り1人(受け手)だけが
   // ボール引力をフルに使う (バグ修正、実プレイ+観戦シミュレーターで発覚)。毎tick1回だけ計算する。
   // 第4引数 suppressedTeam: リスタート猶予中はこのチームの追跡権を丸ごとゼロにする。
-  const chaseRightIndices = computeChaseRightIndices(state.players, state.ball.pos, possessionTeam, suppressedTeam);
+  //
+  // セットプレー再開ロック中の例外 (実プレイ相当のテストで発覚したデッドロックの修正):
+  // lastTouchTeamをrestartTeamに設定しているため possessionTeam===restartTeam になり、
+  // 素の判定だと「保持側」扱いでCHASE_RIGHT_HOLDERS_POSSESSING(1人)しか追跡権を持たない。
+  // その1人がたまたま人間操作の選手(AI引力を一切使わず直接入力で動く)だと、restartTeam側の
+  // 誰もボールへ自律的に寄って行かず、touch-priorityをrestartTeamへ制限したこととの組み合わせで
+  // 「相手は触れられず、自チームも誰も取りに行かない」永久デッドロックになる。ロック中は
+  // まだ誰も実際には触れていない(=真の意味でルーズボール)ため、possessionTeamをnull扱いにして
+  // DEFENDING同様2人へ増やし、少なくとも1人は非操作AIが自律的に収束できるようにする。
+  const chasePossessionTeam = setPieceLock && possessionTeam === setPieceLock.restartTeam ? null : possessionTeam;
+  const chaseRightIndices = computeChaseRightIndices(state.players, state.ball.pos, chasePossessionTeam, suppressedTeam);
 
   // マーク割り当て (Phase 4): 守備側のDFライン(追跡権なし)に相手侵入者を1:1で割り当てる。
   // 追跡権(プレス、生のpossessionTeamで即応)と違い、マークは陣形挙動なのでライン押し引きと
@@ -276,6 +354,9 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   let tackleAdvance: TackleAdvance = NO_TACKLE;
   // 直近の知覚可能イベント (Phase 5)。物理/AIには影響しない echo (state.ts参照)。
   let lastEvent = state.lastEvent;
+  // セットプレー再開時、キッカーを攻撃方向へ向かせる (実装ギャップ1、最優先)。
+  // boundaryEvent発生時にのみ設定し、players.map内で該当選手のfacingを上書きする。
+  let restartFacingOverride: { index: number; facing: Direction8 } | null = null;
 
   const touchInputs = touchPriorityIndex !== null ? effectiveInputs[touchPriorityIndex] : undefined;
   if (touchInputs) {
@@ -453,7 +534,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       restartGraceTeam: opponentOf(boundaryEvent.scoringTeam),
       restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
       lastEvent: null,
-      goalKickExclusion: null,
+      setPieceLock: null,
     };
   }
 
@@ -467,18 +548,30 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     // 両チームの追跡権保持者が同数でスポットに殺到する。再開チームに帰属させることで、
     // 相手側は守備側の追跡権(2人)、再開側は回収役(1人)という自然な役割になる)。
     lastTouchTeam = boundaryEvent.restartTeam;
-    if (boundaryEvent.type === 'goalKick') {
-      // 新しいリスタートが最優先: 減衰中の古いゾーンを上書きし、RESTART_GRACE_TICKS(=AIの
-      // 追跡権抑制と同じ長さ)だけ人間操作を含む相手を退避させる。
-      goalKickExclusion = {
-        restartTeam: boundaryEvent.restartTeam,
-        northEnd: (boundaryEvent.pos.y as number) < (toFixed(PITCH_HEIGHT / 2) as number),
-        ticksLeft: RESTART_GRACE_TICKS,
+    // 新しいリスタートが最優先: 古いロックを上書きする。3種類すべてに適用する
+    // (旧実装はゴールキックのみだったため、スローイン/コーナーは相手が即座に触れられる
+    // 不具合があった — CLAUDE.md「実装ギャップ」1を参照)。時間切れは無く、
+    // 「ボールが再開スポットから動く」ことで解除する (下記参照)。
+    setPieceLock = {
+      kind: boundaryEvent.type,
+      restartTeam: boundaryEvent.restartTeam,
+      pos: boundaryEvent.pos,
+      northEnd: (boundaryEvent.pos.y as number) < (toFixed(PITCH_HEIGHT / 2) as number),
+    };
+    // キッカーを攻撃方向へ向かせる (CLAUDE.md「実装ギャップ」1)。再開チームの中で
+    // 再開スポットに最も近い選手を「キッカー」とみなし、その場でfacingを上書きする
+    // (以後は通常どおり本人の入力方向で更新される、kickoffのplaceKickoffFormationと
+    // 同種の「初期値としての1回だけの上書き」)。
+    const kickerIndex = findNearestTeamPlayerIndex(state.players, boundaryEvent.pos, boundaryEvent.restartTeam);
+    if (kickerIndex !== null) {
+      restartFacingOverride = {
+        index: kickerIndex,
+        facing: attackingIsUpward(boundaryEvent.restartTeam, half) ? Direction8.Up : Direction8.Down,
       };
     }
     // リスタート猶予 (Phase 5): この再開チームの相手の追跡権をRESTART_GRACE_TICKSの間ゼロにする
-    // (既存のgoalKickExclusion一発押し出しと併用、後退させない)。同じtickで上の
-    // 通常減衰(restartGraceTicksLeft--)を上書きする — 新しいリスタートが最優先。
+    // (上記setPieceLockと併用、後退させない)。同じtickで上の通常減衰(restartGraceTicksLeft--)を
+    // 上書きする — 新しいリスタートが最優先。
     restartGraceTeam = boundaryEvent.restartTeam;
     restartGraceTicksLeft = RESTART_GRACE_TICKS;
     // 知覚可能イベントとして記録する (スローイン/ゴールキック/コーナーの視認性向上、
@@ -486,6 +579,22 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     lastEvent = { kind: boundaryEvent.type, team: boundaryEvent.restartTeam, atFrame: nextFrame };
   } else {
     ball = ballStep.ball;
+  }
+
+  // セットプレー再開ロックの解除判定 (CLAUDE.md「実装ギャップ」1、
+  // 「キッカーが蹴るまで解除されない」方式)。ボールが再開スポットから動いた
+  // (速度が付いた、またはオフサイド間接FKで別位置へ移された) ら、キッカーが実際に
+  // ボールを動かしたとみなして即座に解除する。touch-priorityがrestartTeamに制限されて
+  // いるため、この移動を起こせるのは常にrestartTeam自身のみ (相手は物理的に触れられない)。
+  // 時間切れによる自動解除は無い(実サッカーに持ち時間制限が無いのと同じ)。
+  if (
+    setPieceLock &&
+    (ball.vel.x !== ZERO_FIXED ||
+      ball.vel.y !== ZERO_FIXED ||
+      ball.pos.x !== setPieceLock.pos.x ||
+      ball.pos.y !== setPieceLock.pos.y)
+  ) {
+    setPieceLock = null;
   }
 
   const players = state.players.map((player, index) => {
@@ -505,20 +614,17 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
 
     let moved = updatePlayer(player, effectiveDirection, longDribble, speedOverride);
 
-    // ゴールキック時の退避ルール (観戦シミュレーターで発覚した「リスタート・キャンプ」問題の修正):
-    // 即時テレポート復帰+ピッチ全域プレスの組み合わせでは、相手の追跡権保持者がゴールキックの
-    // スポットに張り付き、再開した瞬間に奪う→シュートのループが成立してしまう。実サッカーの
-    // 「ゴールキック時は相手はペナルティエリア外」に相当する最小ルールとして、再開側のゴール
-    // ラインから一定距離未満にいる相手選手をその距離まで軸方向に押し出す (sqrt不要のyクランプ)。
-    if (goalKickExclusion && player.team !== goalKickExclusion.restartTeam && !player.isGoalkeeper) {
-      const limitY = goalKickExclusion.northEnd
-        ? (GOAL_KICK_EXCLUSION_DEPTH_FIXED as number)
-        : ((toFixed(PITCH_HEIGHT) as number) - (GOAL_KICK_EXCLUSION_DEPTH_FIXED as number));
-      const y = moved.pos.y as number;
-      const needsPush = goalKickExclusion.northEnd ? y < limitY : y > limitY;
-      if (needsPush) {
-        moved = { ...moved, pos: { x: moved.pos.x, y: limitY as Fixed } };
-      }
+    // セットプレー再開ロック中の相手押し出し (観戦シミュレーターで発覚した「リスタート・
+    // キャンプ」問題の修正、CLAUDE.md「実装ギャップ」1でスローイン/コーナーにも拡大)。
+    // 即時テレポート復帰+ピッチ全域プレスの組み合わせでは、相手の追跡権保持者が再開
+    // スポットに張り付き、再開した瞬間に奪う→シュートのループが成立してしまう。
+    if (setPieceLock && player.team !== setPieceLock.restartTeam && !player.isGoalkeeper) {
+      moved = applySetPieceExclusion(moved, setPieceLock);
+    }
+
+    // キッカーのfacingを攻撃方向へ上書きする (このtickの再開処理でのみ発火、上記参照)。
+    if (restartFacingOverride && index === restartFacingOverride.index) {
+      moved = { ...moved, facing: restartFacingOverride.facing };
     }
 
     if (index !== controlledPlayerIndex) return moved;
@@ -550,7 +656,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     restartGraceTeam,
     restartGraceTicksLeft,
     lastEvent,
-    goalKickExclusion,
+    setPieceLock,
   };
 }
 
