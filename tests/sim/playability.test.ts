@@ -155,6 +155,10 @@ describe('プレイアビリティ 3: 守備アクション (スライディン�
       }),
       lastTouchTeam: TeamId.B,
       lastTouchPlayerIndex: opponent,
+      // これは流れの中のプレー(相手がドリブル中)の再現なので、createInitialState が張る
+      // キックオフの再開ロックは外す (ロック中は touch-priority が Team A に制限され、
+      // 相手がボールを保持できないため状況が成立しない)。
+      setPieceLock: null,
     };
   }
 

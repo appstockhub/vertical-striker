@@ -80,18 +80,38 @@ function triggerCornerState(): GameState {
 }
 
 describe('setPieceLock: goal kick (Y軸ライン除外、B-5(b)からの踏襲)', () => {
-  it('a fresh goal kick sets a lock (no ticksLeft — time-unlimited)', () => {
+  it('a fresh goal kick sets a lock (解除は「キッカーが蹴る」= ボールが動くこと)', () => {
     const next = triggerGoalKickState();
     expect(next.setPieceLock).toEqual({
       kind: 'goalKick',
       restartTeam: TeamId.B,
       pos: { x: toFixed(240), y: toFixed(60) },
       northEnd: true,
+      // 経過tick: 試合停止バグの安全網 (SET_PIECE_LOCK_MAX_TICKS) 用のカウンタ。
+      elapsedTicks: 0,
     });
   });
 
-  it('an opposing outfield player standing inside the zone is pushed out on the very next tick', () => {
-    let state = withPlayerAt(triggerGoalKickState(), TEAM_A_OUTFIELD_INDEX, 240, 20);
+  it('an opposing outfield player standing inside the zone is pushed out on the very tick the lock is created', () => {
+    // ★ロック生成と同じtickで判定する★ 以前は「次のtick」で見ていたが、キッカー(GK)を
+    // ボール脇へ置く修正が入ったことで、CPUは次のtickにはもうゴールキックを蹴っており
+    // (=ロックが正常に解除される)、押し出しを観測できなくなったため。
+    const base = createInitialState(1, { difficulty: 'hard' });
+    const state: GameState = withPlayerAt(
+      {
+        ...base,
+        ball: {
+          pos: { x: toFixed(100), y: toFixed(8) },
+          vel: { x: toFixed(0), y: toFixed(-8) },
+          height: ZERO_FIXED,
+          zVel: ZERO_FIXED,
+        },
+        lastTouchTeam: TeamId.A,
+      },
+      TEAM_A_OUTFIELD_INDEX,
+      240,
+      20,
+    );
     const next = simulate(state, { direction: Direction8.Up, buttons: emptyButtonState() });
     const limitY = GOAL_KICK_EXCLUSION_DEPTH_FIXED as number;
     expect(next.players[TEAM_A_OUTFIELD_INDEX]!.pos.y as number).toBe(limitY);

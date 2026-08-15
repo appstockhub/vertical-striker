@@ -4,7 +4,7 @@ import { createRng, type RngState } from '../core/rng';
 import { emptyButtonState, type ButtonState, type Direction8 } from '../input/types';
 import { FormationId, PLAYERS_PER_TEAM, TeamId } from './formations';
 import { TacklePhase } from './tacklePhase';
-import { placeKickoffFormation } from './kickoff';
+import { KICKOFF_TAKER_SLOT_INDEX, placeKickoffFormation } from './kickoff';
 import { KICKOFF_GRACE_TICKS } from './teamAIConstants';
 
 export { TeamId, PLAYERS_PER_TEAM };
@@ -174,13 +174,23 @@ export interface NotableEvent {
 
 /** GameState.setPieceLock の内容。 */
 export interface SetPieceLock {
-  readonly kind: 'throwIn' | 'goalKick' | 'corner';
+  /**
+   * 'kickoff' は16周目に追加。それまでキックオフだけがこのロック機構の対象外で、
+   * サッカーのルール(第8条: 相手はセンターサークルの外、蹴られるまで触れない)が
+   * 一つも実装されていなかった (ユーザー報告「こちらのキックオフなのに敵が奪取できる」)。
+   */
+  readonly kind: 'throwIn' | 'goalKick' | 'corner' | 'kickoff';
   /** このチーム以外の選手 (人間操作含む) が押し出し/touch-priority制限の対象。 */
   readonly restartTeam: TeamId;
   /** ボールの静止位置 (再開スポット)。ここから動いたらロック解除 (update.ts参照)。 */
   readonly pos: Vec2Fixed;
   /** true ならゾーンは北側 (y小さい方)。goalKindのY軸ライン押し出しでのみ使用する。 */
   readonly northEnd: boolean;
+  /**
+   * ロックが続いているtick数。kickoff のみ上限 (KICKOFF_LOCK_MAX_TICKS) で自動解除する
+   * — キッカーは必ず人間の操作選手になるため、無操作だと試合が永久停止してしまうため。
+   */
+  readonly elapsedTicks: number;
 }
 
 export interface CreateInitialStateOptions {
@@ -194,11 +204,15 @@ export function createInitialState(seed: number, options: CreateInitialStateOpti
     ? [options.teamFormations[0], options.teamFormations[1]]
     : [FormationId.F442, FormationId.F442];
 
-  const { players, ball } = placeKickoffFormation(1, teamFormations);
+  // 試合開始のキックオフは Team A (競技規則 第8条、後半は Team B へ交代する)。
+  // kickoffTeam を渡すことでキッカーがセンターマーク脇に立つ (16周目、それ以前は
+  // 全員がホームポジションのままで、自分のキックオフでも相手と同距離135pxの
+  // 徒競走になっていた)。
+  const kickoffTeam = TeamId.A;
+  const { players, ball } = placeKickoffFormation(1, teamFormations, kickoffTeam);
 
-  // キックオフ時の操作選手: Team A の最初のFW (4-4-2ならslotIndex=9、DF4+MF4の次)。
-  // ボールが PITCH_HEIGHT*0.5 付近に置かれるため、比較的近い位置の選手を初期操作対象にする。
-  const controlledPlayerIndex = TeamId.A * PLAYERS_PER_TEAM + 9;
+  // 操作選手はキックオフを蹴る選手 (placeKickoffFormation がボール脇へ配置した選手と同一)。
+  const controlledPlayerIndex = kickoffTeam * PLAYERS_PER_TEAM + KICKOFF_TAKER_SLOT_INDEX;
 
   return {
     frame: 0,
@@ -209,6 +223,8 @@ export function createInitialState(seed: number, options: CreateInitialStateOpti
     prevButtons: emptyButtonState(),
     teamFormations,
     score: [0, 0],
+    // キックオフはまだ誰も触れていない (「ボールは蹴られて明らかに動いたときインプレー」)。
+    // 相手を触れさせない拘束は lastTouchTeam ではなく setPieceLock.restartTeam が担う。
     lastTouchTeam: null,
     linePossessionTeam: null,
     linePossessionSwitchTicks: 0,
@@ -216,11 +232,17 @@ export function createInitialState(seed: number, options: CreateInitialStateOpti
     prevTouchPlayerIndex: null,
     difficulty: options.difficulty ?? 'medium',
     offsideEnabled: options.offsideEnabled ?? true,
-    // 試合開始キックオフはTeam Aが行う前提 (既存のcontrolledPlayerIndex初期値と同じ前提の踏襲)。
-    restartGraceTeam: TeamId.A,
+    restartGraceTeam: kickoffTeam,
     restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
     lastEvent: null,
-    setPieceLock: null,
+    // 相手をセンターサークルの外に保つロック (競技規則 第8条)。
+    setPieceLock: {
+      kind: 'kickoff',
+      restartTeam: kickoffTeam,
+      pos: ball.pos,
+      northEnd: false,
+      elapsedTicks: 0,
+    },
     manualLineOffset: ZERO_FIXED,
   };
 }

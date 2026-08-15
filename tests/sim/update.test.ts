@@ -532,6 +532,10 @@ function withCpuCarrier(
       i === carrierIdx ? { ...p, pos: { x: toFixed(240), y: toFixed(1750) } } : p,
     ),
     ball: { ...base.ball, pos: { x: toFixed(240), y: toFixed(1755) } },
+    // 流れの中のプレー(Team Bが相手ゴール前でボール保持)の再現なので、
+    // createInitialState が張るキックオフの再開ロックは外す
+    // (ロック中は touch-priority が Team A に制限され、Team B は触れられない)。
+    setPieceLock: null,
   };
 }
 
@@ -615,6 +619,11 @@ describe('simulate — bug regression: non-controlled AI actually chases the bal
 
   it('over a long stretch of real kickoff play with no human input, Team B eventually touches the ball at least once', () => {
     let state = createInitialState(1, { difficulty: 'medium' });
+    // まずキックオフを蹴る (競技規則 第8条の実装後は、蹴るまでボールはインプレーにならず
+    // キッカーが足元に置いたまま。「蹴った後にAIが本当にボールを追うか」がこのテストの主題)。
+    state = simulate(state, inputsWithButtons(Direction8.Up, { B: true }));
+    state = simulate(state, inputsWithButtons(Direction8.Up, { B: true }));
+    state = simulate(state, inputs(Direction8.Up));
     let teamBEverTouched = false;
     for (let i = 0; i < 3000; i++) {
       state = simulate(state, inputs(Direction8.None));

@@ -50,7 +50,13 @@ import {
   GK_AUTO_SPEED_FIXED,
   SAVE_CONTEXT_MIN_BALL_SPEED_SQ_FIXED,
 } from './goalkeeperConstants';
-import { GOAL_KICK_EXCLUSION_DEPTH_FIXED, SET_PIECE_EXCLUSION_RADIUS_FIXED } from './boundsConstants';
+import {
+  GOAL_KICK_EXCLUSION_DEPTH_FIXED,
+  KICKOFF_CIRCLE_RADIUS_FIXED,
+  KICKOFF_KICKER_STANDOFF_FIXED,
+  SET_PIECE_EXCLUSION_RADIUS_FIXED,
+  SET_PIECE_LOCK_MAX_TICKS,
+} from './boundsConstants';
 import {
   KICKOFF_GRACE_TICKS,
   LINE_POSSESSION_SWITCH_TICKS,
@@ -71,9 +77,10 @@ import {
 } from './tackle';
 import { CHARGE_RECOVERY_FRAMES, TACKLE_RECOVERY_FRAMES } from './tackleConstants';
 import { getHalf, isFulltime } from './matchClock';
-import { placeKickoffFormation } from './kickoff';
+import { KICKOFF_TAKER_SLOT_INDEX, placeKickoffFormation } from './kickoff';
 import { detectBoundaryEvent } from './bounds';
 import { decideCpuAttack } from './cpuAttackAI';
+import { decideCpuDefense } from './cpuDefenseAI';
 
 /**
  * 1tick分の入力。InputFrame のサブセット (sim/ は入力の生成元を知らない)。
@@ -145,6 +152,13 @@ function pushOutsideExclusionSquare(pos: Vec2Fixed, center: Vec2Fixed, radius: F
  * 任意地点で起きるため、再開スポットからの円形(近似)除外にする。
  */
 function applySetPieceExclusion(moved: PlayerState, lock: SetPieceLock): PlayerState {
+  if (lock.kind === 'kickoff') {
+    // 競技規則 第8条: 相手はボールがインプレーになるまでセンターサークルの外。
+    // 描画しているセンターサークル(pitchMarkings.ts)と同じ半径なので、画面上でも
+    // 「円の外に出されている」ことが分かる。
+    const pushedPos = pushOutsideExclusionSquare(moved.pos, lock.pos, KICKOFF_CIRCLE_RADIUS_FIXED);
+    return { ...moved, pos: pushedPos };
+  }
   if (lock.kind === 'goalKick') {
     const limitY = lock.northEnd
       ? (GOAL_KICK_EXCLUSION_DEPTH_FIXED as number)
@@ -156,6 +170,21 @@ function applySetPieceExclusion(moved: PlayerState, lock: SetPieceLock): PlayerS
   }
   const pushedPos = pushOutsideExclusionSquare(moved.pos, lock.pos, SET_PIECE_EXCLUSION_RADIUS_FIXED);
   return { ...moved, pos: pushedPos };
+}
+
+/**
+ * キックオフの再開ロックを作る (競技規則 第8条)。
+ * placeKickoffFormation(half, formations, kickoffTeam) と必ずセットで使うこと
+ * (あちらがキッカーをボール脇へ置き、こちらが相手をセンターサークルの外へ縛る)。
+ */
+function createKickoffLock(kickoffTeam: TeamId, ballPos: Vec2Fixed): SetPieceLock {
+  return {
+    kind: 'kickoff',
+    restartTeam: kickoffTeam,
+    pos: ballPos,
+    northEnd: false, // kickoff では未使用 (円形除外のため)
+    elapsedTicks: 0,
+  };
 }
 
 /**
@@ -184,6 +213,16 @@ function findNearestTeamPlayerIndex(
 }
 
 /**
+ * セットプレーのキッカー上書き。位置(pos)・向き(facing)を、そのtickの選手移動処理の
+ * 最後に強制的に適用する (AIの目標位置計算より優先させる)。
+ */
+interface SetPieceKickerOverride {
+  readonly index: number;
+  readonly facing: Direction8;
+  readonly pos: Vec2Fixed;
+}
+
+/**
  * セットプレーのキッカーを決め、ボールのすぐ脇へ配置する。
  *
  * ★重要なバグ修正 (実プレイ報告「ゴールキックとかアホな動きしている」の直接原因)★
@@ -204,8 +243,9 @@ function resolveSetPieceKicker(
   players: readonly PlayerState[],
   event: { readonly type: 'throwIn' | 'goalKick' | 'corner'; readonly restartTeam: TeamId; readonly pos: Vec2Fixed },
   half: Half,
-): { index: number; facing: Direction8 } | null {
-  const facing = attackingIsUpward(event.restartTeam, half) ? Direction8.Up : Direction8.Down;
+): SetPieceKickerOverride | null {
+  const attackUp = attackingIsUpward(event.restartTeam, half);
+  const facing = attackUp ? Direction8.Up : Direction8.Down;
   // ゴールキックはGK、スローイン/コーナーは最寄りのフィールドプレイヤーが蹴る、という
   // 実際のサッカーの役割分担に合わせる (players[]のindex規約: team*11 が各チームのGK)。
   const index =
@@ -213,7 +253,15 @@ function resolveSetPieceKicker(
       ? event.restartTeam * PLAYERS_PER_TEAM
       : findNearestTeamPlayerIndex(players, event.pos, event.restartTeam, true);
   if (index === null || !players[index]) return null;
-  return { index, facing };
+  // キッカーをボールのすぐ後ろ (攻撃方向の逆側) へ置く。ボールが前、キッカーが後ろ、
+  // 攻撃方向を向く = 実際のセットプレーの立ち位置であり、そのまま前へ蹴り出せる。
+  // 距離はキックオフのキッカーと同じ 9px (ドリブル接触半径12pxの内側)。
+  const standoff = attackUp ? (KICKOFF_KICKER_STANDOFF_FIXED as number) : -(KICKOFF_KICKER_STANDOFF_FIXED as number);
+  const pos = clampToPitchBounds(
+    { x: event.pos.x, y: ((event.pos.y as number) + standoff) as Fixed },
+    PLAYER_RADIUS_FIXED,
+  );
+  return { index, facing, pos };
 }
 
 /**
@@ -259,7 +307,9 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   const nextFrame = state.frame + 1;
   if (getHalf(nextFrame) !== half) {
     // 前半→後半の境界を跨ぐtick。全員をミラー配置のキックオフへリセットする。
-    const reset = placeKickoffFormation(getHalf(nextFrame), state.teamFormations);
+    // 後半のキックオフは前半に蹴らなかったチーム = Team B (競技規則 第8条)。
+    const kickoffTeam = TeamId.B;
+    const reset = placeKickoffFormation(getHalf(nextFrame), state.teamFormations, kickoffTeam);
     return {
       frame: nextFrame,
       rngState: state.rngState,
@@ -269,6 +319,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       prevButtons: inputs.buttons,
       teamFormations: state.teamFormations,
       score: state.score,
+      // キックオフはまだ誰も触れていない (競技規則: ボールは蹴られて動いたときインプレー)。
+      // 相手を触れさせない拘束は lastTouchTeam ではなく setPieceLock.restartTeam が担う。
       lastTouchTeam: null,
       linePossessionTeam: null,
       linePossessionSwitchTicks: 0,
@@ -276,13 +328,10 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       prevTouchPlayerIndex: null,
       difficulty: state.difficulty,
       offsideEnabled: state.offsideEnabled,
-      // 前後半キックオフの猶予チームは半分で交代する (実サッカーの「前半にキックオフした
-      // チームは後半にキックオフしない」ルールと同じ。前半はTeam Aが既にcreateInitialStateで
-      // 猶予を得ているため、後半はTeam B)。
-      restartGraceTeam: getHalf(nextFrame) === 1 ? TeamId.A : TeamId.B,
+      restartGraceTeam: kickoffTeam,
       restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
       lastEvent: null,
-      setPieceLock: null,
+      setPieceLock: createKickoffLock(kickoffTeam, reset.ball.pos),
       manualLineOffset: ZERO_FIXED,
     };
   }
@@ -415,8 +464,15 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   const suppressedTeam =
     restartGraceTicksLeft > 0 && restartGraceTeam !== null ? opponentOf(restartGraceTeam) : null;
 
-  // セットプレー再開ロックの持ち越し (時間切れなし、下記のボール移動検知で解除する)。
-  let setPieceLock: SetPieceLock | null = state.setPieceLock;
+  // セットプレー再開ロックの持ち越し。経過tickを数え、上限を超えたら自動解除する
+  // (人間側の再開でプレイヤーが操作しないと試合が永久停止するため。SET_PIECE_LOCK_MAX_TICKS
+  //  のコメント参照 — 実際に1試合の74%がロック中という試合停止バグが観測されている)。
+  let setPieceLock: SetPieceLock | null = state.setPieceLock
+    ? { ...state.setPieceLock, elapsedTicks: state.setPieceLock.elapsedTicks + 1 }
+    : null;
+  if (setPieceLock && setPieceLock.elapsedTicks > SET_PIECE_LOCK_MAX_TICKS) {
+    setPieceLock = null;
+  }
 
   // 「団子サッカー」防止: 守備側は最寄り2人(プレス+カバー)、保持側は最寄り1人(受け手)だけが
   // ボール引力をフルに使う (バグ修正、実プレイ+観戦シミュレーターで発覚)。毎tick1回だけ計算する。
@@ -490,7 +546,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   let lastEvent = state.lastEvent;
   // セットプレー再開時、キッカーを攻撃方向へ向かせる (実装ギャップ1、最優先)。
   // boundaryEvent発生時にのみ設定し、players.map内で該当選手のfacingを上書きする。
-  let restartFacingOverride: { index: number; facing: Direction8 } | null = null;
+  let restartKickerOverride: SetPieceKickerOverride | null = null;
   // 蹴り出しドリブル(続編仕様①②)。保持者(touch-priority)のみが対象で、他の選手は
   // players.map内で強制的にfalseへリセットする(過去に保持していた時の値が残らないように)。
   let kickDribbleCarrier: { index: number; active: boolean } | null = null;
@@ -763,13 +819,40 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     }
   }
 
+  // CPU守備チャレンジ (cpuDefenseAI.ts)。相手保持者に密着したCPU守備者が確率でショルダー
+  // チャージを仕掛ける。これが無いと、人間が静止しているだけでCPUは至近距離で永久に何も
+  // せず試合が停止する (観戦シミュレーターで実測、cpuDefenseAI.ts のコメント参照)。
+  // セットプレー再開ロック中は発火させない (「蹴られるまで相手は触れない」を守る)。
+  // GKのセーブが起きたtickも二重にボール速度を上書きしないよう見送る。
+  if (!gkSavedThisTick && !setPieceLock) {
+    const defense = decideCpuDefense(
+      touchPriorityIndex,
+      controlledPlayerIndex,
+      state.players,
+      state.difficulty,
+      rngState,
+    );
+    rngState = defense.rngState;
+    if (defense.chargerIndex !== null) {
+      const charger = state.players[defense.chargerIndex];
+      if (charger) {
+        ball = applyShoulderCharge(ball, defense.direction);
+        lastTouchTeam = charger.team;
+        lastTouchPlayerIndex = defense.chargerIndex;
+      }
+    }
+  }
+
   const ballStep = stepBallPhysicsDetailed(ball);
   const boundaryEvent = detectBoundaryEvent(ballStep.tentativePos, ballStep.ball.height, half, lastTouchTeam);
 
   if (boundaryEvent?.type === 'goal') {
     // 得点: 選手移動処理まで進めず、その場でミラー配置のキックオフへリセットして完結させる
     // (計画セクションD。古いボール位置ベースのAI目標が1tickだけ混ざるのを防ぐ)。
-    const reset = placeKickoffFormation(half, state.teamFormations);
+    // 競技規則 第8条: 得点されたチームがキックオフを行う。
+    const kickoffTeam = opponentOf(boundaryEvent.scoringTeam);
+    const reset = placeKickoffFormation(half, state.teamFormations, kickoffTeam);
+    const kickerIndex = kickoffTeam * PLAYERS_PER_TEAM + KICKOFF_TAKER_SLOT_INDEX;
     const score: readonly [number, number] =
       boundaryEvent.scoringTeam === TeamId.A
         ? [state.score[0] + 1, state.score[1]]
@@ -779,10 +862,14 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       rngState,
       players: reset.players,
       ball: reset.ball,
-      controlledPlayerIndex: state.controlledPlayerIndex,
+      // カーソルをキッカーへ乗せる (Team Aのキックオフなら人間がそのまま蹴れる)。
+      // Team Bのキックオフでは resolveCursor が守備側の自動追従へ戻す。
+      controlledPlayerIndex: kickoffTeam === TeamId.A ? kickerIndex : state.controlledPlayerIndex,
       prevButtons: inputs.buttons,
       teamFormations: state.teamFormations,
       score,
+      // キックオフはまだ誰も触れていない (競技規則: ボールは蹴られて動いたときインプレー)。
+      // 相手を触れさせない拘束は lastTouchTeam ではなく setPieceLock.restartTeam が担う。
       lastTouchTeam: null,
       linePossessionTeam: null,
       linePossessionSwitchTicks: 0,
@@ -790,11 +877,10 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       prevTouchPlayerIndex: null,
       difficulty: state.difficulty,
       offsideEnabled: state.offsideEnabled,
-      // 得点後キックオフの猶予チームは「得点されたチームの相手」(実サッカーのルールと同じ)。
-      restartGraceTeam: opponentOf(boundaryEvent.scoringTeam),
+      restartGraceTeam: kickoffTeam,
       restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
       lastEvent: null,
-      setPieceLock: null,
+      setPieceLock: createKickoffLock(kickoffTeam, reset.ball.pos),
       manualLineOffset: ZERO_FIXED,
     };
   }
@@ -818,11 +904,12 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       restartTeam: boundaryEvent.restartTeam,
       pos: boundaryEvent.pos,
       northEnd: (boundaryEvent.pos.y as number) < (toFixed(PITCH_HEIGHT / 2) as number),
+      elapsedTicks: 0,
     };
     // キッカーを決めてボール脇へ配置し、攻撃方向を向かせる。
     // ボールだけをテレポートしてキッカーの到着をAI任せにしていた旧実装は、再開チームの誰も
     // 近くに居ない時にボールが置き去りのまま試合が停止した (resolveSetPieceKicker のコメント参照)。
-    restartFacingOverride = resolveSetPieceKicker(state.players, boundaryEvent, half);
+    restartKickerOverride = resolveSetPieceKicker(state.players, boundaryEvent, half);
     // リスタート猶予 (Phase 5): この再開チームの相手の追跡権をRESTART_GRACE_TICKSの間ゼロにする
     // (上記setPieceLockと併用、後退させない)。同じtickで上の通常減衰(restartGraceTicksLeft--)を
     // 上書きする — 新しいリスタートが最優先。
@@ -879,9 +966,11 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       moved = applySetPieceExclusion(moved, setPieceLock);
     }
 
-    // キッカーのfacingを攻撃方向へ上書きする (このtickの再開処理でのみ発火、上記参照)。
-    if (restartFacingOverride && index === restartFacingOverride.index) {
-      moved = { ...moved, facing: restartFacingOverride.facing };
+    // キッカーをボール脇へ置き、攻撃方向を向かせる (このtickの再開処理でのみ発火、上記参照)。
+    // 位置まで上書きするのが試合停止バグの本丸: facingだけ変えていた旧実装では、
+    // 再開チームの誰もボールに到達できず、ロックが無期限のためボールが数千tick静止した。
+    if (restartKickerOverride && index === restartKickerOverride.index) {
+      moved = { ...moved, pos: restartKickerOverride.pos, vel: vZero(), facing: restartKickerOverride.facing };
     }
 
     if (index !== controlledPlayerIndex) return moved;
@@ -894,12 +983,20 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     };
   });
 
+  // Team A (人間側) の再開では、次のtickからカーソルをキッカーへ乗せる。
+  // キッカーをボール脇へ置いてもカーソルが別の選手に乗ったままだと、人間は
+  // 「自分のスローインなのに蹴れない」状態になる (キックオフのカーソルスナップと同じ理屈)。
+  const nextControlledPlayerIndex =
+    restartKickerOverride && state.players[restartKickerOverride.index]?.team === TeamId.A
+      ? restartKickerOverride.index
+      : controlledPlayerIndex;
+
   return {
     frame: nextFrame,
     rngState,
     players,
     ball,
-    controlledPlayerIndex,
+    controlledPlayerIndex: nextControlledPlayerIndex,
     prevButtons: inputs.buttons,
     teamFormations: state.teamFormations,
     score: state.score,

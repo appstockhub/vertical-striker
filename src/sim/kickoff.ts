@@ -1,7 +1,9 @@
 import { toFixed, vZero, ZERO_FIXED } from '../core/fixed';
+import type { Fixed } from '../core/types';
 import { Direction8 } from '../input/types';
 import { PITCH_HEIGHT, PITCH_WIDTH } from '../config/pitch';
 import { attackingIsUpward, FormationId, getHomePosition, PLAYERS_PER_TEAM, TeamId, type Half } from './formations';
+import { KICKOFF_KICKER_STANDOFF_FIXED } from './boundsConstants';
 import { TacklePhase } from './tacklePhase';
 import type { BallState, PlayerState } from './state';
 
@@ -56,20 +58,52 @@ function createTeamPlayersAtKickoff(team: TeamId, formationId: FormationId, half
   return players;
 }
 
-/** 指定した半分(half)でのキックオフ配置を返す。ボールは常にピッチ中央、静止。 */
+/**
+ * キックオフを行う選手の slotIndex。フォーメーション定義で最も前方 (depthFrac 0.85) の
+ * FW を使う。Team A では players[9] となり、createInitialState の初期操作選手と一致するため、
+ * 試合開始時にカーソルがそのままキッカーへ乗る。
+ */
+export const KICKOFF_TAKER_SLOT_INDEX = 9;
+
+/**
+ * 指定した半分(half)でのキックオフ配置を返す。ボールは常にセンターマーク上で静止。
+ *
+ * ★16周目★ kickoffTeam を渡すと、そのチームのキッカーをボールの手前 (自陣側) へ配置する。
+ * 競技規則 第8条のキックオフを成立させるために必須:
+ *   - 旧実装は全員をホームポジションに戻すだけだったため、キッカー役の FW もボールから
+ *     135px 離れており、**相手の FW も同じ135pxの距離**にいた。つまり「自分のキックオフ」
+ *     でも相手と同距離からの徒競走になり、普通に奪われた
+ *     (ユーザー報告「点を決められてこちらのキックオフなのに敵が奪取できる」)。
+ *   - キッカーはセンターマークより自陣側に立つ (規則「すべての競技者は自分のハーフ内に」)。
+ * 相手をセンターサークル外に保つ拘束は update.ts の setPieceLock 側が担当する。
+ */
 export function placeKickoffFormation(
   half: Half,
   teamFormations: readonly [FormationId, FormationId],
+  kickoffTeam?: TeamId,
 ): KickoffPlacement {
   const players = [
     ...createTeamPlayersAtKickoff(TeamId.A, teamFormations[TeamId.A], half),
     ...createTeamPlayersAtKickoff(TeamId.B, teamFormations[TeamId.B], half),
   ];
-  const ball: BallState = {
-    pos: { x: toFixed(PITCH_WIDTH / 2), y: toFixed(PITCH_HEIGHT * 0.5) },
-    vel: vZero(),
-    height: ZERO_FIXED,
-    zVel: ZERO_FIXED,
-  };
+  const ballPos = { x: toFixed(PITCH_WIDTH / 2), y: toFixed(PITCH_HEIGHT * 0.5) };
+  const ball: BallState = { pos: ballPos, vel: vZero(), height: ZERO_FIXED, zVel: ZERO_FIXED };
+
+  if (kickoffTeam !== undefined) {
+    const kickerIndex = kickoffTeam * PLAYERS_PER_TEAM + KICKOFF_TAKER_SLOT_INDEX;
+    const kicker = players[kickerIndex];
+    if (kicker) {
+      // 自陣側 = 攻撃方向の逆。attackingIsUpward が true なら攻撃は -Y なので自陣側は +Y。
+      const ownHalfSign = attackingIsUpward(kickoffTeam, half) ? 1 : -1;
+      players[kickerIndex] = {
+        ...kicker,
+        pos: {
+          x: ballPos.x,
+          y: ((ballPos.y as number) + ownHalfSign * (KICKOFF_KICKER_STANDOFF_FIXED as number)) as Fixed,
+        },
+      };
+    }
+  }
+
   return { players, ball };
 }
