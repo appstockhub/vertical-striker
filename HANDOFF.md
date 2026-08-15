@@ -1,6 +1,6 @@
 # HANDOFF
 
-最終更新: 2026-08-15 (12周目: 続編仕様の追加+①②③実装、③で振動regression発見・対応)
+最終更新: 2026-08-15 (12周目: 続編仕様の追加+①②③④実装、③で振動regression発見・対応)
 
 ## 0-000000000. 12周目 (最新): 続編(シリーズ後期作品)公式説明書に基づく拡張仕様の追加実装
 
@@ -57,7 +57,21 @@
 **検証**: 新規テスト11件、全テスト357件green、`check:determinism`green、`sim:sanity`
 全10基準green・2回実行で決定論確認、`build`green。
 
-**ブラウザでの実プレイ確認は今回も未実施**。④ライン操作/オフサイドトラップ以降は未着手。
+**④ライン操作/オフサイドトラップ実装**(コミット`47ffc7e`): STARTボタンによる手動ライン
+操作。`GameState.manualLineOffset`(符号付き)を新設し、既存の
+`computeLineAdjustedHomePosition`(`src/sim/teamAI.ts`)に統合した。相手保持中のSTART=
+ディフェンスライン上げ(オフサイドトラップ)、自チーム保持中のSTART=オフェンスライン下げ
+(トラップ回避)、非押下中はゆっくり中立へ減衰。Team A(人間)のみが対象。
+**入力レイヤーにStartボタンを新設**(`LogicalButton.Start`、W3C Standard Gamepad index 9、
+キーボードはShiftLeft — Enter/Spaceは試合前設定オーバーレイが既に使用しているため回避)。
+既存の観戦シミュレーター人間スクリプトはSTARTを押さないため回帰リスクなし(振動regression
+無し)。新規テスト10件、全テスト366件green、`check:determinism`・`sim:sanity`全10基準・
+2回実行で決定論確認・`build`すべてgreen。
+**未対応**: 画面上のボタン配置オーバーレイ(`src/input/overlay.ts`)はPhase 0時点のまま
+陳腐化しており、Start追加も反映していない。優先度3(ボタン配置の原作準拠化)で
+まとめて全面書き直す予定のため今回は意図的に未着手。
+
+**ブラウザでの実プレイ確認は今回も未実施**。⑤ワンツー⑥リフティングは未着手。
 
 ## 0-00000000. 11周目: 公式説明書による操作仕様確定 + セットプレー原則(最優先分)の実装修正
 
@@ -474,12 +488,13 @@ Plan Modeで事前に「数値調整で対応できるもの」と「構造的�
 
 ## 2. 進行中の作業と正確な現状
 
-- **12周目(続編仕様の追加+①シフトキック②蹴り出しドリブル③カーブ実装)は実装・自動検証済みで
-  `main`にコミット・push済み(`0f634f0`docs, `06cdfff`①, `1f00358`②, `497bada`③)。
-  ④ライン操作/オフサイドトラップ⑤ワンツー⑥リフティングは未着手のまま次回に持ち越し。
-  ③カーブの実装中に「物理変更が試合全体のバタフライ効果で既存AIの潜在的振動ケースに
-  当たる」regressionを発見・対応した(調査手順を含め上記0-000000000参照、④以降でも
-  同じ注意が必要)。ブラウザでの目視確認も未実施**。
+- **12周目(続編仕様の追加+①②③④実装)は実装・自動検証済みで`main`にコミット・push済み
+  (`0f634f0`docs, `06cdfff`①, `1f00358`②, `497bada`③, `47ffc7e`④)。⑤ワンツー
+  ⑥リフティングは未着手のまま次回に持ち越し。③カーブの実装中に「物理変更が試合全体の
+  バタフライ効果で既存AIの潜在的振動ケースに当たる」regressionを発見・対応した
+  (調査手順を含め上記0-000000000参照、⑤⑥でも同じ注意が必要。④はSTARTを押す人間
+  スクリプトが存在しないため今回は回帰リスク自体が発生しなかった)。ブラウザでの
+  目視確認も未実施**。
 - 11周目(公式説明書による仕様確定+セットプレー原則の最優先分修正)は実装・自動検証済みで
   `main`にコミット・push済み(`1489e93`docs, `2676d82`fix)。優先度2(入力レスポンス、続編
   仕様の確定によりスコープが変わった)・3(ボタン配置、続編準拠に置き換え)は未着手のまま。
@@ -497,19 +512,21 @@ Plan Modeで事前に「数値調整で対応できるもの」と「構造的�
 
 ## 3. 次にやるべきこと（優先順）
 
--2. **【最新・最優先】続編仕様④ライン操作/オフサイドトラップの実装**(①②③は12周目で完了)。
-   STARTボタンでオフェンス/ディフェンスラインの上げ下げ。既存の
-   `computeLineAdjustedHomePosition`(`src/sim/teamAI.ts`)に手動オフセットレイヤーを統合する
-   設計(詳細はCLAUDE.md「続編仕様」節)。完了後、⑤ワンツー→⑥リフティングの順で継続。
-   各機能ごとにコミットを分け、都度観戦シミュレーターで回帰確認する。**③カーブの実装で
-   「物理変更が試合全体のバタフライ効果で既存AIの潜在的振動ケースに当たる」regressionが
-   発生した(0-000000000参照)。④はライン(陣形)全体に影響するため、同種のregression調査
-   手順(oscillatingPlayers→該当tick周辺のトレース→原因切り分け→必要ならscriptSeed変更)
-   を前提に着手すること**。
--1. 11周目(セットプレー原則の修正)・12周目(①②③)のブラウザ実プレイ確認
+-2. **【最新・最優先】続編仕様⑤ワンツーの実装**(①②③④は12周目で完了)。ボールを受ける瞬間に
+   A/Yを押していると即座にパスを返す。「touch-priorityが新しい選手へ切り替わったその1tick」
+   というタイミングで判定できる設計(詳細はCLAUDE.md「続編仕様」節)。完了後、
+   ⑥リフティングで続編仕様の実装優先リストが完了する。各機能ごとにコミットを分け、
+   都度観戦シミュレーターで回帰確認する。**③カーブの実装で「物理変更が試合全体の
+   バタフライ効果で既存AIの潜在的振動ケースに当たる」regressionが発生した
+   (0-000000000参照)。⑤⑥も着手時は同種のregression調査手順(oscillatingPlayers→
+   該当tick周辺のトレース→原因切り分け→必要ならscriptSeed変更)を前提にすること**。
+-1. 11周目(セットプレー原則の修正)・12周目(①②③④)のブラウザ実プレイ確認
    - セットプレー: (a) キッカーが攻撃方向を向いて始まるか、(b) 蹴るまで相手に取られなく
      なったか、(c) CPU側がリスタートする時に不自然な待たされ方をしないか。
    - シフトキック: L/Rを押しながらのキックで方向が斜めにずれるか、直感的に感じるか。
+   - ライン操作: 相手保持中にSTART(キーボードはShiftLeft)でディフェンスラインが上がって
+     見えるか、自チーム保持中にSTARTでオフェンスラインが下がって見えるか、離した時に
+     自然に元へ戻るか。
    - 蹴り出しドリブル: L+R同時押しでボールが前に出るか、片方だけの継続で持続するか、
      タックルをかわしやすくなった感覚があるか。
    - カーブ: キック直後(CURVE_INPUT_WINDOW_TICKS=6tick≈0.1秒以内)に方向キーを入れると
@@ -764,3 +781,27 @@ Z=B/X=A/C=Y/V=X/Q=L/E=R、矢印/WASD移動。
 
 `src/render/`は無変更。全テスト357件・`check:determinism`・`sim:sanity`全10基準・2回実行で
 決定論確認・`build`すべてgreen。
+
+## 16. 変更ファイル一覧（12周目: ④ライン操作/オフサイドトラップ実装）
+
+**新規**: なし
+
+**変更**:
+- `src/input/types.ts`（`LogicalButton.Start`新設、`ALL_LOGICAL_BUTTONS`/`emptyButtonState`に反映）
+- `src/input/gamepadMapping.ts`（W3C Standard GamepadのStart(index 9)をマッピング）
+- `src/input/keyboard.ts`（`ShiftLeft`をStartに割り当て）
+- `src/sim/state.ts`（`GameState.manualLineOffset: Fixed`新設）
+- `src/sim/teamAIConstants.ts`（`MANUAL_LINE_OFFSET_MAX_FIXED`/`STEP_FIXED`/`DECAY_FIXED`新設）
+- `src/sim/teamAI.ts`（`computeLineAdjustedHomePosition`/`computeNonControlledDirection`に
+  `manualLineOffset`引数追加(デフォルトZERO_FIXED、既存呼び出しは無変更)、Team Aにのみ適用）
+- `src/sim/update.ts`（`linePossessionTeam`を文脈判定に流用し、START押下中の増減+
+  非押下中の中立への減衰ロジックを追加、`computeNonControlledDirection`呼び出しに
+  `manualLineOffset`を渡す）
+- `tests/sim/teamAI.test.ts`（manualLineOffsetのテスト4件追加）
+- `tests/sim/update.test.ts`（START押下の統合テスト5件追加）
+- `tests/input/gamepadMapping.test.ts`（Startボタンのマッピングアサーション追加）
+
+`src/render/`は無変更（画面上のボタン配置オーバーレイ`src/input/overlay.ts`は意図的に
+未着手、優先度3でまとめて全面書き直す）。全テスト366件・`check:determinism`・
+`sim:sanity`全10基準・2回実行で決定論確認・`build`すべてgreen。既存の人間スクリプトが
+STARTを押さないため回帰リスクは元々発生しなかった。
