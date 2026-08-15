@@ -193,13 +193,23 @@ describe('computeLineAdjustedHomePosition (team line push/retreat, Phase 3 bug f
 });
 
 describe('computeNonControlledDirection', () => {
-  it('home-pull dominates when the ball is co-located (no ball attraction) and offside is not triggered', () => {
-    // Team A DF (slotIndex 1) の home は (72, 1638) 付近。プレイヤーをその真上に置く
-    // (同じx、home.yより小さいy) -> home方向は Down。ボールを同じ位置に置き ballDir=None にする。
+  it('★17周目に挙動変更★ primary追跡者がボールに到達したら、ホームへ帰らずその場に留まる', () => {
+    // 旧挙動: ボールに到達(デッドゾーン内)した primary はホーム復元力で引き戻されていた。
+    // それが「近づく→帰る→離れる→また寄る」の2tick周期の無限往復(振動)の原因だった
+    // (idle試合の player2 で実測、teamAI.ts のコメント参照)。
+    // 新挙動: ボール担当(primary)がボールに到達したら、その場に留まる。
     const player = makePlayer(72, 1538, TeamId.A, 1);
     const ballPos = player.pos; // 同一座標 -> ballDir は deadzone で None
     const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
     const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null, 'primary');
+    expect(direction).toBe(Direction8.None);
+  });
+
+  it('cover役はボールに到達してもホーム復元力に従う (primaryだけの特例であること)', () => {
+    const player = makePlayer(72, 1538, TeamId.A, 1);
+    const ballPos = player.pos;
+    const teamB = Array.from({ length: 11 }, (_, slot) => makePlayer(240, 100 + slot * 5, TeamId.B, slot));
+    const direction = computeNonControlledDirection(player, [player, ...teamB], ballPos, FORMATIONS, 1, null, 'cover');
     expect(direction).toBe(Direction8.Down);
   });
 
@@ -219,7 +229,9 @@ describe('computeNonControlledDirection', () => {
     // Team B は実際のキックオフフォーメーションで配置する (現実的なオフサイドライン値にするため)
     const state = createInitialState(1);
     const realTeamB = state.players.slice(11, 22);
-    const direction = computeNonControlledDirection(player, [player, ...realTeamB], ballPos, FORMATIONS, 1, null, 'primary');
+    // 17周目: primary はボール到達時にその場へ留まる特例が入ったため、この検証は
+    // 「オフサイド+ホームの合成」を見る本来の意図どおり cover 役で行う。
+    const direction = computeNonControlledDirection(player, [player, ...realTeamB], ballPos, FORMATIONS, 1, null, 'cover');
     // home(y=1035, 遠い)・offside、どちらも「自陣方向(y増加=Down)」を向くため Down になる
     expect(direction).toBe(Direction8.Down);
   });

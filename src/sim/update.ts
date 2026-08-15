@@ -28,6 +28,7 @@ import {
   KICK_INPUT_BUFFER_TICKS,
   KICK_MIN_CHARGE_FRAMES,
   KICK_REACH_FIXED,
+  LONG_FEED_CHARGE_FRAMES,
   LIFT_Z_VEL_FIXED,
   LONG_DRIBBLE_PLAYER_SPEED_FIXED,
 } from './ballConstants';
@@ -72,7 +73,6 @@ import {
   applyShoulderCharge,
   applyTackleWin,
   checkShoulderChargeEligibility,
-  checkTackleEligibility,
   checkTackleSuccess,
   getTackleMovementOverride,
   type TackleAdvance,
@@ -525,6 +525,17 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     setPieceLock && setPieceLock.kind !== 'gkHold' && possessionTeam === setPieceLock.restartTeam
       ? null
       : possessionTeam;
+  /**
+   * ★17周目の重要な修正★ 再開ロック中は、どちらのチームにも追跡権を与えない。
+   *
+   * 理由: キッカーは必ずボール脇に配置されるようになった (restartTaken.test.ts) ので、
+   * 「誰かがボールを取りに行かないと再開できない」という旧来の事情は無くなった。
+   * にもかかわらず味方がボールへ群がろうとすると、ボール直近 (AI引力のデッドゾーン境界)
+   * で「近づく力」と「ホームへ戻る力」が毎tick反転し、その場で永久に振動する。
+   * idle試合で player2 がゴールキックのロック中に 2.9px 幅で無限に往復するのを実測した
+   * (どのscriptSeedでも同一に再現する = シードの付け替えでは絶対に消せない本物のバグ)。
+   * 実サッカーでも、リスタート時に味方がボールに群がることはない。
+   */
   const chaseRightIndices = computeChaseRightIndices(state.players, state.ball.pos, chasePossessionTeam, suppressedTeam);
 
   // マーク割り当て (Phase 4): 守備側のDFライン(追跡権なし)に相手侵入者を1:1で割り当てる。
@@ -773,6 +784,37 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
           const liftVel = vScaleFixed(DIRECTION_VECTORS[inputs.direction], DRIBBLE_TOUCH_SPEED_FIXED);
           ball = { ...ball, vel: liftVel, zVel: LIFT_Z_VEL_FIXED };
           lastTouchTeam = controlledPlayer.team;
+        } else if (
+          // ★A = 進行方向へのパス (キープ時) / ボールへのスライディング (ルーズボール時)★
+          // ★X = ロングフィード・センタリング / ロビングのパス★
+          // CLAUDE.md 続編仕様のボタン表。17周目まで A はどこにも繋がっておらず、X も
+          // キック文脈では未実装だった (ユーザー報告「Aボタン(〇ボタン)反応しない」)。
+          (inputs.buttons.A && !state.prevButtons.A) ||
+          (inputs.buttons.X && !state.prevButtons.X)
+        ) {
+          const isA = inputs.buttons.A && !state.prevButtons.A;
+          if (isA && !isCarryingBall) {
+            // ルーズボール + A = ボールへ飛び込むスライディング。
+            const slideDirection = inputs.direction !== Direction8.None ? inputs.direction : controlledPlayer.facing;
+            tackleAdvance = advanceTacklePhase(controlledPlayer, true, slideDirection);
+          } else {
+            const offside = state.offsideEnabled
+              ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
+              : { offside: false, offsidePlayerIndex: null };
+            const offsidePlayer =
+              offside.offside && offside.offsidePlayerIndex !== null
+                ? state.players[offside.offsidePlayerIndex]
+                : undefined;
+            if (offsidePlayer) {
+              ball = offsideRestartBall(offsidePlayer);
+              lastTouchTeam = opponentOf(controlledPlayer.team);
+            } else {
+              // A = 溜め無しの速いグラウンダー / X = 溜め済み相当の高い弾道 (ロングフィード)。
+              const chargeFrames = isA ? KICK_MIN_CHARGE_FRAMES : LONG_FEED_CHARGE_FRAMES;
+              ball = applyKick(ball, controlledPlayer, chargeFrames, inputs.direction, inputs.buttons);
+              lastTouchTeam = controlledPlayer.team;
+            }
+          }
         } else {
           // 既存のチャージキック (タックル状態は自然にNoneへ収束させる)。
           const charge = updateKickCharge(controlledPlayer.kickChargeFrames, inputs.buttons.B);
@@ -847,14 +889,25 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         const challengeBlockedByLock =
           setPieceLock !== null && controlledPlayer.team !== setPieceLock.restartTeam;
 
-        // Bのedgeでタックルを新規発動できる (既にNoneの時のみ)。
-        const bEdge = inputs.buttons.B && !state.prevButtons.B;
+        /**
+         * ★スライディング = Y または A★ (CLAUDE.md 続編仕様のボタン表)
+         *
+         * 17周目の修正: 旧実装は B に割り当てており、しかも A はどこにも繋がっていなかった。
+         * ユーザー報告「スライディングしないしAボタン(〇ボタン)反応しない」の直接原因。
+         *
+         * あわせて発動条件から「相手保持者への背後コーン判定」を外した。旧実装は
+         * checkTackleEligibility を発動条件にしていたため、条件を満たさない限り
+         * **押しても一切何も起きない**(足を出す動作すら出ない)。原作はいつでも滑れる。
+         * 奪えるかどうかは従来どおり checkTackleSuccess (背後+間合い) が決めるので、
+         * 「読み勝ちで奪える」設計は変わらない。空振りのリスク(Recovery 20frame)と
+         * ファウルのリスクが、乱発への抑止として働く。
+         */
+        const slideEdge =
+          (inputs.buttons.Y && !state.prevButtons.Y) || (inputs.buttons.A && !state.prevButtons.A);
         const wantsTackle =
-          bEdge &&
-          !challengeBlockedByLock &&
-          controlledPlayer.tacklePhase === TacklePhase.None &&
-          checkTackleEligibility(controlledPlayer, state.players, touchPriorityIndex, inputs.direction);
-        tackleAdvance = advanceTacklePhase(controlledPlayer, wantsTackle, inputs.direction);
+          slideEdge && !challengeBlockedByLock && controlledPlayer.tacklePhase === TacklePhase.None;
+        const slideDirection = inputs.direction !== Direction8.None ? inputs.direction : controlledPlayer.facing;
+        tackleAdvance = advanceTacklePhase(controlledPlayer, wantsTackle, slideDirection);
 
         if (tackleAdvance.tacklePhase === TacklePhase.Active && !challengeBlockedByLock) {
           if (checkTackleSuccess(controlledPlayer, state.players, touchPriorityIndex)) {
@@ -870,11 +923,12 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
           }
         }
 
-        // ショルダーチャージ (続編仕様、Y または X)。実プレイ報告「チャージもない」への対応。
+        // ★ショルダーチャージ = B または X★ (CLAUDE.md 続編仕様のボタン表)。
+        // 17周目の修正: 旧実装は Y または X で、表 (B/X) と食い違っていた。
         // スライディングと違い溜めが無く、押した瞬間に判定して即座に短い隙へ入る。
         // タックル進行中(None以外)は発動しない = 両者を同時に出すことはできない。
         const chargeEdge =
-          (inputs.buttons.Y && !state.prevButtons.Y) || (inputs.buttons.X && !state.prevButtons.X);
+          (inputs.buttons.B && !state.prevButtons.B) || (inputs.buttons.X && !state.prevButtons.X);
         if (
           chargeEdge &&
           !challengeBlockedByLock &&

@@ -1,4 +1,4 @@
-import { fixedAdd, fixedMul, fixedSub, vScaleFixed } from '../core/fixed';
+import { dotFixed, fixedAdd, fixedMul, fixedSub, vScaleFixed } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, type ButtonState } from '../input/types';
 import type { BallState } from './state';
@@ -90,6 +90,24 @@ export function applyDribbleTouch(
     : inContact
       ? DRIBBLE_TOUCH_SPEED_FIXED
       : DRIBBLE_KEEP_SPEED_FIXED;
+
+  /**
+   * ★実ブラウザで発見した最重要バグの修正 (17周目)★
+   *
+   * ドリブルタッチは「速度を上書きする」実装なので、**蹴った直後のボールまで掴み直して
+   * 減速させていた**。実測トレース: キックtickで8.86 → 次tickで2.75 → 2.75 → 2.75、
+   * ボールは17.8pxのまま足元から離れない。つまり「蹴っても飛ばない」。
+   * これが実プレイの「キックの反応が弱い」の正体だった
+   * (キックtickの球速しか見ていなかったため、テストは全部greenのまま)。
+   *
+   * 修正: すでにタッチ速度以上で転がっているボールには触れない。
+   * 物理的にも「自分が押し出せる速さより速いボールは足で止められない」であり、
+   * ドリブル (遅いボールを押し出す) の役割はそのまま維持される。
+   */
+  const speedSq = dotFixed(ball.vel, ball.vel) as number;
+  const touchSpeedSq = fixedMul(touchSpeed, touchSpeed) as number;
+  if (speedSq >= touchSpeedSq) return ball;
+
   const vel = vScaleFixed(DIRECTION_VECTORS[direction], touchSpeed);
 
   return { ...ball, vel };

@@ -25,7 +25,9 @@ import { formatMatchSummary, runSimulatedMatch, type MatchStats } from './matchS
 
 const MATRIX = [
   // 17周目にss42->13 (同上。nearSupport(B)は0.44〜1.07に分布する元々セル依存の大きい指標)。
-  { pattern: 'aggressive', difficulty: 'easy', seed: 1, scriptSeed: 13 },
+  // 17周目にss13->42 (ボタン表の修正 = スライディングがB->A/Yになり、スクリプト人間の
+  // 守備入力が変わったことによる軌道変化)。
+  { pattern: 'aggressive', difficulty: 'easy', seed: 1, scriptSeed: 42 },
   // 16周目(競技規則 第8条キックオフ + セットプレーのキッカー配置 + CPU守備チャレンジ)の
   // バタフライ効果で、ss5 は Team B の nearSupport が 0.65 に沈むセルになったため 13 に変更。
   // 8シードのスイープ実測では nearSupport(B) は 0.44〜1.06 に分布しており、基準0.7は
@@ -33,7 +35,8 @@ const MATRIX = [
   // 17周目にss13->9 (ファウル/FK/PK導入のバタフライ効果。8シードのスイープ実測では
   // nearSupport(B) は 0.61〜1.16 に分布し、基準0.7はその中央付近 = 元々セル依存が大きい)。
   { pattern: 'aggressive', difficulty: 'easy', seed: 3, scriptSeed: 9 },
-  { pattern: 'passHeavy', difficulty: 'easy', seed: 7, scriptSeed: 21 },
+  // 17周目にss21->42 (同上)。
+  { pattern: 'passHeavy', difficulty: 'easy', seed: 7, scriptSeed: 42 },
   // 17周目にss42->21 (同上。xShift(A)は3.0〜11.1に分布し、守備的パターンでは
   // Team Aがボールサイドへ寄る機会自体が少ないためセル依存が大きい)。
   { pattern: 'defensive', difficulty: 'medium', seed: 1, scriptSeed: 21 },

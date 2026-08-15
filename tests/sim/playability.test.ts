@@ -116,6 +116,43 @@ describe('プレイアビリティ 0: キックが「押した時に必ず出る
     expect(fired, '射程に入ってもバッファされたキックが出ない').toBe(true);
   });
 
+  /**
+   * ★実ブラウザで発見した最重要バグの回帰テスト★
+   *
+   * 症状: キックは出ている (キックtickの球速は8.86) のに、**次のtickでドリブルタッチが
+   * ボールを掴み直して2.8まで減速させる**ため、ボールが足元から離れず「蹴っても飛ばない」。
+   * 実測トレース: [kick 8.86] → [次tick 2.75] → [2.75] → [2.75] で距離17.8pxのまま。
+   *
+   * 見逃した理由: これまでのテストは「キックしたtickの球速」しか見ていなかった。
+   * キックは**その後も飛び続けて初めてキック**なので、複数tickの軌跡で検証する。
+   */
+  it('★蹴ったボールは飛び続ける (次tickのドリブルタッチに殺されない)', () => {
+    let state = humanCarrying();
+    const human = state.controlledPlayerIndex;
+    // 走りながら蹴る (実プレイで最も多い操作)。
+    for (let i = 0; i < 20; i++) state = simulate(state, inputs(Direction8.Up));
+    state = simulate(state, inputs(Direction8.Up, { B: true }));
+    state = simulate(state, inputs(Direction8.Up)); // 離す = キック
+    const kickSpeed = ballSpeed(state);
+    expect(kickSpeed, 'そもそもキックが出ていない').toBeGreaterThan(5);
+
+    // 蹴った後も方向キーは押しっぱなし (実プレイどおり)。
+    for (let i = 0; i < 5; i++) state = simulate(state, inputs(Direction8.Up));
+    expect(ballSpeed(state), 'キックしたボールがドリブルタッチで減速させられている').toBeGreaterThan(
+      kickSpeed * 0.6,
+    );
+    expect(distPx(state, human), 'キックしたのにボールが足元から離れていない').toBeGreaterThan(30);
+  });
+
+  it('★A(前方パス)も飛び続ける', () => {
+    let state = humanCarrying();
+    const human = state.controlledPlayerIndex;
+    for (let i = 0; i < 20; i++) state = simulate(state, inputs(Direction8.Up));
+    state = simulate(state, inputs(Direction8.Up, { A: true }));
+    for (let i = 0; i < 5; i++) state = simulate(state, inputs(Direction8.Up));
+    expect(distPx(state, human), 'Aのパスがドリブルタッチに殺されている').toBeGreaterThan(30);
+  });
+
   it('方向入力なしのBでも「蹴った」と分かる速度が出る', () => {
     let state = humanCarrying();
     state = simulate(state, inputs(Direction8.None, { B: true }));
@@ -243,24 +280,25 @@ describe('プレイアビリティ 3: 守備アクション (スライディン�
     };
   }
 
-  it('★実プレイ報告★ 相手の背後・選手2人ぶんの間合いからBでスライディングが発動する', () => {
+  it('★実プレイ報告★ 相手の背後・選手2人ぶんの間合いからAでスライディングが発動する', () => {
     // 選手半径10px同士なので、24px = ほぼ密着〜1人ぶん。ここで出ないなら実プレイでは絶対に出ない。
+    // 17周目: ボタン表に合わせてスライディングは B -> A/Y (tests/sim/buttonLayout.test.ts)。
     let state = humanChasingOpponent(24);
     const human = state.controlledPlayerIndex;
-    state = simulate(state, inputs(Direction8.Down, { B: true }));
-    expect(state.players[human]!.tacklePhase, 'Bを押してもタックルが始まらない').not.toBe(0);
+    state = simulate(state, inputs(Direction8.Down, { A: true }));
+    expect(state.players[human]!.tacklePhase, 'Aを押してもタックルが始まらない').not.toBe(0);
   });
 
   it('スライディングは現実的な追走距離 (32px) からも発動する', () => {
     let state = humanChasingOpponent(32);
     const human = state.controlledPlayerIndex;
-    state = simulate(state, inputs(Direction8.Down, { B: true }));
+    state = simulate(state, inputs(Direction8.Down, { A: true }));
     expect(state.players[human]!.tacklePhase).not.toBe(0);
   });
 
   it('発動したスライディングは実際にボールを奪える', () => {
     let state = humanChasingOpponent(28);
-    state = simulate(state, inputs(Direction8.Down, { B: true }));
+    state = simulate(state, inputs(Direction8.Down, { A: true }));
     let won = false;
     for (let i = 0; i < 30 && !won; i++) {
       state = simulate(state, inputs(Direction8.Down));
@@ -269,15 +307,16 @@ describe('プレイアビリティ 3: 守備アクション (スライディン�
     expect(won, 'スライディングしてもボールを奪えない').toBe(true);
   });
 
-  it('★未実装だった★ 相手保持中にYでショルダーチャージが発動する (続編仕様)', () => {
+  it('★未実装だった★ 相手保持中にBでショルダーチャージが発動する (続編仕様)', () => {
+    // 17周目: ボタン表に合わせてチャージは Y/X -> B/X (tests/sim/buttonLayout.test.ts)。
     let state = humanChasingOpponent(26);
     const before = state.lastTouchTeam;
     let changed = false;
     for (let i = 0; i < 20 && !changed; i++) {
-      state = simulate(state, inputs(Direction8.Down, { Y: true }));
+      state = simulate(state, inputs(Direction8.Down, { B: true }));
       if (state.lastTouchTeam !== before) changed = true;
     }
-    expect(changed, 'Yを押してもショルダーチャージが起きない (ボール保持が変わらない)').toBe(true);
+    expect(changed, 'Bを押してもショルダーチャージが起きない (ボール保持が変わらない)').toBe(true);
   });
 });
 

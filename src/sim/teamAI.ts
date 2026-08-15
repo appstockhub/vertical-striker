@@ -370,6 +370,23 @@ export function computeNonControlledDirection(
   const ballDeadzone = chaseRole === 'primary' ? AI_BALL_DEADZONE_PRIMARY_SQ_FIXED : AI_BALL_DEADZONE_SQ_FIXED;
   const ballDir = quantizeToDirection8(ballDiff, ballDeadzone);
 
+  /**
+   * ★振動の根治 (17周目)★ primary追跡者がボールのデッドゾーン内に到達したら、その場に留まる。
+   *
+   * 症状: 「ボール担当(primary)なのに、近づくとホーム復元力に引かれて離れ、離れると
+   * ボール引力(weight 3.0)で戻る」を毎tick繰り返す2tick周期の無限往復。
+   * idle試合の player2 で実測 (ゴールキックのロック中、ボール距離 7.7px ⇄ 10.6px、
+   * ホームは109px先): デッドゾーン境界(9px)を1歩(2.9px)で跨ぐため構造的に収束しない。
+   * どのscriptSeedでも同一に再現するため、シードの付け替えでは絶対に消せなかった。
+   *
+   * 修正の考え方: 「ボールに到達したprimaryはボールの担当者である」= ホームへ帰る理由が無い。
+   * デッドゾーンを広げる対症療法ではなく、矛盾する2つの目標のうち片方を明確に切る。
+   * これは cover/非追跡権には適用しない (彼らはホーム優先で正しい)。
+   */
+  if (chaseRole === 'primary' && ballDir === Direction8.None) {
+    return Direction8.None;
+  }
+
   // near半径以内は0、far半径以遠は1、間は距離の二乗に対して線形に遷移する比率
   // (チャタリング防止のため、単一しきい値での瞬時切替をやめて滑らかな帯にした)。
   const leashRampFraction = clampFixed(

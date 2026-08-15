@@ -34,6 +34,7 @@ import { GOAL_WIDTH_FIXED } from '../sim/goalkeeperConstants';
 import { KICK_MAX_CHARGE_FRAMES } from '../sim/ballConstants';
 import { formatClockText, formatScoreText } from './scoreboard';
 import { formatEventBannerText } from './eventBanner';
+import { formatButtonGuide } from './buttonGuide'; // ボタンガイド (文脈別の役割表示)
 import { ReplayRecorder } from '../replay/ReplayRecorder';
 import { detectSoundEvents, SoundEventId } from './soundEvents';
 import { SoundPlayer } from './SoundPlayer';
@@ -140,6 +141,8 @@ export class PitchScene extends Phaser.Scene {
   private clockText!: Phaser.GameObjects.Text;
   private eventBannerText!: Phaser.GameObjects.Text;
   private inputDebugText!: Phaser.GameObjects.Text;
+  /** ボタンガイド (文脈ごとの役割を常時表示、buttonGuide.ts)。 */
+  private buttonGuideText!: Phaser.GameObjects.Text;
   /** 練習モード (CPU非干渉) の表示。Pキーで切り替える。 */
   private practiceText!: Phaser.GameObjects.Text;
   private goalText!: Phaser.GameObjects.Text;
@@ -464,6 +467,19 @@ export class PitchScene extends Phaser.Scene {
     this.eventBannerText.setDepth(DEPTH_HUD + 1);
     this.eventBannerText.setVisible(false);
 
+    // ★ボタンガイド★ (17周目) 続編仕様のボタンは文脈で意味が変わるため、いまの文脈と
+    // 各ボタンの役割を常時表示する。「どのボタンが何をするのか画面に出ていない」ことが
+    // 「押しても反応しない」という報告の切り分けを難しくしていた (buttonGuide.ts 参照)。
+    this.buttonGuideText = this.add.text(VIEWPORT_WIDTH / 2, VIEWPORT_HEIGHT - 40, '', {
+      fontSize: '12px',
+      color: '#eaf6ff',
+      backgroundColor: '#000000aa',
+      padding: { x: 6, y: 3 },
+    });
+    this.buttonGuideText.setOrigin(0.5, 0);
+    this.buttonGuideText.setScrollFactor(0);
+    this.buttonGuideText.setDepth(DEPTH_HUD + 1);
+
     // 入力診断ライン (14周目、実プレイ「反応しない」の切り分け用)。
     this.inputDebugText = this.add.text(4, VIEWPORT_HEIGHT - 18, '', {
       fontSize: '12px',
@@ -505,6 +521,7 @@ export class PitchScene extends Phaser.Scene {
       this.clockText,
       this.eventBannerText,
       this.inputDebugText,
+      this.buttonGuideText,
       this.practiceText,
       this.goalText,
     ]);
@@ -702,6 +719,8 @@ export class PitchScene extends Phaser.Scene {
     );
     // 練習モードの表示 (Pキーで切替)。ONの間は常時見えるようにする。
     this.practiceText.setVisible(this.state.cpuHandsOff);
+    // ボタンガイド (いまの文脈で各ボタンが何をするか)。
+    this.buttonGuideText.setText(formatButtonGuide(this.state));
   }
 
   /**

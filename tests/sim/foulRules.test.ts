@@ -66,7 +66,7 @@ function slidingSetup(x: number, y: number, blockerAt: number | null): GameState
 
 /** スライディングを出して、決着 (ファウル or 奪取) が付くまで進める。 */
 function slideAndSettle(start: GameState, maxTicks = 40): GameState {
-  let state = simulate(start, inp(Direction8.Down, { B: true }));
+  let state = simulate(start, inp(Direction8.Down, { A: true })); // A = スライディング (ボタン表)
   for (let i = 0; i < maxTicks; i++) {
     state = simulate(state, inp(Direction8.Down));
     if (state.setPieceLock?.kind === 'freeKick' || state.setPieceLock?.kind === 'penalty') return state;

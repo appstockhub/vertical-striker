@@ -441,7 +441,7 @@ export function createHumanScript(pattern: HumanPattern, scriptSeed: number): (s
             ? Math.sqrt(distSqFixed(controlled.pos, state.ball.pos) as number) / 16
             : Infinity;
           if (state.lastTouchTeam === TeamId.B && distToBall < 90 && !prevB && roll(100) < 10) {
-            buttons.B = true; // タックル (エッジ)
+            buttons.A = true; // スライディング (17周目にボタン表へ合わせて B->A)
           }
           const r = roll(100);
           if (r < 50 && controlled) {
@@ -494,7 +494,7 @@ export function createHumanScript(pattern: HumanPattern, scriptSeed: number): (s
         // ボールが近ければたまにタックル(Bエッジ)
         if (!isCarrier && controlled) {
           const distToBall = Math.sqrt(distSqFixed(controlled.pos, state.ball.pos) as number) / 16;
-          if (distToBall < 100 && !prevB && roll(100) < 6) buttons.B = true;
+          if (distToBall < 100 && !prevB && roll(100) < 6) buttons.A = true; // スライディング (B->A)
         }
         // 奪ったら前線へ蹴り出す
         if (isCarrier && roll(100) < 10) {

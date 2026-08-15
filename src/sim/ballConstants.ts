@@ -69,6 +69,13 @@ export const LONG_DRIBBLE_PLAYER_SPEED_FIXED: Fixed = toFixed(4.2);
 /** ロングドリブル時にボールへ与える速度 (px/tick, 仮値。ドリブル半径外まで蹴り出す想定、要実機検証)。 */
 export const LONG_DRIBBLE_TOUCH_SPEED_FIXED: Fixed = toFixed(6.0);
 
+/**
+ * X (ロングフィード/センタリング/ロビング) が使う溜め相当のフレーム数。
+ * 溜め無し(1)だと低い弾道になり「浮かせて前線へ送る」表現にならないため、最大溜めの
+ * 7割相当にして高い弾道 (zVel約4.3) を出す。続編仕様のボタン表 X に対応する。
+ */
+export const LONG_FEED_CHARGE_FRAMES = 22;
+
 /** キック溜め時間の下限/上限 (tick、60fps基準。上限は約0.5秒、仮値)。 */
 export const KICK_MIN_CHARGE_FRAMES = 1;
 export const KICK_MAX_CHARGE_FRAMES = 30;
