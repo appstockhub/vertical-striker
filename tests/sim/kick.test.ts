@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { toFloat, ZERO_FIXED } from '../../src/core/fixed';
-import { applyKick, updateKickCharge } from '../../src/sim/kick';
-import { Direction8 } from '../../src/input/types';
+import { applyKick, shiftKickDirection, updateKickCharge } from '../../src/sim/kick';
+import { Direction8, emptyButtonState } from '../../src/input/types';
 import type { BallState, PlayerState } from '../../src/sim/state';
 import {
   HIGH_ARC_SPEED_MULTIPLIER_FIXED,
@@ -75,5 +75,59 @@ describe('applyKick', () => {
     expect(toFloat(mid.zVel)).toBeLessThanOrEqual(toFloat(long.zVel));
     expect(toFloat(short.vel.x)).toBeGreaterThanOrEqual(toFloat(mid.vel.x));
     expect(toFloat(mid.vel.x)).toBeGreaterThanOrEqual(toFloat(long.vel.x));
+  });
+});
+
+describe('shiftKickDirection (続編仕様: シフトキック)', () => {
+  const none = emptyButtonState();
+
+  it('no L/R held -> direction unchanged', () => {
+    expect(shiftKickDirection(Direction8.Up, none)).toBe(Direction8.Up);
+  });
+
+  it('both L and R held -> direction unchanged (ambiguous, treated as no shift)', () => {
+    expect(shiftKickDirection(Direction8.Up, { ...none, L: true, R: true })).toBe(Direction8.Up);
+  });
+
+  it('R held -> rotates one compass step clockwise', () => {
+    expect(shiftKickDirection(Direction8.Up, { ...none, R: true })).toBe(Direction8.UpRight);
+    expect(shiftKickDirection(Direction8.Right, { ...none, R: true })).toBe(Direction8.DownRight);
+  });
+
+  it('L held -> rotates one compass step counter-clockwise', () => {
+    expect(shiftKickDirection(Direction8.Up, { ...none, L: true })).toBe(Direction8.UpLeft);
+    expect(shiftKickDirection(Direction8.Right, { ...none, L: true })).toBe(Direction8.UpRight);
+  });
+
+  it('wraps around the compass (Up-Left + L -> Left)', () => {
+    expect(shiftKickDirection(Direction8.UpLeft, { ...none, L: true })).toBe(Direction8.Left);
+  });
+
+  it('Direction8.None is never shifted (no base direction to rotate)', () => {
+    expect(shiftKickDirection(Direction8.None, { ...none, L: true })).toBe(Direction8.None);
+    expect(shiftKickDirection(Direction8.None, { ...none, R: true })).toBe(Direction8.None);
+  });
+});
+
+describe('applyKick with shift kick (続編仕様)', () => {
+  it('R held during a strong kick shifts the resulting velocity direction clockwise', () => {
+    const straight = applyKick(ball(), player(), 1, Direction8.Up);
+    const shifted = applyKick(ball(), player(), 1, Direction8.Up, { ...emptyButtonState(), R: true });
+    // Up (0, -1) -> UpRight (+, -): x成分が0から正に変わる。
+    expect(straight.vel.x).toBe(ZERO_FIXED);
+    expect(toFloat(shifted.vel.x)).toBeGreaterThan(0);
+    expect(toFloat(shifted.vel.y)).toBeLessThan(0);
+  });
+
+  it('shift also applies to weak kicks (no direction input, uses player.facing)', () => {
+    const straight = applyKick(ball(), player(Direction8.Up), 1, Direction8.None);
+    const shifted = applyKick(ball(), player(Direction8.Up), 1, Direction8.None, { ...emptyButtonState(), L: true });
+    expect(straight.vel.x).toBe(ZERO_FIXED);
+    expect(toFloat(shifted.vel.x)).toBeLessThan(0); // Up + L -> UpLeft
+  });
+
+  it('omitting buttons (existing callers: cursor pass / CPU kicks) leaves direction unshifted', () => {
+    const next = applyKick(ball(), player(), 1, Direction8.Up);
+    expect(next.vel.x).toBe(ZERO_FIXED);
   });
 });

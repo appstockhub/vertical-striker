@@ -419,7 +419,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
             ball = offsideRestartBall(offsidePlayer);
             lastTouchTeam = opponentOf(controlledPlayer.team);
           } else {
-            ball = applyKick(ball, controlledPlayer, charge.releasedFrames, inputs.direction);
+            ball = applyKick(ball, controlledPlayer, charge.releasedFrames, inputs.direction, inputs.buttons);
           }
         }
         tackleAdvance = advanceTacklePhase(controlledPlayer, false, Direction8.None);
