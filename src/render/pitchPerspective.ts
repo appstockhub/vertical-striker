@@ -81,6 +81,13 @@ const LINE_WIDTH_MIN = 0.8;
 const NET_COLOR = 0xffffff;
 const NET_ALPHA = 0.35;
 const POST_COLOR = 0xf2f2f2;
+/**
+ * ★V-4★ ゴールネットの密度。旧実装は縦4本(5分割)+横2本(天井網の縦糸5本+奥面の
+ * 下端1本のみ)で「面」ではなく「枠線」にしか見えなかった (docs/visual-overhaul-proposal.md
+ * 1-4)。縦の分割数を増やし、天井網・奥面のどちらにも横糸(NET_ROWS)を通して格子にする。
+ */
+const NET_COLUMNS = 6;
+const NET_ROWS = [0.33, 0.66];
 
 /**
  * 描画対象にする最遠の奥行き。これ以上奥は1px以下になり描いても見えない。
@@ -287,6 +294,74 @@ function flushPath(ctx: Ctx, path: ReadonlyArray<{ x: number; y: number }>, dept
   g.strokePath();
 }
 
+interface NetColumn {
+  readonly frontTop: { x: number; y: number };
+  readonly backTop: { x: number; y: number };
+  readonly backGround: { x: number; y: number };
+}
+
+/** aとbを t (0..1) で線形補間した点。 */
+function lerpPoint(a: { x: number; y: number }, b: { x: number; y: number }, t: number): { x: number; y: number } {
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
+/**
+ * ゴールネットを密なメッシュとして描く。縦糸 (NET_COLUMNS+1本) は天井パネル
+ * (ゴールライン上端→奥の上端) と奥面 (奥の上端→奥の下端) の2区間、横糸 (NET_ROWS + 下端)
+ * は隣接する縦糸どうしを同じ内分点でつないで格子にする。
+ */
+function drawGoalNetMesh(
+  ctx: Ctx,
+  cx: number,
+  goalHalfWidth: number,
+  goalLineY: number,
+  backY: number,
+  lift: (p: { y: number; scale: number }) => number,
+): void {
+  const { g, proj, camY } = ctx;
+  const columns: Array<NetColumn | null> = [];
+  for (let i = 0; i <= NET_COLUMNS; i++) {
+    const t = i / NET_COLUMNS;
+    const x = cx - goalHalfWidth + goalHalfWidth * 2 * t;
+    const gp = proj.project(x, goalLineY, camY, ctx.camX);
+    const bp = proj.project(x, backY, camY, ctx.camX);
+    if (!gp.visible || !bp.visible) {
+      columns.push(null);
+      continue;
+    }
+    columns.push({
+      frontTop: { x: gp.x, y: lift(gp) },
+      backTop: { x: bp.x, y: lift(bp) },
+      backGround: { x: bp.x, y: bp.y },
+    });
+  }
+
+  g.lineStyle(1, NET_COLOR, NET_ALPHA);
+  // 縦糸: 天井パネル (前上→後上) + 奥面 (後上→後下)。
+  for (const col of columns) {
+    if (!col) continue;
+    g.lineBetween(col.frontTop.x, col.frontTop.y, col.backTop.x, col.backTop.y);
+    g.lineBetween(col.backTop.x, col.backTop.y, col.backGround.x, col.backGround.y);
+  }
+  // 横糸: 隣接する縦糸を同じ内分点(NET_ROWS + 下端1.0)でつなぎ、格子にする。
+  const rows = [...NET_ROWS, 1];
+  for (let i = 0; i < columns.length - 1; i++) {
+    const a = columns[i];
+    const b = columns[i + 1];
+    if (!a || !b) continue;
+    for (const r of rows) {
+      const pa = lerpPoint(a.frontTop, a.backTop, r);
+      const pb = lerpPoint(b.frontTop, b.backTop, r);
+      g.lineBetween(pa.x, pa.y, pb.x, pb.y);
+    }
+    for (const r of rows) {
+      const pa = lerpPoint(a.backTop, a.backGround, r);
+      const pb = lerpPoint(b.backTop, b.backGround, r);
+      g.lineBetween(pa.x, pa.y, pb.x, pb.y);
+    }
+  }
+}
+
 /**
  * ゴール枠 (立体)。疑似3Dなので、ゴールラインの上に「高さ GOAL_HEIGHT のクロスバー」を
  * 立てて描く。地面の点を投影してから、見かけのスケールぶんだけ画面上方向へ持ち上げる
@@ -312,18 +387,7 @@ function drawGoals(ctx: Ctx, goalHalfWidth: number): void {
 
     const lift = (p: { y: number; scale: number }): number => p.y - GOAL_HEIGHT * p.scale;
 
-    // ネット (面として分かる最小限のメッシュ: 縦3本 + 横2本)
-    g.lineStyle(1, NET_COLOR, NET_ALPHA);
-    for (let i = 0; i <= 4; i++) {
-      const t = i / 4;
-      const x = cx - goalHalfWidth + goalHalfWidth * 2 * t;
-      const gp = proj.project(x, goalLineY, camY, ctx.camX);
-      const bp = proj.project(x, backY, camY, ctx.camX);
-      if (!gp.visible || !bp.visible) continue;
-      g.lineBetween(gp.x, lift(gp), bp.x, lift(bp)); // 天井の網
-      g.lineBetween(bp.x, lift(bp), bp.x, bp.y); // 奥の面の縦糸
-    }
-    g.lineBetween(back[0]!.x, back[0]!.y, back[1]!.x, back[1]!.y);
+    drawGoalNetMesh(ctx, cx, goalHalfWidth, goalLineY, backY, lift);
 
     // ポスト + クロスバー
     const postWidth = Math.max(1.5, 4 * ground[0]!.scale);
