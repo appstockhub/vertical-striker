@@ -11,6 +11,7 @@
     "test:watch": "vitest",
     "check:determinism": "node scripts/checkDeterminism.mjs",
     "sim:report": "vitest run tests/sim/matchReport.test.ts --reporter=verbose",
+    "ops:probe": "vitest run tests/sim/possessionOps.test.ts --reporter=verbose",
     "view:metrics": "vitest run tests/render/viewMetrics.test.ts --reporter=verbose",
     "sim:sanity": "vitest run tests/sim/soccerSanity.test.ts --reporter=verbose"
   },

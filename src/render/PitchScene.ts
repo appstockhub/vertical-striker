@@ -3,7 +3,7 @@ import { FixedTimestepLoop } from '../core/loop';
 import { createInitialState, type GameState, type PlayerState } from '../sim/state';
 import { simulate } from '../sim/update';
 import { InputManager } from '../input/inputManager';
-import type { InputFrame } from '../input/types';
+import { Direction8, type InputFrame } from '../input/types';
 import { GamepadOverlay } from '../input/overlay';
 import { MatchSetupOverlay } from '../input/matchSetupOverlay';
 import { vecToPx } from './fixedToPixel';
@@ -29,7 +29,13 @@ import { CIRCLE_RADIUS, pitchLineSegments } from './pitchGeometry';
 import { drawStadium } from './stadium';
 import { findTouchPriorityPlayer } from '../sim/ballTouch';
 import { isTeamAInPossession, selectPassTarget } from '../sim/cursor';
-import { toFloat } from '../core/fixed';
+import { toFixed, toFloat } from '../core/fixed';
+import {
+  classifyDrillEvent,
+  formatDrillPanel,
+  type DrillCurve,
+  type DrillEvent,
+} from './drillHud';
 import { GOAL_WIDTH_FIXED } from '../sim/goalkeeperConstants';
 import { KICK_MAX_CHARGE_FRAMES } from '../sim/ballConstants';
 import { formatClockText, formatScoreText } from './scoreboard';
@@ -86,6 +92,11 @@ const WALK_ANIM_TICKS_PER_FRAME = 6;
 /** キック解放時のインパクト表示の持続時間 (ms、実フレーム時間ベース。描画専用)。 */
 const KICK_FLASH_DURATION_MS = 180;
 /**
+ * この量だけボール速度が跳ね上がったら「蹴った」とみなしてフラッシュを出す (px/tick)。
+ * ドリブルタッチの押し出しは約3.6だが「前tickとの差」は小さいため誤検出しない。
+ */
+const KICK_FLASH_MIN_SPEED_JUMP = 2.0;
+/**
  * ゴール演出の表示時間 (ms、実フレーム時間ベース)。
  * ★18周目に 1600 → 1100★ 巨大な文字が画面を1.6秒覆い、プレーが見えなかった
  * (自己観察 V3)。短く・小さく・上寄りにして、プレーの視界を優先する。
@@ -97,6 +108,10 @@ const WALK_ANIM_MIN_SPEED = 0.15;
 const BALL_VISUAL_SPIN_PER_PX = 0.09;
 /** 地面の円 (カーソルリング等) の縦つぶし率。斜め視点で円は楕円に見える。 */
 const GROUND_ELLIPSE_SQUASH = 0.42;
+/** 操作確認モードで操作する選手の固定index (Team A のアウトフィールド)。 */
+const DRILL_PLAYER_INDEX = 9;
+/** 操作確認モードで、退避させた選手を並べるゴールラインからの余白 (px)。 */
+const DRILL_PARK_MARGIN = 40;
 /** HUDバーの高さ。 */
 const HUD_HEIGHT = 30;
 
@@ -150,6 +165,12 @@ export class PitchScene extends Phaser.Scene {
   private buttonGuideText!: Phaser.GameObjects.Text;
   /** 練習モード (CPU非干渉) の表示。Pキーで切り替える。 */
   private practiceText!: Phaser.GameObjects.Text;
+  /** 操作確認モードのデバッグパネル (drillHud.ts)。 */
+  private drillText!: Phaser.GameObjects.Text;
+  private lastDrillEvent: DrillEvent | null = null;
+  private lastDrillCurve: DrillCurve | null = null;
+  /** 前フレームのボール速度 (あらゆる種類のキックを検出してフラッシュを出すため)。 */
+  private prevBallSpeed = 0;
   private goalText!: Phaser.GameObjects.Text;
   private goalCelebrationMs = 0;
 
@@ -220,6 +241,34 @@ export class PitchScene extends Phaser.Scene {
       // 相手に邪魔されず確認するための開発/練習用トグル (GameState.cpuHandsOff 参照)。
       if (e.code === 'KeyP') {
         this.state = { ...this.state, cpuHandsOff: !this.state.cpuHandsOff };
+      }
+      // ★操作確認モード (T キー)★ 「自分1人とボールだけ」の無菌室を作る。
+      // ONにした瞬間に、操作選手以外の21人をタッチライン外へ退避させ、ボールを足元へ置く。
+      // 以後 GameState.drillMode により21人は完全静止し、CPUの判断も一切走らない。
+      if (e.code === 'KeyT') {
+        this.state = this.state.drillMode ? this.exitDrillMode() : this.enterDrillMode();
+        this.lastDrillEvent = null;
+        this.lastDrillCurve = null;
+      }
+      // ★操作確認モード中の R★ ボールを足元へ戻す。蹴るたびにボールが転がっていってしまい、
+      // 「もう一度同じ操作を試す」たびに追いかける必要があったため (自己検証で判明)。
+      if (e.code === 'KeyR' && this.state.drillMode) {
+        const me = this.state.players[this.state.controlledPlayerIndex];
+        if (me) {
+          this.state = {
+            ...this.state,
+            ball: {
+              ...this.state.ball,
+              pos: { x: me.pos.x, y: me.pos.y },
+              vel: { x: toFixed(0), y: toFixed(0) },
+              height: toFixed(0),
+              zVel: toFixed(0),
+              curveDirection: Direction8.None,
+              curveTicksLeft: 0,
+              curveWindowTicksLeft: 0,
+            },
+          };
+        }
       }
       // ★リマッチ (R キー)★ フルタイム後に同じ設定でもう1試合始める
       // (原作は試合が終わったら次へ行ける。現状は時計が止まるだけだった)。
@@ -535,6 +584,18 @@ export class PitchScene extends Phaser.Scene {
     this.practiceText.setDepth(DEPTH_HUD + 1);
     this.practiceText.setVisible(false);
 
+    // 操作確認モードのデバッグパネル (drillHud.ts が文字列を組み立てる)。
+    this.drillText = this.add.text(6, HUD_HEIGHT + 6, '', {
+      fontSize: '11px',
+      color: '#d8f5ff',
+      backgroundColor: '#0b1622cc',
+      padding: { x: 6, y: 4 },
+      lineSpacing: 2,
+    });
+    this.drillText.setScrollFactor(0);
+    this.drillText.setDepth(DEPTH_HUD + 2);
+    this.drillText.setVisible(false);
+
     this.goalText = this.add.text(VIEWPORT_WIDTH / 2, HUD_HEIGHT + 70, 'GOAL!', {
       fontSize: '46px',
       color: '#ffe680',
@@ -572,8 +633,47 @@ export class PitchScene extends Phaser.Scene {
       this.inputDebugText,
       this.buttonGuideText,
       this.practiceText,
+      this.drillText,
       this.goalText,
     ]);
+  }
+
+  /**
+   * 操作確認モードへ入る。操作選手以外をピッチ外へ退避させ、ボールを足元に置く。
+   * GameState を直接組み替えるが、これは既存の練習モード(P)と同じ「シーンから直接
+   * 状態を差し替える」パターン (リプレイの再現性は保証しない、state.ts のコメント参照)。
+   */
+  private enterDrillMode(): GameState {
+    // 常に同じ場所 (ハーフウェーライン付近の中央) から始める。どこで押しても同条件で
+    // 試せるようにするため。操作対象も固定のアウトフィールド選手にする。
+    const idx = DRILL_PLAYER_INDEX;
+    const startX = PITCH_WIDTH / 2;
+    const startY = PITCH_HEIGHT / 2 + 120;
+    const pos = { x: toFixed(startX), y: toFixed(startY) };
+    const zero = { x: toFixed(0), y: toFixed(0) };
+    return {
+      ...this.state,
+      drillMode: true,
+      cpuHandsOff: true,
+      controlledPlayerIndex: idx,
+      ball: { ...this.state.ball, pos, vel: zero, height: toFixed(0), zVel: toFixed(0) },
+      players: this.state.players.map((p, i) => {
+        if (i === idx) return { ...p, pos, vel: zero, kickChargeFrames: 0 };
+        // 選手はピッチ外へ出そうとしてもクランプで押し戻される (実機で発覚) ので、
+        // 「両ゴールライン際に密集させる」形で退避させ、中央のプレー領域を空ける。
+        const row = i < 11 ? DRILL_PARK_MARGIN : PITCH_HEIGHT - DRILL_PARK_MARGIN;
+        const col = DRILL_PARK_MARGIN + (i % 11) * ((PITCH_WIDTH - DRILL_PARK_MARGIN * 2) / 10);
+        return { ...p, pos: { x: toFixed(col), y: toFixed(row) }, vel: zero, kickChargeFrames: 0 };
+      }),
+      setPieceLock: null,
+      pendingKick: null,
+      manualLineOffset: toFixed(0),
+    };
+  }
+
+  /** 操作確認モードを抜ける (選手の配置はそのまま。試合を続けるならリマッチ推奨)。 */
+  private exitDrillMode(): GameState {
+    return { ...this.state, drillMode: false, cpuHandsOff: false };
   }
 
   private fixedUpdate(): void {
@@ -589,6 +689,14 @@ export class PitchScene extends Phaser.Scene {
     const events = detectSoundEvents(prevState, this.state);
     this.soundPlayer.playAll(events);
     if (events.includes(SoundEventId.Goal)) this.goalCelebrationMs = GOAL_CELEBRATION_MS;
+
+    // 操作確認モードの「いま何が発動したか」を推定して記録する (描画専用、drillHud.ts)。
+    const drill = classifyDrillEvent(prevState, this.state, inputs);
+    if (drill) this.lastDrillEvent = drill;
+    const curveDir = this.state.ball.curveDirection;
+    if (curveDir && curveDir !== Direction8.None && prevState.ball.curveDirection !== curveDir) {
+      this.lastDrillCurve = { direction: curveDir, atFrame: this.state.frame };
+    }
   }
 
   update(_time: number, delta: number): void {
@@ -795,7 +903,13 @@ export class PitchScene extends Phaser.Scene {
       `t${this.state.frame} dir:${dir} btn:[${held}] chg:${controlled?.kickChargeFrames ?? 0} tkl:${controlled?.tacklePhase ?? 0}`,
     );
     // 練習モードの表示 (Pキーで切替)。ONの間は常時見えるようにする。
-    this.practiceText.setVisible(this.state.cpuHandsOff);
+    this.practiceText.setVisible(this.state.cpuHandsOff && !this.state.drillMode);
+    this.drillText.setVisible(this.state.drillMode);
+    if (this.state.drillMode) {
+      this.drillText.setText(
+        formatDrillPanel(this.state, this.cachedInputs, this.lastDrillEvent, this.lastDrillCurve),
+      );
+    }
     // ボタンガイド (いまの文脈で各ボタンが何をするか)。
     this.buttonGuideText.setText(formatButtonGuide(this.state));
   }
@@ -824,8 +938,15 @@ export class PitchScene extends Phaser.Scene {
       this.chargeMeter.setVisible(false);
     }
 
-    // 溜めが非ゼロから0へ落ちた = このフレームでキックが解放された。
-    if (this.prevKickChargeFrames > 0 && charge === 0) {
+    // ★段階2★ あらゆる種類のキックでフラッシュを出す。
+    // 旧実装は「Bチャージの解放」だけを見ていたため、A/X/Y/ワンツー/リフティング/
+    // 蹴り出しドリブルは**画面上まったく無反応**だった (押したかどうかが分からない)。
+    // ボール速度の跳ね上がりで検出すれば、経路を問わず1箇所で拾える (描画専用)。
+    const nowBallSpeed = Math.hypot(toFloat(this.state.ball.vel.x), toFloat(this.state.ball.vel.y));
+    const speedJump = nowBallSpeed - this.prevBallSpeed;
+    this.prevBallSpeed = nowBallSpeed;
+    const kickedThisFrame = (this.prevKickChargeFrames > 0 && charge === 0) || speedJump > KICK_FLASH_MIN_SPEED_JUMP;
+    if (kickedThisFrame) {
       this.kickFlashMs = KICK_FLASH_DURATION_MS;
       const ballWorld = vecToPx(this.state.ball.pos);
       const p = this.projection.project(ballWorld.x, ballWorld.y, this.cameraWorldY);

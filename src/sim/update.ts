@@ -347,6 +347,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       difficulty: state.difficulty,
       offsideEnabled: state.offsideEnabled,
       cpuHandsOff: state.cpuHandsOff,
+    drillMode: state.drillMode,
       pendingKick: null,
       restartGraceTeam: kickoffTeam,
       restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
@@ -378,6 +379,16 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     lastTouchPlayerIndex = touchPriorityIndex;
   }
 
+  /**
+   * オフサイド判定を行うか。
+   *
+   * ★段階2の欠陥修正★ 操作確認モード(ドリルモード)では味方21人をゴールライン際へ退避させる。
+   * その結果「味方全員が最終ラインより前」になり、**A/X/Y のパスがすべてオフサイド扱いになって
+   * ボールが動かない**という状態になっていた (実機で発覚。押しても何も起きないので、
+   * ボタンが壊れているようにしか見えない)。無菌室の趣旨からしてオフサイドは不要なので外す。
+   */
+  const offsideActive = state.offsideEnabled && !state.drillMode;
+
   const teamAGoalkeeper = state.players[TEAM_A_GK_INDEX];
   const currentControlled = state.players[state.controlledPlayerIndex];
   const currentLocked =
@@ -388,7 +399,15 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     !!teamAGoalkeeper &&
     shouldTakeOverGoalkeeper(teamAGoalkeeper, state.ball.pos, inputs.buttons, teamAInPossession);
 
-  const cursor = gkTakeover
+  const cursor = state.drillMode
+    ? // ★操作確認モード★ カーソルは固定する。退避させた選手へ勝手に移ると、
+      // ピッチ端に立たされた別人を操作することになり検証にならない (実機で発覚)。
+      {
+        controlledPlayerIndex: state.controlledPlayerIndex,
+        passTriggered: inputs.buttons.Y && !state.prevButtons.Y,
+        passTargetIndex: selectPassTarget(state.controlledPlayerIndex, state.players),
+      }
+    : gkTakeover
     ? { controlledPlayerIndex: TEAM_A_GK_INDEX, passTriggered: false, passTargetIndex: null }
     : resolveCursor(
         state.players,
@@ -456,8 +475,24 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // オフェンスラインを下げる(-方向)、非保持(守備)中に押し続けるとディフェンスラインを
   // 上げる(+方向)。押していない間はゆっくり中立(0)へ減衰する。
   let manualLineOffset = state.manualLineOffset;
-  const teamAAttacking = linePossessionTeam === TeamId.A;
-  const teamADefending = linePossessionTeam === TeamId.B;
+  /**
+   * ★段階2の欠陥修正★ 保持文脈を linePossessionTeam (90tickヒステリシス) だけで判定していたため、
+   * 試合開始直後・競り合い中・保持が切り替わった直後の 1.5秒間は null のままで、STARTを
+   * 押しても**何も起こらず何の表示も出ない**「効かないボタン」になっていた
+   * (tests/sim/possessionOps.test.ts のプローブで発覚。30tick押しても manualLineOffset が 0 のまま)。
+   * ラインの陣形計算にヒステリシスが要るのは「AIが一斉に行進しない」ためであって、
+   * 人間の入力を受け付けるかどうかの判定には要らない。現在の接触 → 直近の接触 の順に
+   * フォールバックして、押した時に必ず反応するようにする。
+   */
+  const possessionForLine: TeamId | null =
+    linePossessionTeam ??
+    (touchPriorityIndex !== null
+      ? isTeamAInPossession(touchPriorityIndex)
+        ? TeamId.A
+        : TeamId.B
+      : state.lastTouchTeam);
+  const teamAAttacking = possessionForLine === TeamId.A;
+  const teamADefending = possessionForLine === TeamId.B;
   if (inputs.buttons.Start && (teamAAttacking || teamADefending)) {
     const step = MANUAL_LINE_OFFSET_STEP_FIXED as number;
     const delta = (teamAAttacking ? -step : step) as Fixed;
@@ -473,8 +508,9 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     else if (current < 0) manualLineOffset = Math.min(0, current + decay) as Fixed;
   }
 
+  // ドリルモードではCPUの攻撃判断も一切走らせない (「相手なし」の無菌室にするため)。
   const cpuDecision =
-    touchPriorityIndex !== null && touchPlayerForCpu && !isTeamAInPossession(touchPriorityIndex)
+    !state.drillMode && touchPriorityIndex !== null && touchPlayerForCpu && !isTeamAInPossession(touchPriorityIndex)
       ? decideCpuAttack(touchPriorityIndex, state.players, half, state.difficulty, state.rngState, prevTouchPlayerIndex)
       : null;
   let rngState = cpuDecision ? cpuDecision.rngState : state.rngState;
@@ -656,7 +692,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // 排他 — 速いボールが飛んできている時は常にセーブ判定を優先する。
   let oneTwoFired = false;
   if (justReceivedByControlled && !inSaveRange && controlledPlayer) {
-    const offside = state.offsideEnabled
+    const offside = offsideActive
       ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
       : { offside: false, offsidePlayerIndex: null };
     const offsidePlayer =
@@ -746,7 +782,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     if (cursor.passTriggered && cursor.passTargetIndex !== null && controlledPlayer) {
       const receiver = state.players[cursor.passTargetIndex];
       if (receiver) {
-        const offside = state.offsideEnabled
+        const offside = offsideActive
           ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
           : { offside: false, offsidePlayerIndex: null };
         const offsidePlayer =
@@ -815,7 +851,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
             const slideDirection = inputs.direction !== Direction8.None ? inputs.direction : controlledPlayer.facing;
             tackleAdvance = advanceTacklePhase(controlledPlayer, true, slideDirection);
           } else {
-            const offside = state.offsideEnabled
+            const offside = offsideActive
               ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
               : { offside: false, offsidePlayerIndex: null };
             const offsidePlayer =
@@ -855,7 +891,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
             };
             lastTouchTeam = controlledPlayer.team;
           } else if (charge.releasedFrames > 0) {
-            const offside = state.offsideEnabled
+            const offside = offsideActive
               ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
               : { offside: false, offsidePlayerIndex: null };
             const offsidePlayer =
@@ -977,7 +1013,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     // 即座グラウンダー固定 (計画の仮定8、弾道バリエーションはPhase 4に先送り)。
     const carrier = state.players[touchPriorityIndex];
     if (carrier) {
-      const offside = state.offsideEnabled
+      const offside = offsideActive
         ? checkOffside(touchPriorityIndex, carrier.team, state.players, half)
         : { offside: false, offsidePlayerIndex: null };
       const offsidePlayer =
@@ -1014,7 +1050,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // せず試合が停止する (観戦シミュレーターで実測、cpuDefenseAI.ts のコメント参照)。
   // セットプレー再開ロック中は発火させない (「蹴られるまで相手は触れない」を守る)。
   // GKのセーブが起きたtickも二重にボール速度を上書きしないよう見送る。
-  if (!gkSavedThisTick && !setPieceLock && !state.cpuHandsOff) {
+  if (!gkSavedThisTick && !setPieceLock && !state.cpuHandsOff && !state.drillMode) {
     const defense = decideCpuDefense(
       touchPriorityIndex,
       controlledPlayerIndex,
@@ -1109,6 +1145,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       difficulty: state.difficulty,
       offsideEnabled: state.offsideEnabled,
       cpuHandsOff: state.cpuHandsOff,
+    drillMode: state.drillMode,
       pendingKick: null,
       restartGraceTeam: kickoffTeam,
       restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
@@ -1172,6 +1209,11 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   }
 
   const players = state.players.map((player, index) => {
+    // ★操作確認モード (ドリルモード)★ 操作選手以外は完全に静止させ、「自分1人とボールだけ」の
+    // 無菌室にする。AIのステアリングもタックルも一切走らない (GameState.drillMode 参照)。
+    if (state.drillMode && index !== controlledPlayerIndex) {
+      return { ...player, vel: vZero(), tacklePhase: TacklePhase.None, tackleFrames: 0, kickDribbleActive: false };
+    }
     const playerInputs = effectiveInputs[index] ?? { direction: Direction8.None, buttons: NO_BUTTONS };
     // 蹴り出しドリブル中かどうかはtouch-priority保持者のみが対象。それ以外の選手は
     // 過去に保持していた時の値を持ち越さないよう常にfalseへ強制する。
@@ -1253,6 +1295,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     difficulty: state.difficulty,
     offsideEnabled: state.offsideEnabled,
     cpuHandsOff: state.cpuHandsOff,
+    drillMode: state.drillMode,
     pendingKick,
     restartGraceTeam,
     restartGraceTicksLeft,

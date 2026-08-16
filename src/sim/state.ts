@@ -123,6 +123,17 @@ export interface GameState {
    */
   readonly cpuHandsOff: boolean;
   /**
+   * ★操作確認モード (ドリルモード、段階2)★ true の間、操作選手**以外**の21人は完全に静止し、
+   * CPUの攻撃/守備判断も一切走らない。「自分1人とボールだけ」の無菌室を作り、
+   * 各操作が発動したかどうかを相手に邪魔されずに確認するためのモード
+   * (ユーザー要望「自分1人とボールだけを配置（AI・相手なし）」)。
+   *
+   * cpuHandsOff と同じく GameState の一部なので simulate() は純関数のまま
+   * (同じ state + 同じ入力 → 同じ結果。決定論は壊れない)。ただし切替タイミングを
+   * リプレイに記録していないため、このモードを使った試合のリプレイは再現性を保証しない。
+   */
+  readonly drillMode: boolean;
+  /**
    * キック入力のバッファ (★17周目★)。ボールが射程外の時に押された B を短時間だけ覚えておき、
    * 射程に入った瞬間に蹴る。「押したのに無反応」を無くすための、格闘ゲーム等と同じ入力バッファ。
    * KICK_INPUT_BUFFER_TICKS のコメントも参照。
@@ -276,6 +287,7 @@ export function createInitialState(seed: number, options: CreateInitialStateOpti
     difficulty: options.difficulty ?? 'medium',
     offsideEnabled: options.offsideEnabled ?? true,
     cpuHandsOff: false,
+    drillMode: false,
     pendingKick: null,
     restartGraceTeam: kickoffTeam,
     restartGraceTicksLeft: KICKOFF_GRACE_TICKS,
