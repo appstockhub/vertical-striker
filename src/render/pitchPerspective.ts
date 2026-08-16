@@ -297,7 +297,7 @@ function drawGoalNetMesh(
   goalHalfWidth: number,
   goalLineY: number,
   backY: number,
-  lift: (p: { y: number; scale: number }) => number,
+  lift: (p: { y: number; depth: number }) => number,
 ): void {
   const { g, proj, camY } = ctx;
   const columns: Array<NetColumn | null> = [];
@@ -347,6 +347,17 @@ function drawGoalNetMesh(
  * ゴール枠 (立体)。疑似3Dなので、ゴールラインの上に「高さ GOAL_HEIGHT のクロスバー」を
  * 立てて描く。地面の点を投影してから、見かけのスケールぶんだけ画面上方向へ持ち上げる
  * (ボールの高さ表現と同じ扱い方 = 高さは常に画面Y方向の持ち上げで表現する)。
+ *
+ * ★V-4修正★ `lift` は以前 `GOAL_HEIGHT * p.scale` (=`ProjectedPoint.scale`、
+ * near位置で1.0に正規化された「見かけの拡大率」) を使っていたが、これは選手/ボールの
+ * スプライト拡大率にしか使えない値だった。横方向のポスト間隔 (screenX) は
+ * `focal*Δx/depth` という「正規化前の生の投影」で計算されているため、
+ * `p.scale`(=`focal/depth`を`nearScale`で割った値、現在の設定でnearScale=4)を使うと
+ * 高さだけ幅の1/4に縮んでしまい、ゴールが実際より低く描かれていた。
+ * 実測 (`scratchpad/goalbox.mjs`): 幅173px:高さ14px = 12.36:1 (目標3:1の約4.1倍平ら)。
+ * 幅と同じ「生の」投影係数 `proj.focal / p.depth` に揃えたところ、
+ * GOAL_HEIGHT(26)は元々ほぼ正しいワールド比だったため (80/26≈3.08)、
+ * 値を変えるだけで幅173px:高さ57px≈3.04:1 まで復元された (GOAL_HEIGHT自体は無変更)。
  */
 function drawGoals(ctx: Ctx, goalHalfWidth: number): void {
   const { g, proj, camY } = ctx;
@@ -366,7 +377,7 @@ function drawGoals(ctx: Ctx, goalHalfWidth: number): void {
     const back = posts.map((p) => proj.project(p.x, backY, camY, ctx.camX));
     if (ground.some((p) => !p.visible) || back.some((p) => !p.visible)) continue;
 
-    const lift = (p: { y: number; scale: number }): number => p.y - GOAL_HEIGHT * p.scale;
+    const lift = (p: { y: number; depth: number }): number => p.y - (GOAL_HEIGHT * proj.focal) / p.depth;
 
     drawGoalNetMesh(ctx, cx, goalHalfWidth, goalLineY, backY, lift);
 
