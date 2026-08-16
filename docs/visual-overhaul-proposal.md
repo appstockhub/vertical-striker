@@ -64,6 +64,46 @@
 色の「クラスタ中心」（芝が #7db153 前後、など）は信頼できるが、
 ピクセル単位の模写はできないし、そもそも原則上してはならない。
 
+### 1-6. 【重要な訂正】段階1の「ピッチが細すぎる」結論は、描画パラメータ1つで解ける
+
+段階1で「ピッチが選手に対して約3.6倍細い。直すには `PITCH_WIDTH` を 480→1200 に変える
+（＝AIしきい値の全面再調整が必要）」と報告しましたが、**これは誤りでした。訂正します。**
+
+「ピッチが選手の何人分の幅か」は、**選手の“描画上の”大きさ**との比です。選手の描画サイズは
+sim ではなく描画層の定数で決まるため、**`nearWidthRatio`（投影の横方向スケール＝実質カメラ高さ）
+を変えるだけで、sim を一切触らずに原作の比率にできます。**
+
+`nearWidthRatio` を振ったときの解析値（`focal = R × nearDepth`、`camHeight = (H − horizonY) / R`）:
+
+| nearWidthRatio | カメラ俯角 | ピッチ幅=選手何人分 | 画面内に見える選手数 |
+|---|---|---|---|
+| **1.18（現状）** | **45°** | **8.3** | 11.5 |
+| 3.00 | 22° | 21.1 | 11.5 |
+| 4.00 | 17° | 28.1 | 11.5 |
+| **5.00** | **13°** | **35.2** | 11.5 |
+| 原作（実測） | **15〜22°** | **約34.5** | 約9 |
+
+3つの重要な点:
+
+1. **「画面内に見える選手数」は R を変えても 11.5 のまま**（＝プレー体験の密度は変わらない）。
+   選手の画面上の大きさは `nearDepth/depth` で決まり R に依存しないため、
+   R を上げるとピッチだけが大きくなり、相対的に選手が小さくなる
+2. **現状のカメラ俯角は45°** で、原作の15〜22°よりはるかに**急**だった。
+   段階1では「画角は一致している」と報告しましたが、一致していたのは画面上の量（可視範囲・
+   選手サイズ）であって、**カメラの角度は一致していませんでした**
+3. R≈4〜5 で、俯角・ピッチ比率がともに原作の実測値に収まる
+
+**帰結: 段階4の冒頭に確定させた「ピッチ幅を1200へ変更＋AIしきい値の全面再調整」(D-1) は、
+不要になる可能性が高い。** まず `nearWidthRatio` を上げて確認すべきです。
+定数1つの変更で、`src/sim/` は無変更、AIの再調整も不要です。
+
+副作用（要判断）: R を上げると、ボール位置で画面に写るピッチ幅が 667px → 約200px に狭まります。
+横に広がった味方は画面外に出ますが、**原作も同じ**（原作は幅68mのうち約17.7mしか見えていない）で、
+その視野の狭さをレーダーで補うのが本作の設計です。
+
+**この訂正は解析値であり、まだ実際に描画して確認していません。** 実装前の検証として、
+`nearWidthRatio` を変えたキャプチャを撮って原作と並べることを提案します。
+
 ---
 
 ## 2. 手法転換の選択肢
@@ -102,7 +142,7 @@ HUD（スコア・時計・ボタンガイド・ドリルパネル）は従来�
 
 ### 3-1. 外部素材を使う
 
-→ 調査結果は本文書の「付録: 素材調査」（別途報告）を参照。
+→ 調査結果は「付録A: 素材調査の結果」（本文書末尾）を参照。
 ライセンス確認済みのものだけを候補にし、`docs/asset-credits.md` に出典を記録する。
 
 **注意点（将来のSteam販売を考えると重要）**:
@@ -249,8 +289,82 @@ const RUN_DOWN_0 = [
 
 | ID | 判断事項 |
 |---|---|
+| V-0 | **【最優先・訂正事項】`nearWidthRatio` を 1.18 → 4〜5 に上げる案（1-6節）を試してよいか。** 定数1つ・sim無変更で、段階4のD-1（ピッチ幅変更＋AI全面再調整）が不要になる可能性がある |
 | V-1 | 手法: 案A（全画面低解像度）/ **案B（ワールドのみ低解像度、推奨）** / 案C（解像度は据え置き）のどれにするか |
-| V-2 | 選手スプライト: 外部素材 / 私がピクセル配列を書く / 外注 のどれにするか（外部素材の候補は付録参照） |
+| V-2 | 選手スプライト: 外部素材 / 私がピクセル配列を書く / 外注 のどれにするか（付録A参照）。外部素材なら候補1（£2、要件ほぼ完全一致、要ライセンス確認）か候補2（CC0・無料・要着色）が有力 |
 | V-3 | CC-BY-SA・GPL 素材（継承義務あり）を許容するか。将来のSteam販売を考えると要判断 |
 | V-4 | 案C（パレット・芝・スタンド・ネット）を先行実施してよいか |
 | V-5 | ビジュアル作業と段階2（操作感の評価）の順番をどうするか |
+
+---
+
+## 付録A: 素材調査の結果
+
+itch.io / Kenney.nl / OpenGameArt / LPC / GitHub を調査し、**ライセンス原文を実際に確認**した結果。
+
+### A-0. 総括
+
+- **「8方向 × 走行アニメ × 16〜48px × 継承義務なし」を全部満たす単一素材は存在しない。**
+  どれか1つを妥協するか、複数を組み合わせる必要がある
+- **Kenney.nl には選手素材が無い**（トップダウンの人型に歩行アニメが無い）。
+  ただし **Sports Pack (CC0) はピッチ背景タイルとして即使える**
+- **既存商用ゲームからの吸い出し素材は候補に1件も混入していない**（確認済み）
+
+### A-1. 有力候補（継承義務なし = Steam販売に安全）
+
+| # | 素材 | ライセンス | 視点/方向/サイズ | 価格 | 備考 |
+|---|---|---|---|---|---|
+| **1** | [Asset Pack 'Football,Soccer' (NES)](https://chasersgaming.itch.io/asset-pack-football-soccer) | **CC0（作者コメントで明言。ただし後述の矛盾あり）** | トップダウン / **8方向** / **16x24** | **£2** | **要件にほぼ完全一致**。走り・キック・スライディングが各8方向、GK・審判・赤/青チーム・肌色バリエーション込み。ゴールとピッチ素材も同梱 |
+| **2** | [8-Directional Game Boy Character Template](https://gibbongl.itch.io/8-directional-gameboy-character-template) | **CC0 1.0**（itchのAsset license欄に明記） | トップダウン / **8方向** / **16x16** | 無料 | **ライセンスが最も安全**。Aseprite生ファイル同梱で色替え・量産が容易。GB風モノクロなので着色は必要 |
+| **3** | [Superpowers / Ninja Adventure](https://github.com/sparklinlabs/superpowers-asset-packs) | **CC0 1.0**（README原文で明言） | トップダウン / 4方向 | 無料 | `characters/15.png` が**サッカー選手**。クレジット不要 |
+| **4** | [32x32 RPG Character Sprites](https://opengameart.org/content/32x32-rpg-character-sprites) | **CC0** | 俯瞰 / 大半4方向（soldierのみ8方向）/ **32x32** | 無料 | 20体入りで選手ごとの見た目差別化に使える |
+| **5** | [8-Direction Top-Down Character Sprites](https://bossnelnel.itch.io/8-direction-top-down-character-sprites) | 独自（改変可・商用可・**継承なし**・素材単体の再販のみ禁止） | トップダウン / **8方向** / 23x36・**歩行8フレーム** | 無料 | 骨格は完璧だが汎用人型でやや縦長 |
+| 6 | [Kenney Sports Pack](https://kenney.nl/assets/sports-pack) | **CC0** | ピッチタイル（選手なし） | 無料 | **背景素材として即利用可** |
+
+**候補1の重要な注意**: 作者は football パックについて
+「*this particular asset(footaball) is CC0, public domain ... commercial, non commercial, make modifications ... with no credit necessary*」
+と明言している一方、同じページの別コメントでカタログ全体の方針として
+「*If you make modifications and you share them you must use the same license, CC-BY-SA or CC-BY-4.0*」
+とも書いており**矛盾しています**。実際、同作者の別パックは itch のメタデータ上 CC-BY-SA 4.0 です。
+**購入前に作者へ「football パックは CC0 で確定か」を書面で確認し、記録を保全することを強く推奨します。**
+
+### A-2. 継承義務あり（採用には V-3 の判断が必要）
+
+| 素材 | ライセンス | 内容 |
+|---|---|---|
+| [8-Directional Character Template](https://opengameart.org/content/8-directional-character-template) | **CC-BY-SA 3.0** | **8方向・32x32・走行8フレーム**と要件を最もよく満たすが、twin-stick用で**腕が省略**されている |
+| [LPC Character Bases](https://opengameart.org/content/lpc-character-bases) | **CC-BY-SA 3.0 / GPL 3.0** | 体型バリエーション豊富。4方向・64x64 |
+| [Football sprite (based on LPC set)](https://opengameart.org/content/football-sprite-based-on-lpc-set) | **CC-BY-SA 3.0** | 唯一の「LPCベースのサッカー選手」だが .xcf のみ |
+
+### A-3. LPC系という選択肢（組み合わせ運用）
+
+[Universal LPC Spritesheet Character Generator](https://github.com/liberatedpixelcup/Universal-LPC-Spritesheet-Character-Generator)
+はパーツごとにライセンスが異なり（CC0 / CC-BY 4.0 / **OGA-BY** / CC-BY-SA / GPL）、
+**CC-BY-SA と GPL のパーツを選ばなければ継承義務ゼロで生成できます**。
+`shortsleeve` シャツ + `shorts` + `socks` でサッカーキットが組め、クレジット一覧も自動出力されます。
+
+- 4方向しかない弱点は [LPC runcycle and diagonal walkcycle](https://opengameart.org/content/lpc-runcycle-and-diagonal-walkcycle)
+  （**OGA-BY 3.0 を選択可＝継承なし**）の斜め4方向で補える
+- ただし **64x64 は本作の縦スクロール視点には大きすぎる可能性**があり、縮小の是非を要検討
+
+### A-4. 除外したもの
+
+- **Soccorpia** / **Goals in Pixels** — サイドビューのため不可
+- **Football Championship Megapack** — **AI生成の開示ラベルあり**、ライセンス条項が「Commercial Use Friendly」の一言のみ、92x92と大きすぎ
+- **8-Directional Top-Down Character Pack (SmallScaleInt)** — ページにライセンス条項の記載が一切なく**未確認**
+- **Craftpix** — ゲーム同梱は可だが素材の再配布は不可、かつ**AI学習禁止条項**あり。該当素材も特定できず
+
+### A-5. 未確認事項（正直な申告）
+
+- 候補1のアニメフレーム数はページに記載がなく**未確認**（購入しないと分からない）
+- 候補3のタイルサイズは README に記載がなく**未確認**
+- LPC の 64x64 フレーム内でキャラ実体が占める実ピクセル数は**未実測**
+- Kenney の `https://kenney.nl/license` は **404** でライセンス原文ページを確認できず（各アセットページの "Creative Commons CC0" 表記のみ）
+
+### A-6. 私の推奨
+
+1. **£2 を払って候補1（Football,Soccer）を入手**するのが最短で、要件充足度も最高。
+   ただし CC0 確定の書面確認を先に行うこと
+2. ライセンスの安全性を最優先するなら、**候補2（CC0・16x16・Aseprite生ファイル同梱）を素体に
+   サッカー用アニメを追加**する路線がリスク最小
+3. **ピッチ背景は Kenney Sports Pack (CC0) で即座に賄える**
