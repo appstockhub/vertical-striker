@@ -7,9 +7,10 @@ import {
   pitchArcPolylines,
   pitchLineSegments,
   pitchSpots,
-  STRIPE_DEPTH,
+  STRIPE_WIDTH,
   type WorldSegment,
 } from './pitchGeometry';
+import { hash01, lerpColor, shadeColor } from './colorUtils';
 
 /**
  * ピッチの疑似3D描画 (毎フレーム、投影しながら描く)。★描画専用★
@@ -20,8 +21,23 @@ import {
  * 円弧4本 + ゴール2組)。折れ線は beginPath/lineTo/strokePath でまとめて1ストロークにする。
  */
 
-const TURF_DARK = 0x1c6636;
-const TURF_LIGHT = 0x237943;
+/**
+ * ★V-4 (ビジュアル手法転換・案C)★ 芝のパレット。原作PNGを実測して合わせた値
+ * (docs/visual-overhaul-proposal.md 1-1)。旧実装は輝度82(暗い青緑)で原作の輝度151の
+ * 54%しか無く、遠方をさらに暗くする(空気遠近が逆向き)欠陥もあった。
+ *
+ *   手前2色 (交互ストライプ、ΔG=6で原作の控えめなコントラストを再現):
+ *     A: #83b453 (131,180,83) 輝度154.3 / B: #76ae4d (118,174,77) 輝度146.2
+ *   遠方2色 (原作は手前より明るい。旧実装は逆に暗くしていたため向きを反転):
+ *     A: #9acd6c (154,205,108) 輝度178.7 / B: #8fc765 (143,199,101) 輝度170.9
+ */
+const TURF_NEAR_A = 0x83b453;
+const TURF_NEAR_B = 0x76ae4d;
+const TURF_FAR_A = 0x9acd6c;
+const TURF_FAR_B = 0x8fc765;
+const TURF_FAMILY_A = { near: TURF_NEAR_A, far: TURF_FAR_A };
+const TURF_FAMILY_B = { near: TURF_NEAR_B, far: TURF_FAR_B };
+
 /**
  * ★段階1★ タッチライン/ゴールラインの外側にも続く芝 (ランオフ)。
  *
@@ -30,9 +46,11 @@ const TURF_LIGHT = 0x237943;
  * 一様な暗緑だったため、奥へ行くほどピッチが細い帯に見え、「廊下を走っている」ような
  * 画になっていた (自己観察キャプチャ `.shots/before-*.png`)。
  * 実寸のスタジアム同様、ラインの外にも芝を延ばして画面を埋める。
+ * ★V-4★ 色は本体の芝パレットを流用し、境界が分かる程度に少しだけ沈める (RUNOFF_SHADE)。
  */
-const TURF_OUTER_DARK = 0x1a6033;
-const TURF_OUTER_LIGHT = 0x20703e;
+const RUNOFF_SHADE = 0.86;
+const TURF_FAMILY_A_OUTER = { near: shadeColor(TURF_NEAR_A, RUNOFF_SHADE), far: shadeColor(TURF_FAR_A, RUNOFF_SHADE) };
+const TURF_FAMILY_B_OUTER = { near: shadeColor(TURF_NEAR_B, RUNOFF_SHADE), far: shadeColor(TURF_FAR_B, RUNOFF_SHADE) };
 /**
  * ランオフの芝をラインの外へどれだけ延ばすか (ワールドpx)。
  * MAX_DRAW_DEPTH(3200) 相当まで延ばし、通常のカメラ位置では画面が芝で埋まるようにする
@@ -40,6 +58,13 @@ const TURF_OUTER_LIGHT = 0x20703e;
  */
 const RUNOFF_X = 2800;
 const RUNOFF_Y = 2800;
+/** 本体ピッチの縞1本あたりの奥行き分割数 (空気遠近グラデーション用)。多いほど滑らかだが描画コストが増える。 */
+const MAIN_DEPTH_CELLS = 6;
+/** ランオフは装飾なので粗く (幅・奥行き分割とも本体より低解像度)。 */
+const OUTER_STRIPE_WIDTH = 240;
+const OUTER_DEPTH_CELLS = 3;
+/** ディザリングで色数を増やすための微小な明暗ジッター幅 (±このぶんだけ明度を揺らす)。 */
+const TURF_DITHER_JITTER = 0.08;
 /**
  * 描画範囲の外 (地平線のすぐ下、MAX_DRAW_DEPTH より奥) を埋める色。
  * ここは「大気で沈んだ最遠部」であり、地面の色ではなく drawDistanceHaze と同系の暗色に
@@ -119,49 +144,82 @@ function strokeSegment(ctx: Ctx, seg: WorldSegment, alpha = LINE_ALPHA, color = 
   ctx.g.lineBetween(p.x1, p.y1, p.x2, p.y2);
 }
 
+interface TurfFamily {
+  readonly near: number;
+  readonly far: number;
+}
+
 /**
  * 刈り込み縞を、指定のワールドX範囲・Y範囲について台形として塗る。
- * ランオフ(ライン外の芝)と、ピッチ本体で色だけ変えて2回呼ぶ。
+ * ランオフ(ライン外の芝)と、ピッチ本体で色とパラメータだけ変えて2回呼ぶ。
+ *
+ * ★V-4 (ビジュアル手法転換・案C) で全面書き換え★
+ *   1. 縞の分割軸をY(奥行き)からX(幅)へ変更した。原作は「ゴール〜ゴールを結ぶ方向に
+ *      走る縦縞が消失点へ収束する」向きだが、旧実装はY方向の帯だったため90度違う
+ *      横縞になっていた (docs/visual-overhaul-proposal.md 1-2)。
+ *   2. 各X帯をさらに奥行き方向へ分割 (depthCells) し、セルごとに手前色→遠方色を
+ *      補間する。原作は遠方ほど明るい(空気遠近)のに対し旧実装は逆に暗くしていたため、
+ *      向きを反転した。
+ *   3. セルごとに位置ベースの決定論的ジッターで明度を±揺らす (Math.random不使用、
+ *      同じフレームは毎回同じ絵になる)。実測で手前が3色しか無かった単調さを崩し、
+ *      「多数の中間色」に近づける (同節 5-5)。
  */
-function drawStripeBands(
+function drawStripeBandsVertical(
   ctx: Ctx,
   worldLeft: number,
   worldRight: number,
   worldFarY: number,
   worldNearY: number,
-  darkColor: number,
-  lightColor: number,
+  familyA: TurfFamily,
+  familyB: TurfFamily,
+  stripeWidth: number,
+  depthCells: number,
 ): void {
   const { g, proj, camY } = ctx;
   const nearest = Math.min(worldNearY, camY - proj.config.minDepth);
   const farthest = Math.max(worldFarY, camY - MAX_DRAW_DEPTH);
   if (nearest <= farthest) return;
 
-  const firstBand = Math.floor(farthest / STRIPE_DEPTH);
-  const lastBand = Math.ceil(nearest / STRIPE_DEPTH);
+  const firstCol = Math.floor(worldLeft / stripeWidth);
+  const lastCol = Math.ceil(worldRight / stripeWidth);
+  const span = nearest - farthest;
 
-  for (let band = firstBand; band < lastBand; band++) {
-    const yFar = Math.max(farthest, band * STRIPE_DEPTH);
-    const yNear = Math.min(nearest, (band + 1) * STRIPE_DEPTH);
-    if (yNear <= yFar) continue;
+  for (let col = firstCol; col < lastCol; col++) {
+    const xLeft = Math.max(worldLeft, col * stripeWidth);
+    const xRight = Math.min(worldRight, (col + 1) * stripeWidth);
+    if (xRight <= xLeft) continue;
+    // 位相はピッチ本体とランオフで揃える (ずれると継ぎ目が目立つ)。
+    const family = (((col % 2) + 2) % 2) === 0 ? familyA : familyB;
 
-    const farLeft = proj.project(worldLeft, yFar, camY, ctx.camX);
-    const farRight = proj.project(worldRight, yFar, camY, ctx.camX);
-    const nearLeft = proj.project(worldLeft, yNear, camY, ctx.camX);
-    const nearRight = proj.project(worldRight, yNear, camY, ctx.camX);
-    if (!farLeft.visible || !nearLeft.visible) continue;
+    for (let cell = 0; cell < depthCells; cell++) {
+      const t0 = cell / depthCells;
+      const t1 = (cell + 1) / depthCells;
+      // depthT: 0=手前(nearest、基調色) → 1=最遠(farthest、明るい遠方色)。
+      const depthT = (t0 + t1) / 2;
+      const yNear = nearest - span * t0;
+      const yFar = nearest - span * t1;
 
-    // 縞の位相はピッチ本体とランオフで揃える (ずれると継ぎ目が目立つ)。
-    g.fillStyle(band % 2 === 0 ? darkColor : lightColor, 1);
-    g.fillPoints(
-      [
-        { x: farLeft.x, y: farLeft.y },
-        { x: farRight.x, y: farRight.y },
-        { x: nearRight.x, y: nearRight.y },
-        { x: nearLeft.x, y: nearLeft.y },
-      ],
-      true,
-    );
+      const farLeft = proj.project(xLeft, yFar, camY, ctx.camX);
+      const farRight = proj.project(xRight, yFar, camY, ctx.camX);
+      const nearLeft = proj.project(xLeft, yNear, camY, ctx.camX);
+      const nearRight = proj.project(xRight, yNear, camY, ctx.camX);
+      if (!farLeft.visible || !nearLeft.visible) continue;
+
+      const baseColor = lerpColor(family.near, family.far, depthT);
+      const jitter = hash01(col * 31.7 + cell * 17.3 + (family === familyA ? 0 : 1000.3));
+      const shaded = shadeColor(baseColor, 1 - TURF_DITHER_JITTER + jitter * TURF_DITHER_JITTER * 2);
+
+      g.fillStyle(shaded, 1);
+      g.fillPoints(
+        [
+          { x: farLeft.x, y: farLeft.y },
+          { x: farRight.x, y: farRight.y },
+          { x: nearRight.x, y: nearRight.y },
+          { x: nearLeft.x, y: nearLeft.y },
+        ],
+        true,
+      );
+    }
   }
 }
 
@@ -174,20 +232,21 @@ function drawTurf(ctx: Ctx): void {
   g.fillStyle(SURROUND_COLOR, 1);
   g.fillRect(0, proj.config.horizonY, proj.config.viewportWidth, proj.config.viewportHeight - proj.config.horizonY);
 
-  // ランオフの芝 (ラインの外側)。ピッチ本体より一段暗くして、プレー領域との境界は
-  // 白いタッチライン/ゴールラインが担う。
-  drawStripeBands(
+  // ランオフの芝 (ラインの外側)。装飾なので粗い分割 (幅広・奥行きセル少なめ) で済ませる。
+  drawStripeBandsVertical(
     ctx,
     -RUNOFF_X,
     PITCH_WIDTH + RUNOFF_X,
     -RUNOFF_Y,
     PITCH_HEIGHT + RUNOFF_Y,
-    TURF_OUTER_DARK,
-    TURF_OUTER_LIGHT,
+    TURF_FAMILY_A_OUTER,
+    TURF_FAMILY_B_OUTER,
+    OUTER_STRIPE_WIDTH,
+    OUTER_DEPTH_CELLS,
   );
 
   // ピッチ本体 (ランオフの上に重ねる)。
-  drawStripeBands(ctx, 0, PITCH_WIDTH, 0, PITCH_HEIGHT, TURF_DARK, TURF_LIGHT);
+  drawStripeBandsVertical(ctx, 0, PITCH_WIDTH, 0, PITCH_HEIGHT, TURF_FAMILY_A, TURF_FAMILY_B, STRIPE_WIDTH, MAIN_DEPTH_CELLS);
 }
 
 /** 折れ線 (円弧など) をまとめて1ストロークで描く。 */
@@ -275,16 +334,32 @@ function drawGoals(ctx: Ctx, goalHalfWidth: number): void {
 }
 
 /**
- * 遠方のかすみ。地平線付近を薄く暗くして、奥行きが「平らな壁」に見えるのを防ぐ
- * (実際の遠景も大気で色が沈む)。地平線から数十px、透明度を落としながら重ねるだけ。
+ * ★V-4で向きを反転★ 遠方のかすみ。地平線付近を薄く「明るく」して、奥行きが
+ * 「平らな壁」に見えるのを防ぐ。
+ *
+ * 段階1の旧実装はここを暗いネイビー(0x0d1622 = SURROUND_COLOR そのもの)で沈めていたが、
+ * それは当時「遠方は暗くする」という(実測で誤りと判明した)前提の上に作られたもので、
+ * V-4の芝の空気遠近 (drawStripeBandsVertical、遠方ほど明るい) と正反対の効果になっていた。
+ *
+ * ★重要な副作用★ 透視投影は y = horizonY + C/depth の形のため、depth をどれだけ
+ * 大きくしても地平線ちょうど(horizonY)には漸近するだけで到達しない。つまり芝の描画は
+ * MAX_DRAW_DEPTH の位置で止まり、その先には常に「芝が描かれない隙間」が残る
+ * (地平線のごく手前の数px)。旧実装はこの隙間の色 = SURROUND_COLOR と、かすみの色が
+ * 偶然まったく同じ値だったため隙間が見えなかっただけ。かすみの色だけを明るくすると、
+ * この隙間がむしろ「暗いすき間 + 明るいかすみ」の縞として露呈する
+ * (V-4検証で実測: 地平線直下40pxの輝度が67.9まで落ち込んでいた)。
+ * 対策として、地平線ちょうどでは不透明度を1.0にして隙間を完全に覆い隠し、
+ * 数十px下で自然な芝のグラデーションへ滑らかに溶け込ませる。
  */
+const HAZE_COLOR = lerpColor(TURF_FAR_A, 0xffffff, 0.4);
+
 function drawDistanceHaze(ctx: Ctx): void {
   const { g, proj } = ctx;
   const bands = 8;
   const depth = 70; // 地平線から下へ何pxまでかすませるか
   for (let i = 0; i < bands; i++) {
     const t = i / bands;
-    g.fillStyle(0x0d1622, 0.34 * (1 - t));
+    g.fillStyle(HAZE_COLOR, 1 - t);
     g.fillRect(0, proj.config.horizonY + (depth * i) / bands, proj.config.viewportWidth, depth / bands + 1);
   }
 }
