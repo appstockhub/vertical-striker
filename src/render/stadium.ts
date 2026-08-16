@@ -32,9 +32,9 @@ const STAND_BASE_B = 0xbfd2d1;
 const CROWD_COLORS = [0xffffff, 0xd8d2c4, 0xc9a35b, 0x8fa7c4, 0xc14931, 0xe0dfe4];
 /** 赤アクセントのサポーターズブロック (原作実測 `#c14931`)。1区画だけ塗りつぶす。 */
 const CROWD_ACCENT_RED = 0xc14931;
-/** 広告板 (ピッチとスタンドの境界を締める帯)。 */
-const BOARD_COLOR = 0x101820;
-const BOARD_STRIPE = 0x2a3a4a;
+/** 広告板: 白地に色ブロック (原作は「白系の帯」。実在企業名は使わず抽象ブロックにする)。 */
+const BOARD_BASE = 0xf2f2ee;
+const BOARD_BLOCKS = [0x1f6fb2, 0xd23b3b, 0xe8b71d, 0x1f8a4c];
 
 /**
  * @param horizonY スタンドの下端 (= ピッチの地平線)。
@@ -86,11 +86,15 @@ export function drawStadium(g: Phaser.GameObjects.Graphics, width: number, horiz
     }
   }
 
-  // 広告板 (スタンドとピッチの境界)
-  g.fillStyle(BOARD_COLOR, 1);
+  // 広告板 (スタンドとピッチの境界)。★V-4★ 暗い帯→白地に色ブロックへ (原作実測「白系の帯」)。
+  // 実在企業の名称・ロゴは使わず、抽象色ブロックの並びだけで情報量を出す。
+  g.fillStyle(BOARD_BASE, 1);
   g.fillRect(0, boardTop, width, horizonY - boardTop);
-  g.fillStyle(BOARD_STRIPE, 1);
-  for (let x = 0; x < width; x += 48) {
-    g.fillRect(x + 6, boardTop + 2, 30, Math.max(1, horizonY - boardTop - 4));
+  const blockWidth = 40;
+  const blockGap = 8;
+  const blockStep = blockWidth + blockGap;
+  for (let x = 0, i = 0; x < width; x += blockStep, i++) {
+    g.fillStyle(BOARD_BLOCKS[i % BOARD_BLOCKS.length]!, 1);
+    g.fillRect(x + blockGap / 2, boardTop + 2, blockWidth, Math.max(1, horizonY - boardTop - 4));
   }
 }
