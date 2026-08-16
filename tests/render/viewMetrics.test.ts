@@ -111,6 +111,22 @@ describe('view metrics (段階1: 原作比較用の画面ジオメトリ計測)'
     }
 
     lines.push('');
+    lines.push('--- カメラの俯角とピッチの相対スケール (原作比較用) ---');
+    const depressDeg = (Math.atan(projection.camHeight / depthBall) * 180) / Math.PI;
+    const playerWorldHeight = (playerScreenHeight(scaleBall) * depthBall) / projection.focal;
+    push('★カメラ俯角 (ボール位置で)', `${fmt(depressDeg)}°   ← 原作の実測は 15〜22°`);
+    push('カメラ高さ (ワールドpx)', fmt(projection.camHeight));
+    push('選手の「ワールド身長」', `${fmt(playerWorldHeight)}px`);
+    push('★ピッチ幅 = 選手何人分', `${fmt(PITCH_WIDTH / playerWorldHeight)}人   ← 原作の実測は 約34.5人`);
+    const visibleWorldWidthAtBall = (VIEWPORT_WIDTH * depthBall) / projection.focal;
+    push('ボール位置で見えるワールド幅', `${fmt(visibleWorldWidthAtBall)}px (ピッチ幅の ${pct(visibleWorldWidthAtBall / PITCH_WIDTH)})`);
+    push('  ↑選手何人分が横に入るか', `${fmt(visibleWorldWidthAtBall / playerWorldHeight)}人   ← 原作の実測は 約9人`);
+    // 横スクロールしない設計なので、ボールが端に寄った時に画面外へ出ないかを確認する。
+    const halfVisible = visibleWorldWidthAtBall / 2;
+    push('★ボールが画面内に収まるX範囲', `${fmt(cfg.cameraWorldX - halfVisible)} 〜 ${fmt(cfg.cameraWorldX + halfVisible)} (ピッチは 0〜${PITCH_WIDTH})`);
+    push('  ↑判定', halfVisible >= PITCH_WIDTH / 2 ? '全幅カバー (横追従は不要)' : '★横追従が必要 (端のボールが画面外に出る)');
+
+    lines.push('');
     lines.push('--- ピッチ幅の見かけ ---');
     for (const [label, screenY] of [
       ['画面下端', VIEWPORT_HEIGHT],

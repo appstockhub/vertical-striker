@@ -69,6 +69,8 @@ interface Ctx {
   readonly g: Phaser.GameObjects.Graphics;
   readonly proj: Projection;
   readonly camY: number;
+  /** カメラのワールドX (横追従。段階1後の訂正で俯角を浅くした結果、必要になった)。 */
+  readonly camX: number;
 }
 
 /** 線分をカメラ手前の平面でクリップして投影する。両端とも手前なら null。 */
@@ -99,8 +101,8 @@ function clipAndProject(
   const minWorldY = camY - MAX_DRAW_DEPTH;
   if (y1 < minWorldY && y2 < minWorldY) return null;
 
-  const p1 = proj.project(x1, y1, camY);
-  const p2 = proj.project(x2, y2, camY);
+  const p1 = proj.project(x1, y1, camY, ctx.camX);
+  const p2 = proj.project(x2, y2, camY, ctx.camX);
   if (!p1.visible || !p2.visible) return null;
   return { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, depth: Math.min(p1.depth, p2.depth) };
 }
@@ -143,10 +145,10 @@ function drawStripeBands(
     const yNear = Math.min(nearest, (band + 1) * STRIPE_DEPTH);
     if (yNear <= yFar) continue;
 
-    const farLeft = proj.project(worldLeft, yFar, camY);
-    const farRight = proj.project(worldRight, yFar, camY);
-    const nearLeft = proj.project(worldLeft, yNear, camY);
-    const nearRight = proj.project(worldRight, yNear, camY);
+    const farLeft = proj.project(worldLeft, yFar, camY, ctx.camX);
+    const farRight = proj.project(worldRight, yFar, camY, ctx.camX);
+    const nearLeft = proj.project(worldLeft, yNear, camY, ctx.camX);
+    const nearRight = proj.project(worldRight, yNear, camY, ctx.camX);
     if (!farLeft.visible || !nearLeft.visible) continue;
 
     // 縞の位相はピッチ本体とランオフで揃える (ずれると継ぎ目が目立つ)。
@@ -201,7 +203,7 @@ function strokePolyline(ctx: Ctx, points: ReadonlyArray<{ x: number; y: number }
       started = false; // カメラ手前で途切れる
       continue;
     }
-    const p = proj.project(pt.x, pt.y, camY);
+    const p = proj.project(pt.x, pt.y, camY, ctx.camX);
     if (!p.visible) {
       started = false;
       continue;
@@ -245,8 +247,8 @@ function drawGoals(ctx: Ctx, goalHalfWidth: number): void {
       { x: cx + goalHalfWidth, y: goalLineY },
     ];
 
-    const ground = posts.map((p) => proj.project(p.x, p.y, camY));
-    const back = posts.map((p) => proj.project(p.x, backY, camY));
+    const ground = posts.map((p) => proj.project(p.x, p.y, camY, ctx.camX));
+    const back = posts.map((p) => proj.project(p.x, backY, camY, ctx.camX));
     if (ground.some((p) => !p.visible) || back.some((p) => !p.visible)) continue;
 
     const lift = (p: { y: number; scale: number }): number => p.y - GOAL_HEIGHT * p.scale;
@@ -256,8 +258,8 @@ function drawGoals(ctx: Ctx, goalHalfWidth: number): void {
     for (let i = 0; i <= 4; i++) {
       const t = i / 4;
       const x = cx - goalHalfWidth + goalHalfWidth * 2 * t;
-      const gp = proj.project(x, goalLineY, camY);
-      const bp = proj.project(x, backY, camY);
+      const gp = proj.project(x, goalLineY, camY, ctx.camX);
+      const bp = proj.project(x, backY, camY, ctx.camX);
       if (!gp.visible || !bp.visible) continue;
       g.lineBetween(gp.x, lift(gp), bp.x, lift(bp)); // 天井の網
       g.lineBetween(bp.x, lift(bp), bp.x, bp.y); // 奥の面の縦糸
@@ -292,9 +294,10 @@ export function drawPitchPerspective(
   g: Phaser.GameObjects.Graphics,
   proj: Projection,
   camY: number,
+  camX: number,
   goalWidth: number,
 ): void {
-  const ctx: Ctx = { g, proj, camY };
+  const ctx: Ctx = { g, proj, camY, camX };
   g.clear();
 
   drawTurf(ctx);
@@ -304,7 +307,7 @@ export function drawPitchPerspective(
 
   // スポット (センター/PK)
   for (const spot of pitchSpots()) {
-    const p = proj.project(spot.x, spot.y, camY);
+    const p = proj.project(spot.x, spot.y, camY, ctx.camX);
     if (!p.visible) continue;
     g.fillStyle(LINE_COLOR, LINE_ALPHA);
     g.fillCircle(p.x, p.y, Math.max(1, 3 * p.scale));

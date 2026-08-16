@@ -1,5 +1,8 @@
 import {
   CAMERA_SMOOTHING,
+  CAMERA_X_MAX_FRAC,
+  CAMERA_X_MIN_FRAC,
+  CAMERA_X_SMOOTHING,
   LOOK_AHEAD_MAX,
   LOOK_AHEAD_VEL_REF,
 } from './viewConstants';
@@ -59,6 +62,18 @@ export function followFocusWorldY(
 ): number {
   const desired = desiredFocusWorldY(ballWorldY, ballVelY, cfg);
   return prevFocusWorldY + (desired - prevFocusWorldY) * cfg.smoothing;
+}
+
+/**
+ * カメラのワールドXを1フレーム進める (横追従)。
+ *
+ * カメラ俯角を原作に合わせた結果、ピッチ全幅が画面に入らなくなったため必要になった
+ * (viewConstants.ts の CAMERA_X_MIN_FRAC のコメント参照)。縦の追従より遅くして、
+ * 左右のドリブルでカメラが小刻みに揺れないようにする。
+ */
+export function followCameraWorldX(prevCameraX: number, ballWorldX: number, pitchWidth: number): number {
+  const desired = clamp(ballWorldX, pitchWidth * CAMERA_X_MIN_FRAC, pitchWidth * CAMERA_X_MAX_FRAC);
+  return prevCameraX + (desired - prevCameraX) * CAMERA_X_SMOOTHING;
 }
 
 function clamp(v: number, lo: number, hi: number): number {

@@ -54,7 +54,7 @@ import {
   PLAYER_SIZE_BOOST,
   RADAR_ALPHA,
 } from './viewConstants';
-import { followFocusWorldY, makeCameraFollowConfig } from './camera';
+import { followCameraWorldX, followFocusWorldY, makeCameraFollowConfig } from './camera';
 import {
   PITCH_HEIGHT,
   PITCH_WIDTH,
@@ -137,6 +137,8 @@ export class PitchScene extends Phaser.Scene {
   private focusWorldY = PITCH_HEIGHT / 2;
   /** 現在のカメラのワールドY (focusWorldY から毎フレーム導出する)。 */
   private cameraWorldY = PITCH_HEIGHT / 2 + PROJECTION_CONFIG.nearDepth;
+  /** 現在のカメラのワールドX (横追従。俯角を原作に合わせた結果、必要になった)。 */
+  private cameraWorldX = PITCH_WIDTH / 2;
 
   // プール化された表示オブジェクト (生成は build*() で1回だけ、render() では更新のみ)。
   private playerSprites: Phaser.GameObjects.Sprite[] = [];
@@ -711,10 +713,19 @@ export class PitchScene extends Phaser.Scene {
    */
   private render(delta: number, freezeCamera: boolean): void {
     const ballPx = vecToPx(this.state.ball.pos);
-    if (!freezeCamera) this.updateCamera(ballPx.y, this.state.ball.vel.y / 256);
+    if (!freezeCamera) {
+      this.updateCamera(ballPx.y, this.state.ball.vel.y / 256);
+      this.cameraWorldX = followCameraWorldX(this.cameraWorldX, ballPx.x, PITCH_WIDTH);
+    }
     this.cameraWorldY = this.projection.cameraWorldYFor(this.focusWorldY, FOCUS_SCREEN_Y);
 
-    drawPitchPerspective(this.pitchGraphics, this.projection, this.cameraWorldY, toFloat(GOAL_WIDTH_FIXED));
+    drawPitchPerspective(
+      this.pitchGraphics,
+      this.projection,
+      this.cameraWorldY,
+      this.cameraWorldX,
+      toFloat(GOAL_WIDTH_FIXED),
+    );
 
     this.renderPlayers();
     this.renderBall(ballPx);
@@ -743,7 +754,7 @@ export class PitchScene extends Phaser.Scene {
   private renderPlayers(): void {
     this.state.players.forEach((player, index) => {
       const world = vecToPx(player.pos);
-      const p = this.projection.project(world.x, world.y, this.cameraWorldY);
+      const p = this.projection.project(world.x, world.y, this.cameraWorldY, this.cameraWorldX);
 
       const sprite = this.playerSprites[index];
       const shadow = this.playerShadows[index];
@@ -792,7 +803,7 @@ export class PitchScene extends Phaser.Scene {
   }
 
   private renderBall(ballPx: { x: number; y: number }): void {
-    const p = this.projection.project(ballPx.x, ballPx.y, this.cameraWorldY);
+    const p = this.projection.project(ballPx.x, ballPx.y, this.cameraWorldY, this.cameraWorldX);
     this.ballRadarDot.setPosition(ballPx.x, ballPx.y);
 
     if (!p.visible) {
@@ -829,7 +840,7 @@ export class PitchScene extends Phaser.Scene {
       return;
     }
     const world = vecToPx(controlled.pos);
-    const p = this.projection.project(world.x, world.y, this.cameraWorldY);
+    const p = this.projection.project(world.x, world.y, this.cameraWorldY, this.cameraWorldX);
     if (!p.visible) {
       this.cursorRing.setVisible(false);
       return;
@@ -923,7 +934,7 @@ export class PitchScene extends Phaser.Scene {
 
     if (controlled && charge > 0) {
       const world = vecToPx(controlled.pos);
-      const p = this.projection.project(world.x, world.y, this.cameraWorldY);
+      const p = this.projection.project(world.x, world.y, this.cameraWorldY, this.cameraWorldX);
       if (p.visible) {
         const ratio = Math.min(1, charge / KICK_MAX_CHARGE_FRAMES);
         this.chargeMeter.setPosition(p.x, p.y);
@@ -949,7 +960,7 @@ export class PitchScene extends Phaser.Scene {
     if (kickedThisFrame) {
       this.kickFlashMs = KICK_FLASH_DURATION_MS;
       const ballWorld = vecToPx(this.state.ball.pos);
-      const p = this.projection.project(ballWorld.x, ballWorld.y, this.cameraWorldY);
+      const p = this.projection.project(ballWorld.x, ballWorld.y, this.cameraWorldY, this.cameraWorldX);
       if (p.visible) this.kickFlash.setPosition(p.x, p.y);
     }
     this.prevKickChargeFrames = charge;
@@ -986,7 +997,7 @@ export class PitchScene extends Phaser.Scene {
       return;
     }
     const world = vecToPx(receiver.pos);
-    const p = this.projection.project(world.x, world.y, this.cameraWorldY);
+    const p = this.projection.project(world.x, world.y, this.cameraWorldY, this.cameraWorldX);
     if (!p.visible) {
       this.passMarker.setVisible(false);
       return;

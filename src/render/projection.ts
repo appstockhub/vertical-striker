@@ -45,7 +45,13 @@ export interface ProjectionConfig {
   readonly nearDepth: number;
   /** nearDepth の位置でピッチ幅が画面幅の何倍に見えるか。 */
   readonly nearWidthRatio: number;
-  /** カメラのワールドX (横スクロールしないのでピッチ中央固定)。 */
+  /**
+   * カメラのワールドXの既定値 (ピッチ中央)。
+   * ★段階1後の訂正以降、実際には毎フレーム project() の第4引数で上書きする★
+   * カメラ俯角を原作に合わせた結果、ボール位置で画面に写るワールド幅が約197pxとなり、
+   * 480px幅のピッチ全体は入らなくなったため、横方向にもボールを追う必要が生じた
+   * (それ以前は全幅が画面に収まっていたので固定でよかった)。
+   */
   readonly cameraWorldX: number;
   /** 投影可能な最小の奥行き。これより手前(カメラの後ろ含む)は描画対象外。 */
   readonly minDepth: number;
@@ -61,7 +67,7 @@ export interface Projection {
    * ワールド座標 → 画面座標。visible=false の点はカメラの手前/後ろで投影できない
    * (呼び出し側で setVisible(false) すること)。
    */
-  project(worldX: number, worldY: number, cameraWorldY: number): ProjectedPoint;
+  project(worldX: number, worldY: number, cameraWorldY: number, cameraWorldX?: number): ProjectedPoint;
   /** 奥行き z における見かけの拡大率 (near 位置で 1.0 になるよう正規化済み)。 */
   scaleAtDepth(depth: number): number;
   /** 画面Yから逆算した奥行き (縞模様の生成やカリング範囲の計算に使う)。 */
@@ -106,14 +112,19 @@ export function createProjection(config: ProjectionConfig = DEFAULT_PROJECTION_C
     focal,
     camHeight,
     scaleAtDepth,
-    project(worldX: number, worldY: number, cameraWorldY: number): ProjectedPoint {
+    project(
+      worldX: number,
+      worldY: number,
+      cameraWorldY: number,
+      cameraWorldX: number = config.cameraWorldX,
+    ): ProjectedPoint {
       const depth = cameraWorldY - worldY;
       if (depth <= config.minDepth) {
         // カメラの後ろ/直下。投影が発散するので描画対象から外す。
         return { x: 0, y: config.viewportHeight * 2, scale: 1, depth, visible: false };
       }
       return {
-        x: config.viewportWidth / 2 + (focal * (worldX - config.cameraWorldX)) / depth,
+        x: config.viewportWidth / 2 + (focal * (worldX - cameraWorldX)) / depth,
         y: config.horizonY + focalTimesHeight / depth,
         scale: scaleAtDepth(depth),
         depth,
