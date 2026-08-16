@@ -16,7 +16,14 @@ export const VIEWPORT_HEIGHT = 720;
 export const PITCH_WIDTH = VIEWPORT_WIDTH;
 export const PITCH_HEIGHT = VIEWPORT_HEIGHT * 2.5;
 
-/** レーダー(ミニマップ)の画面上のサイズと余白。 */
-export const RADAR_WIDTH = Math.round(VIEWPORT_WIDTH * 0.22);
+/**
+ * レーダー(ミニマップ)の画面上のサイズと余白。
+ *
+ * ★段階1で 0.22 → 0.15★ ピッチが 1:3.75 と極端に縦長なため、レーダーも同じ比率で
+ * 縦に長くなり、幅22%でも画面高さの55%を占めて右側のプレー領域を丸ごと隠していた
+ * (自己観察キャプチャ `.shots/before-*.png`)。CLAUDE.md の「レーダーの視認性・情報量には
+ * 妥協しない」方針は維持しつつ、プレーの視界を奪わない大きさに収める。
+ */
+export const RADAR_WIDTH = Math.round(VIEWPORT_WIDTH * 0.15);
 export const RADAR_HEIGHT = Math.round(RADAR_WIDTH * (PITCH_HEIGHT / PITCH_WIDTH));
 export const RADAR_MARGIN = 10;

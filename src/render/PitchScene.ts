@@ -40,6 +40,8 @@ import { detectSoundEvents, SoundEventId } from './soundEvents';
 import { SoundPlayer } from './SoundPlayer';
 import { MusicPlayer, type MusicTrack } from './MusicPlayer';
 import { getHalf, isFulltime } from '../sim/matchClock';
+import { FOCUS_SCREEN_Y_FRAC, PLAYER_SIZE_BOOST, RADAR_ALPHA } from './viewConstants';
+import { followFocusWorldY, makeCameraFollowConfig } from './camera';
 import {
   PITCH_HEIGHT,
   PITCH_WIDTH,
@@ -67,20 +69,9 @@ const DETERMINISTIC_SEED = 1; // Phase 0 は固定シード。Phase 3+ で試合
  *   - レーダーだけは従来どおりワールド座標のまま別カメラで描く (真上表示が正しいUI)。
  */
 const PROJECTION_CONFIG = DEFAULT_PROJECTION_CONFIG;
-/**
- * 注視点 (ボール) を画面のどこに置くか。
- *
- * ★18周目に 0.66 → 0.76★ 自己観察 (PNGキャプチャ) で「画面の下半分に誰も居ない構図」が
- * 頻発することが分かった (docs/original-gap-list.md V1)。ボールを下寄りに置くほど
- * 「前方 = 攻撃方向」の情報量が増え、無駄な余白が減る。原作も画面いっぱいに選手が
- * 動いている。
- */
-const FOCUS_SCREEN_Y = VIEWPORT_HEIGHT * 0.76;
-/** カメラ追従のイージング係数 (0..1、1に近いほど速い)。 */
-const CAMERA_SMOOTHING = 0.12;
-/** 進行方向の先読みオフセット (px) と、その上限に達する速度 (px/tick)。 */
-const LOOK_AHEAD_MAX = 90;
-const LOOK_AHEAD_VEL_REF = 3;
+/** 注視点 (ボール) の画面Y。調整値の実体は render/viewConstants.ts (段階1で集約)。 */
+const FOCUS_SCREEN_Y = VIEWPORT_HEIGHT * FOCUS_SCREEN_Y_FRAC;
+const CAMERA_FOLLOW_CONFIG = makeCameraFollowConfig(PITCH_HEIGHT);
 
 const BALL_RADIUS_PX = 8;
 /** 選手の歩行アニメ切替間隔 (tick数)。 */
@@ -99,12 +90,6 @@ const WALK_ANIM_MIN_SPEED = 0.15;
 const BALL_VISUAL_SPIN_PER_PX = 0.09;
 /** 地面の円 (カーソルリング等) の縦つぶし率。斜め視点で円は楕円に見える。 */
 const GROUND_ELLIPSE_SQUASH = 0.42;
-/**
- * 選手の見かけサイズの補正。厳密な投影スケールのままだと、この縦長ピッチ (480x1800) では
- * 選手が小さすぎて背番号も向きも読めない。原作も選手を実寸比より大きく描いており、
- * 「視認性 > 幾何的な正確さ」を優先する (描画専用の演出係数)。
- */
-const PLAYER_SIZE_BOOST = 1.4;
 /** HUDバーの高さ。 */
 const HUD_HEIGHT = 30;
 
@@ -432,6 +417,9 @@ export class PitchScene extends Phaser.Scene {
     this.radarCamera.scrollX = 0;
     this.radarCamera.scrollY = 0;
     this.radarCamera.setBackgroundColor(0x0c1017);
+    // ★段階1★ 半透明にして、レーダーの裏に隠れた選手の気配が分かるようにする
+    // (縦長ピッチのためレーダーはどうしても縦に大きく、完全不透明だと右サイドが死角になる)。
+    this.radarCamera.setAlpha(RADAR_ALPHA);
 
     const radarPitch = this.buildRadarPitch();
     this.cameras.main.ignore(radarPitch);
@@ -634,13 +622,7 @@ export class PitchScene extends Phaser.Scene {
 
   /** 注視点 (ボール) の追従。カメラのワールドYはここから毎フレーム導出する。 */
   private updateCamera(ballWorldY: number, ballVelY: number): void {
-    const lookAhead = Math.max(
-      -LOOK_AHEAD_MAX,
-      Math.min(LOOK_AHEAD_MAX, (ballVelY / LOOK_AHEAD_VEL_REF) * LOOK_AHEAD_MAX),
-    );
-    // 注視点はピッチ内にクランプする (ゴール裏へ回り込みすぎない)。
-    const desired = Math.max(0, Math.min(PITCH_HEIGHT, ballWorldY + lookAhead));
-    this.focusWorldY += (desired - this.focusWorldY) * CAMERA_SMOOTHING;
+    this.focusWorldY = followFocusWorldY(this.focusWorldY, ballWorldY, ballVelY, CAMERA_FOLLOW_CONFIG);
   }
 
   private renderPlayers(): void {

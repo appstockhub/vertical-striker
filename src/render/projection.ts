@@ -1,4 +1,5 @@
 import { PITCH_WIDTH, VIEWPORT_HEIGHT, VIEWPORT_WIDTH } from '../config/pitch';
+import { HORIZON_Y_FRAC, NEAR_DEPTH, NEAR_WIDTH_RATIO } from './viewConstants';
 
 /**
  * 疑似3D (透視投影) の座標変換レイヤー。★描画専用★
@@ -79,14 +80,13 @@ export interface ProjectedPoint {
   readonly visible: boolean;
 }
 
+// 調整可能なパラメータの実体は render/viewConstants.ts に集約してある (段階1)。
 export const DEFAULT_PROJECTION_CONFIG: ProjectionConfig = {
   viewportWidth: VIEWPORT_WIDTH,
   viewportHeight: VIEWPORT_HEIGHT,
-  // 画面上部 18% がスタンド/空。原作もこのくらいの比率で、視界の浅さを補う情報量になっている。
-  horizonY: Math.round(VIEWPORT_HEIGHT * 0.18),
-  nearDepth: 300,
-  // 1.18 = near のタッチラインがわずかに画面外。手前が広く見えて奥行きが強調される。
-  nearWidthRatio: 1.18,
+  horizonY: Math.round(VIEWPORT_HEIGHT * HORIZON_Y_FRAC),
+  nearDepth: NEAR_DEPTH,
+  nearWidthRatio: NEAR_WIDTH_RATIO,
   cameraWorldX: PITCH_WIDTH / 2,
   minDepth: 24,
 };

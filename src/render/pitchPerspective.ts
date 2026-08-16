@@ -22,8 +22,31 @@ import {
 
 const TURF_DARK = 0x1c6636;
 const TURF_LIGHT = 0x237943;
-/** ピッチ外周の地面 (陸上トラック相当)。地平線とピッチの間を埋める。 */
-const SURROUND_COLOR = 0x123b24;
+/**
+ * ★段階1★ タッチライン/ゴールラインの外側にも続く芝 (ランオフ)。
+ *
+ * 原作の画面を測ると、ピッチはほぼ常に画面幅いっぱいを占め、外に出るのは遠方の隅だけで、
+ * そこも「暗い虚無」ではなく陸上トラック相当の暖色だった。当実装はピッチ(480px幅)の外側が
+ * 一様な暗緑だったため、奥へ行くほどピッチが細い帯に見え、「廊下を走っている」ような
+ * 画になっていた (自己観察キャプチャ `.shots/before-*.png`)。
+ * 実寸のスタジアム同様、ラインの外にも芝を延ばして画面を埋める。
+ */
+const TURF_OUTER_DARK = 0x1a6033;
+const TURF_OUTER_LIGHT = 0x20703e;
+/**
+ * ランオフの芝をラインの外へどれだけ延ばすか (ワールドpx)。
+ * MAX_DRAW_DEPTH(3200) 相当まで延ばし、通常のカメラ位置では画面が芝で埋まるようにする
+ * (外周色が見えるのは、ゴール裏を極端に覗き込んだ時の遠方の隅だけ)。
+ */
+const RUNOFF_X = 2800;
+const RUNOFF_Y = 2800;
+/**
+ * 描画範囲の外 (地平線のすぐ下、MAX_DRAW_DEPTH より奥) を埋める色。
+ * ここは「大気で沈んだ最遠部」であり、地面の色ではなく drawDistanceHaze と同系の暗色に
+ * しておくと、芝がそのままスタンドの影へ溶けて見える (原作もピッチの far end が
+ * スタンドに接していて、その間に土色の帯は無い)。
+ */
+const SURROUND_COLOR = 0x0d1622;
 const LINE_COLOR = 0xffffff;
 const LINE_ALPHA = 0.8;
 /** ライン幅は near で 2.5px、奥ほど細くする (遠近感)。 */
@@ -34,8 +57,13 @@ const NET_COLOR = 0xffffff;
 const NET_ALPHA = 0.35;
 const POST_COLOR = 0xf2f2f2;
 
-/** 描画対象にする最遠の奥行き。これ以上奥は1px以下になり描いても見えない。 */
-const MAX_DRAW_DEPTH = 3200;
+/**
+ * 描画対象にする最遠の奥行き。これ以上奥は1px以下になり描いても見えない。
+ * ★段階1で 3200 → 6000★ 3200 だと地平線の下 55px ぶんが「何も描かれない帯」になり、
+ * 芝が途中で切れて土色の帯が出ていた (自己観察キャプチャ after1)。芝をかすみの帯まで
+ * 到達させ、そのままスタンドの影へ溶けるようにする。
+ */
+const MAX_DRAW_DEPTH = 6000;
 
 interface Ctx {
   readonly g: Phaser.GameObjects.Graphics;
@@ -89,33 +117,40 @@ function strokeSegment(ctx: Ctx, seg: WorldSegment, alpha = LINE_ALPHA, color = 
   ctx.g.lineBetween(p.x1, p.y1, p.x2, p.y2);
 }
 
-/** 芝の刈り込み縞 + ピッチ外周の地面。ライン描画より先に呼ぶこと。 */
-function drawTurf(ctx: Ctx): void {
+/**
+ * 刈り込み縞を、指定のワールドX範囲・Y範囲について台形として塗る。
+ * ランオフ(ライン外の芝)と、ピッチ本体で色だけ変えて2回呼ぶ。
+ */
+function drawStripeBands(
+  ctx: Ctx,
+  worldLeft: number,
+  worldRight: number,
+  worldFarY: number,
+  worldNearY: number,
+  darkColor: number,
+  lightColor: number,
+): void {
   const { g, proj, camY } = ctx;
+  const nearest = Math.min(worldNearY, camY - proj.config.minDepth);
+  const farthest = Math.max(worldFarY, camY - MAX_DRAW_DEPTH);
+  if (nearest <= farthest) return;
 
-  // 地平線からビューポート下端までを「ピッチ外の地面」で埋める
-  // (ピッチの奥・左右の外側が地の色のまま抜けないようにする下地)。
-  g.fillStyle(SURROUND_COLOR, 1);
-  g.fillRect(0, proj.config.horizonY, proj.config.viewportWidth, proj.config.viewportHeight - proj.config.horizonY);
-
-  // 刈り込み縞: ワールドの一定間隔の帯を台形として塗る。
-  const nearestWorldY = Math.min(PITCH_HEIGHT, camY - proj.config.minDepth);
-  const farthestWorldY = Math.max(0, camY - MAX_DRAW_DEPTH);
-  const firstBand = Math.floor(farthestWorldY / STRIPE_DEPTH);
-  const lastBand = Math.ceil(nearestWorldY / STRIPE_DEPTH);
+  const firstBand = Math.floor(farthest / STRIPE_DEPTH);
+  const lastBand = Math.ceil(nearest / STRIPE_DEPTH);
 
   for (let band = firstBand; band < lastBand; band++) {
-    const yFar = Math.max(0, band * STRIPE_DEPTH);
-    const yNear = Math.min(PITCH_HEIGHT, (band + 1) * STRIPE_DEPTH, nearestWorldY);
+    const yFar = Math.max(farthest, band * STRIPE_DEPTH);
+    const yNear = Math.min(nearest, (band + 1) * STRIPE_DEPTH);
     if (yNear <= yFar) continue;
 
-    const farLeft = proj.project(0, yFar, camY);
-    const farRight = proj.project(PITCH_WIDTH, yFar, camY);
-    const nearLeft = proj.project(0, yNear, camY);
-    const nearRight = proj.project(PITCH_WIDTH, yNear, camY);
+    const farLeft = proj.project(worldLeft, yFar, camY);
+    const farRight = proj.project(worldRight, yFar, camY);
+    const nearLeft = proj.project(worldLeft, yNear, camY);
+    const nearRight = proj.project(worldRight, yNear, camY);
     if (!farLeft.visible || !nearLeft.visible) continue;
 
-    g.fillStyle(band % 2 === 0 ? TURF_DARK : TURF_LIGHT, 1);
+    // 縞の位相はピッチ本体とランオフで揃える (ずれると継ぎ目が目立つ)。
+    g.fillStyle(band % 2 === 0 ? darkColor : lightColor, 1);
     g.fillPoints(
       [
         { x: farLeft.x, y: farLeft.y },
@@ -126,6 +161,31 @@ function drawTurf(ctx: Ctx): void {
       true,
     );
   }
+}
+
+/** 芝の刈り込み縞 (ランオフ込み) + その外側の地面。ライン描画より先に呼ぶこと。 */
+function drawTurf(ctx: Ctx): void {
+  const { g, proj } = ctx;
+
+  // 最下層: 地平線からビューポート下端までを陸上トラック相当の色で埋める
+  // (ランオフの芝より外側に出る遠方の隅だけがこの色になる)。
+  g.fillStyle(SURROUND_COLOR, 1);
+  g.fillRect(0, proj.config.horizonY, proj.config.viewportWidth, proj.config.viewportHeight - proj.config.horizonY);
+
+  // ランオフの芝 (ラインの外側)。ピッチ本体より一段暗くして、プレー領域との境界は
+  // 白いタッチライン/ゴールラインが担う。
+  drawStripeBands(
+    ctx,
+    -RUNOFF_X,
+    PITCH_WIDTH + RUNOFF_X,
+    -RUNOFF_Y,
+    PITCH_HEIGHT + RUNOFF_Y,
+    TURF_OUTER_DARK,
+    TURF_OUTER_LIGHT,
+  );
+
+  // ピッチ本体 (ランオフの上に重ねる)。
+  drawStripeBands(ctx, 0, PITCH_WIDTH, 0, PITCH_HEIGHT, TURF_DARK, TURF_LIGHT);
 }
 
 /** 折れ線 (円弧など) をまとめて1ストロークで描く。 */

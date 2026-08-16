@@ -1,19 +1,27 @@
+import {
+  CAMERA_SMOOTHING,
+  LOOK_AHEAD_MAX,
+  LOOK_AHEAD_VEL_REF,
+} from './viewConstants';
+
 /**
- * 縦スクロールカメラの Y 座標計算 (純関数、描画専用)。
+ * 注視点 (ボール) 追従の純関数。★描画専用★
  *
- * カメラのスクロール位置は GameState に含めない —
- * ネット対戦/リプレイで一致する必要がない「見た目」の状態だからである。
- * そのため sim/ とは異なり、ここでは float のイージングを許可する。
+ * カメラの状態は GameState に含めない — ネット対戦/リプレイで一致する必要がない
+ * 「見た目」だからである。そのため sim/ とは異なり float のイージングを許可する。
  *
- * Phase 0 の暫定仕様: ボールが静止しているため、追従ターゲットには
- * プレイヤー座標を渡す (Phase 1 でボール追従に切り替える際もこの関数の
- * シグネチャは変わらず、呼び出し側の引数を差し替えるだけでよい)。
+ * ★段階1で書き直した★ 16周目の疑似3D化で「カメラのスクロールY」という概念自体が
+ * 無くなり (全オブジェクトを画面座標に置き、カメラ移動 = 投影に渡す cameraWorldY を
+ * 変えること、と定義が一本化された)、旧・真上視点用の computeCameraY は使われないまま
+ * 残っていた。ここでは実際に PitchScene が使う「注視点のワールドYを1フレーム進める」
+ * 計算だけを持たせ、カメラ挙動をテストから直接検証できるようにする。
  */
 
-export interface CameraConfig {
-  readonly viewportHeight: number;
-  readonly pitchHeight: number;
-  /** 進行方向の先読みオフセット量の上限 (px)。 */
+export interface CameraFollowConfig {
+  /** 注視点をクランプする下限/上限 (通常は 0..PITCH_HEIGHT)。 */
+  readonly minWorldY: number;
+  readonly maxWorldY: number;
+  /** 進行方向の先読みオフセット量の上限 (ワールドpx)。 */
   readonly lookAheadMax: number;
   /** この速度(px/tick)で lookAheadMax に達する。 */
   readonly lookAheadVelRef: number;
@@ -21,22 +29,36 @@ export interface CameraConfig {
   readonly smoothing: number;
 }
 
-export function computeCameraY(
-  targetY: number,
-  targetVelY: number,
-  prevCameraY: number,
-  cfg: CameraConfig,
+export function makeCameraFollowConfig(pitchHeight: number): CameraFollowConfig {
+  return {
+    minWorldY: 0,
+    maxWorldY: pitchHeight,
+    lookAheadMax: LOOK_AHEAD_MAX,
+    lookAheadVelRef: LOOK_AHEAD_VEL_REF,
+    smoothing: CAMERA_SMOOTHING,
+  };
+}
+
+/** 先読みを加えた「本来注視したいワールドY」(イージング前の目標値)。 */
+export function desiredFocusWorldY(
+  ballWorldY: number,
+  ballVelY: number,
+  cfg: CameraFollowConfig,
 ): number {
-  const lookAheadRaw = (targetVelY / cfg.lookAheadVelRef) * cfg.lookAheadMax;
-  const lookAhead = Math.max(-cfg.lookAheadMax, Math.min(cfg.lookAheadMax, lookAheadRaw));
+  const raw = (ballVelY / cfg.lookAheadVelRef) * cfg.lookAheadMax;
+  const lookAhead = clamp(raw, -cfg.lookAheadMax, cfg.lookAheadMax);
+  return clamp(ballWorldY + lookAhead, cfg.minWorldY, cfg.maxWorldY);
+}
 
-  const desired = clamp(
-    targetY - cfg.viewportHeight / 2 + lookAhead,
-    0,
-    Math.max(0, cfg.pitchHeight - cfg.viewportHeight),
-  );
-
-  return prevCameraY + (desired - prevCameraY) * cfg.smoothing;
+/** 注視点を1フレーム進める (イージング)。 */
+export function followFocusWorldY(
+  prevFocusWorldY: number,
+  ballWorldY: number,
+  ballVelY: number,
+  cfg: CameraFollowConfig,
+): number {
+  const desired = desiredFocusWorldY(ballWorldY, ballVelY, cfg);
+  return prevFocusWorldY + (desired - prevFocusWorldY) * cfg.smoothing;
 }
 
 function clamp(v: number, lo: number, hi: number): number {
