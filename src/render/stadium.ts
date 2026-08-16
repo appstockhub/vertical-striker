@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { lerpColor } from './colorUtils';
 
 /**
  * 地平線の上に広がるスタジアム (空 → 屋根 → 観客席 → 広告板) の描画。★描画専用・静的★
@@ -15,10 +16,22 @@ import Phaser from 'phaser';
 const SKY_TOP = 0x0d1622;
 const SKY_BOTTOM = 0x1d2c3f;
 const ROOF_COLOR = 0x0a0f16;
-const STAND_DARK = 0x232b36;
-const STAND_LIGHT = 0x2c3542;
-/** 観客のドットに使う色 (色数を絞ると「群衆」としてまとまって見える)。 */
-const CROWD_COLORS = [0xd8d2c4, 0xc9a35b, 0x8fa7c4, 0xa8563f, 0x6f7f8c, 0xe0dfe4];
+/**
+ * ★V-4 (ビジュアル手法転換・案C)★ スタンド段差の基調色。原作PNGを実測すると
+ * 観客席は `#c9dbdb`/`#c5d5d4`(明るい水色がかったグレー)主体で、旧実装の暗い青灰
+ * (0x232b36系、実測サンプルの100%が単色の黒 `#0d1622` に潰れていた) とは真逆だった
+ * (docs/visual-overhaul-proposal.md 1-3)。段差そのものを明るくし、群衆ドットが暗い
+ * 背景に沈まないようにする。
+ */
+const STAND_BASE_A = 0xc9dbdb;
+const STAND_BASE_B = 0xbfd2d1;
+/**
+ * 観客のドットに使う色。原作実測で確認できた `#ffffff`/明るいグレーに加え、
+ * `#c14931` 相当の赤アクセントを含める (単色黒だった旧パレットからの入れ替え)。
+ */
+const CROWD_COLORS = [0xffffff, 0xd8d2c4, 0xc9a35b, 0x8fa7c4, 0xc14931, 0xe0dfe4];
+/** 赤アクセントのサポーターズブロック (原作実測 `#c14931`)。1区画だけ塗りつぶす。 */
+const CROWD_ACCENT_RED = 0xc14931;
 /** 広告板 (ピッチとスタンドの境界を締める帯)。 */
 const BOARD_COLOR = 0x101820;
 const BOARD_STRIPE = 0x2a3a4a;
@@ -43,19 +56,27 @@ export function drawStadium(g: Phaser.GameObjects.Graphics, width: number, horiz
   g.fillStyle(ROOF_COLOR, 1);
   g.fillRect(0, roofY, width, standTop - roofY);
 
-  // スタンド本体 (段差を横帯で表現)
+  // スタンド本体 (段差を横帯で表現)。★V-4★ 暗い青灰→明るい群衆色系へ。
   const rows = 7;
   const rowHeight = (boardTop - standTop) / rows;
   for (let r = 0; r < rows; r++) {
-    g.fillStyle(r % 2 === 0 ? STAND_DARK : STAND_LIGHT, 1);
+    g.fillStyle(r % 2 === 0 ? STAND_BASE_A : STAND_BASE_B, 1);
     g.fillRect(0, standTop + r * rowHeight, width, rowHeight + 0.5);
   }
 
-  // 観客 (固定配置のドット。行ごとに位相をずらして規則性を消す)
+  // 赤アクセントのサポーターズブロック (原作実測 `#c14931`)。1区画を通しで塗り、
+  // 「明るい群衆にドットだけでなく色面としての赤アクセントもある」原作の情報量に寄せる。
+  const accentLeft = width * 0.66;
+  const accentRight = width * 0.84;
+  g.fillStyle(CROWD_ACCENT_RED, 0.55);
+  g.fillRect(accentLeft, standTop, accentRight - accentLeft, boardTop - standTop);
+
+  // 観客 (固定配置のドット。行ごとに位相をずらして規則性を消す)。★V-4★ 密度を上げ、
+  // 明るい基調色の上でも「群衆」の粒立ちがはっきり見えるようにする。
   const dot = Math.max(1.4, rowHeight * 0.26);
   for (let r = 0; r < rows; r++) {
     const y = standTop + r * rowHeight + rowHeight * 0.45;
-    const spacing = dot * 2.6;
+    const spacing = dot * 1.8;
     const phase = (r * spacing) / 3;
     for (let x = phase % spacing; x < width; x += spacing) {
       // 位置から決まる固定パターンで色を選ぶ (乱数を使わない = 毎回同じ絵)。
@@ -72,18 +93,4 @@ export function drawStadium(g: Phaser.GameObjects.Graphics, width: number, horiz
   for (let x = 0; x < width; x += 48) {
     g.fillRect(x + 6, boardTop + 2, 30, Math.max(1, horizonY - boardTop - 4));
   }
-}
-
-/** 2色を t (0..1) で線形補間する (グラデーション近似用)。 */
-function lerpColor(from: number, to: number, t: number): number {
-  const fr = (from >> 16) & 0xff;
-  const fg = (from >> 8) & 0xff;
-  const fb = from & 0xff;
-  const tr = (to >> 16) & 0xff;
-  const tg = (to >> 8) & 0xff;
-  const tb = to & 0xff;
-  const r = Math.round(fr + (tr - fr) * t);
-  const gg = Math.round(fg + (tg - fg) * t);
-  const b = Math.round(fb + (tb - fb) * t);
-  return (r << 16) | (gg << 8) | b;
 }
