@@ -7,10 +7,10 @@ import {
   pitchArcPolylines,
   pitchLineSegments,
   pitchSpots,
-  STRIPE_WIDTH,
+  STRIPE_DEPTH,
   type WorldSegment,
 } from './pitchGeometry';
-import { hash01, lerpColor, shadeColor } from './colorUtils';
+import { lerpColor, shadeColor } from './colorUtils';
 
 /**
  * ピッチの疑似3D描画 (毎フレーム、投影しながら描く)。★描画専用★
@@ -58,13 +58,6 @@ const TURF_FAMILY_B_OUTER = { near: shadeColor(TURF_NEAR_B, RUNOFF_SHADE), far: 
  */
 const RUNOFF_X = 2800;
 const RUNOFF_Y = 2800;
-/** 本体ピッチの縞1本あたりの奥行き分割数 (空気遠近グラデーション用)。多いほど滑らかだが描画コストが増える。 */
-const MAIN_DEPTH_CELLS = 6;
-/** ランオフは装飾なので粗く (幅・奥行き分割とも本体より低解像度)。 */
-const OUTER_STRIPE_WIDTH = 240;
-const OUTER_DEPTH_CELLS = 3;
-/** ディザリングで色数を増やすための微小な明暗ジッター幅 (±このぶんだけ明度を揺らす)。 */
-const TURF_DITHER_JITTER = 0.08;
 /**
  * 描画範囲の外 (地平線のすぐ下、MAX_DRAW_DEPTH より奥) を埋める色。
  * ここは「大気で沈んだ最遠部」であり、地面の色ではなく drawDistanceHaze と同系の暗色に
@@ -158,20 +151,20 @@ interface TurfFamily {
 
 /**
  * 刈り込み縞を、指定のワールドX範囲・Y範囲について台形として塗る。
- * ランオフ(ライン外の芝)と、ピッチ本体で色とパラメータだけ変えて2回呼ぶ。
+ * ランオフ(ライン外の芝)と、ピッチ本体で色だけ変えて2回呼ぶ。
  *
- * ★V-4 (ビジュアル手法転換・案C) で全面書き換え★
- *   1. 縞の分割軸をY(奥行き)からX(幅)へ変更した。原作は「ゴール〜ゴールを結ぶ方向に
- *      走る縦縞が消失点へ収束する」向きだが、旧実装はY方向の帯だったため90度違う
- *      横縞になっていた (docs/visual-overhaul-proposal.md 1-2)。
- *   2. 各X帯をさらに奥行き方向へ分割 (depthCells) し、セルごとに手前色→遠方色を
- *      補間する。原作は遠方ほど明るい(空気遠近)のに対し旧実装は逆に暗くしていたため、
- *      向きを反転した。
- *   3. セルごとに位置ベースの決定論的ジッターで明度を±揺らす (Math.random不使用、
- *      同じフレームは毎回同じ絵になる)。実測で手前が3色しか無かった単調さを崩し、
- *      「多数の中間色」に近づける (同節 5-5)。
+ * ★V-4で縦縞化 → ユーザー指摘で撤回・横縞へ差し戻し★
+ * 前回「原作は縦縞(ゴール〜ゴールを結ぶ方向)」と判断してX軸分割+奥行きセル細分化+
+ * 位置ジッターのディザリングを実装したが、ユーザー確認の結果これは誤りで、
+ * 「原作の縞はピッチを横切る方向(タッチラインと平行、奥行き方向に交互に切り替わる帯)」
+ * だったと判明した。加えてセル単位のディザリングは市松模様のモザイクに見えてしまい、
+ * 原作にはこの質感が無かった。そのため元のY(奥行き)軸分割へ戻し、ディザリングは廃止した。
+ *
+ * 空気遠近 (遠方ほど明るい) はV-4で直した向きのまま維持する: 帯1本は単色だが、
+ * その色を帯の奥行き位置(depthT)で family.near→family.far へ補間して決めるため、
+ * 帯をまたいで滑らかに明るくなっていく (市松模様にはならない、1帯=1色のシンプルな縞)。
  */
-function drawStripeBandsVertical(
+function drawStripeBands(
   ctx: Ctx,
   worldLeft: number,
   worldRight: number,
@@ -179,54 +172,43 @@ function drawStripeBandsVertical(
   worldNearY: number,
   familyA: TurfFamily,
   familyB: TurfFamily,
-  stripeWidth: number,
-  depthCells: number,
 ): void {
   const { g, proj, camY } = ctx;
   const nearest = Math.min(worldNearY, camY - proj.config.minDepth);
   const farthest = Math.max(worldFarY, camY - MAX_DRAW_DEPTH);
   if (nearest <= farthest) return;
 
-  const firstCol = Math.floor(worldLeft / stripeWidth);
-  const lastCol = Math.ceil(worldRight / stripeWidth);
+  const firstBand = Math.floor(farthest / STRIPE_DEPTH);
+  const lastBand = Math.ceil(nearest / STRIPE_DEPTH);
   const span = nearest - farthest;
 
-  for (let col = firstCol; col < lastCol; col++) {
-    const xLeft = Math.max(worldLeft, col * stripeWidth);
-    const xRight = Math.min(worldRight, (col + 1) * stripeWidth);
-    if (xRight <= xLeft) continue;
-    // 位相はピッチ本体とランオフで揃える (ずれると継ぎ目が目立つ)。
-    const family = (((col % 2) + 2) % 2) === 0 ? familyA : familyB;
+  for (let band = firstBand; band < lastBand; band++) {
+    const yFar = Math.max(farthest, band * STRIPE_DEPTH);
+    const yNear = Math.min(nearest, (band + 1) * STRIPE_DEPTH);
+    if (yNear <= yFar) continue;
 
-    for (let cell = 0; cell < depthCells; cell++) {
-      const t0 = cell / depthCells;
-      const t1 = (cell + 1) / depthCells;
-      // depthT: 0=手前(nearest、基調色) → 1=最遠(farthest、明るい遠方色)。
-      const depthT = (t0 + t1) / 2;
-      const yNear = nearest - span * t0;
-      const yFar = nearest - span * t1;
+    const farLeft = proj.project(worldLeft, yFar, camY, ctx.camX);
+    const farRight = proj.project(worldRight, yFar, camY, ctx.camX);
+    const nearLeft = proj.project(worldLeft, yNear, camY, ctx.camX);
+    const nearRight = proj.project(worldRight, yNear, camY, ctx.camX);
+    if (!farLeft.visible || !nearLeft.visible) continue;
 
-      const farLeft = proj.project(xLeft, yFar, camY, ctx.camX);
-      const farRight = proj.project(xRight, yFar, camY, ctx.camX);
-      const nearLeft = proj.project(xLeft, yNear, camY, ctx.camX);
-      const nearRight = proj.project(xRight, yNear, camY, ctx.camX);
-      if (!farLeft.visible || !nearLeft.visible) continue;
+    // 縞の位相はピッチ本体とランオフで揃える (ずれると継ぎ目が目立つ)。
+    const family = (((band % 2) + 2) % 2) === 0 ? familyA : familyB;
+    // depthT: 0=手前(nearest、基調色) → 1=最遠(farthest、明るい遠方色)。帯の中点で評価する。
+    const depthT = (nearest - (yFar + yNear) / 2) / span;
+    const color = lerpColor(family.near, family.far, depthT);
 
-      const baseColor = lerpColor(family.near, family.far, depthT);
-      const jitter = hash01(col * 31.7 + cell * 17.3 + (family === familyA ? 0 : 1000.3));
-      const shaded = shadeColor(baseColor, 1 - TURF_DITHER_JITTER + jitter * TURF_DITHER_JITTER * 2);
-
-      g.fillStyle(shaded, 1);
-      g.fillPoints(
-        [
-          { x: farLeft.x, y: farLeft.y },
-          { x: farRight.x, y: farRight.y },
-          { x: nearRight.x, y: nearRight.y },
-          { x: nearLeft.x, y: nearLeft.y },
-        ],
-        true,
-      );
-    }
+    g.fillStyle(color, 1);
+    g.fillPoints(
+      [
+        { x: farLeft.x, y: farLeft.y },
+        { x: farRight.x, y: farRight.y },
+        { x: nearRight.x, y: nearRight.y },
+        { x: nearLeft.x, y: nearLeft.y },
+      ],
+      true,
+    );
   }
 }
 
@@ -239,8 +221,9 @@ function drawTurf(ctx: Ctx): void {
   g.fillStyle(SURROUND_COLOR, 1);
   g.fillRect(0, proj.config.horizonY, proj.config.viewportWidth, proj.config.viewportHeight - proj.config.horizonY);
 
-  // ランオフの芝 (ラインの外側)。装飾なので粗い分割 (幅広・奥行きセル少なめ) で済ませる。
-  drawStripeBandsVertical(
+  // ランオフの芝 (ラインの外側)。ピッチ本体より一段暗くして、プレー領域との境界は
+  // 白いタッチライン/ゴールラインが担う。
+  drawStripeBands(
     ctx,
     -RUNOFF_X,
     PITCH_WIDTH + RUNOFF_X,
@@ -248,12 +231,10 @@ function drawTurf(ctx: Ctx): void {
     PITCH_HEIGHT + RUNOFF_Y,
     TURF_FAMILY_A_OUTER,
     TURF_FAMILY_B_OUTER,
-    OUTER_STRIPE_WIDTH,
-    OUTER_DEPTH_CELLS,
   );
 
   // ピッチ本体 (ランオフの上に重ねる)。
-  drawStripeBandsVertical(ctx, 0, PITCH_WIDTH, 0, PITCH_HEIGHT, TURF_FAMILY_A, TURF_FAMILY_B, STRIPE_WIDTH, MAIN_DEPTH_CELLS);
+  drawStripeBands(ctx, 0, PITCH_WIDTH, 0, PITCH_HEIGHT, TURF_FAMILY_A, TURF_FAMILY_B);
 }
 
 /** 折れ線 (円弧など) をまとめて1ストロークで描く。 */

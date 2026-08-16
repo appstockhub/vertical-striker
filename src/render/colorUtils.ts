@@ -27,13 +27,3 @@ export function shadeColor(color: number, factor: number): number {
   const b = Math.min(255, Math.max(0, Math.round((color & 0xff) * factor)));
   return (r << 16) | (g << 8) | b;
 }
-
-/**
- * 位置ベースの決定論的な擬似乱数 (0..1)。Math.random() は使わない (CLAUDE.md方針、
- * 描画専用でも毎フレームちらつくノイズは見た目として望ましくないため位置固定にする)。
- * 整数の座標/インデックスから、その場しのぎのハッシュで安定した値を作るだけの用途。
- */
-export function hash01(n: number): number {
-  const x = Math.sin(n * 12.9898) * 43758.5453;
-  return x - Math.floor(x);
-}
