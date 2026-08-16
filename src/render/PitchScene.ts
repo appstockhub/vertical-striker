@@ -40,7 +40,14 @@ import { detectSoundEvents, SoundEventId } from './soundEvents';
 import { SoundPlayer } from './SoundPlayer';
 import { MusicPlayer, type MusicTrack } from './MusicPlayer';
 import { getHalf, isFulltime } from '../sim/matchClock';
-import { FOCUS_SCREEN_Y_FRAC, PLAYER_SIZE_BOOST, RADAR_ALPHA } from './viewConstants';
+import {
+  BALL_HEIGHT_GROW_PER_PX,
+  BALL_HEIGHT_LIFT_SCALE,
+  BALL_SHADOW_SHRINK_PER_PX,
+  FOCUS_SCREEN_Y_FRAC,
+  PLAYER_SIZE_BOOST,
+  RADAR_ALPHA,
+} from './viewConstants';
 import { followFocusWorldY, makeCameraFollowConfig } from './camera';
 import {
   PITCH_HEIGHT,
@@ -687,19 +694,20 @@ export class PitchScene extends Phaser.Scene {
     }
 
     // 影は地面、本体は高さぶんだけ画面上へ持ち上げる (持ち上げ量も遠近スケールに従う)。
+    // 係数は render/viewConstants.ts (段階1で「浮いて見えない」を解消するため強調した)。
     const heightPx = toFloat(this.state.ball.height);
     this.ballShadow.setVisible(true);
     this.ballShadow.setPosition(p.x, p.y);
-    // 高く浮くほど影は小さく薄くする (高さの手がかり)。
-    const shadowShrink = 1 / (1 + heightPx * 0.02);
+    // 高く浮くほど影は小さく薄くする (高さの最も分かりやすい手がかり)。
+    const shadowShrink = 1 / (1 + heightPx * BALL_SHADOW_SHRINK_PER_PX);
     this.ballShadow.setScale(p.scale * shadowShrink);
     this.ballShadow.setAlpha(0.35 * shadowShrink);
     this.ballShadow.setDepth(ballPx.y - 0.4);
 
     this.ballMain.setVisible(true);
-    this.ballMain.setPosition(p.x, p.y - heightPx * p.scale * 1.6);
-    // 高いボールほどわずかに大きく描く (カメラに近づくため)。
-    this.ballMain.setScale(p.scale * (1 + heightPx * 0.006));
+    this.ballMain.setPosition(p.x, p.y - heightPx * p.scale * BALL_HEIGHT_LIFT_SCALE);
+    // 高いボールほど大きく描く (カメラに近づくため)。
+    this.ballMain.setScale(p.scale * (1 + heightPx * BALL_HEIGHT_GROW_PER_PX));
     this.ballMain.setDepth(ballPx.y + 0.5);
 
     const speedPx = Math.hypot(toFloat(this.state.ball.vel.x), toFloat(this.state.ball.vel.y));

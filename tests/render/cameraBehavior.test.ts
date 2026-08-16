@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { desiredFocusWorldY, followFocusWorldY, makeCameraFollowConfig } from '../../src/render/camera';
 import { createProjection, DEFAULT_PROJECTION_CONFIG } from '../../src/render/projection';
 import { PITCH_HEIGHT, PITCH_WIDTH, VIEWPORT_HEIGHT } from '../../src/config/pitch';
-import { FOCUS_SCREEN_Y_FRAC } from '../../src/render/viewConstants';
+import { BALL_HEIGHT_LIFT_SCALE, FOCUS_SCREEN_Y_FRAC } from '../../src/render/viewConstants';
 import { GRAVITY_FIXED, KICK_Z_VEL_MAX_FIXED } from '../../src/sim/ballConstants';
 import { toFloat } from '../../src/core/fixed';
 import { PENALTY_SPOT_DEPTH } from '../../src/render/pitchGeometry';
@@ -26,7 +26,7 @@ function ballScreenY(focusWorldY: number, ballWorldY: number, ballHeightPx = 0):
   const cam = projection.cameraWorldYFor(focusWorldY, focusScreenY);
   const p = projection.project(PITCH_WIDTH / 2, ballWorldY, cam);
   // 描画側と同じ持ち上げ式 (PitchScene.renderBall)。
-  return p.y - ballHeightPx * p.scale * 1.6;
+  return p.y - ballHeightPx * p.scale * BALL_HEIGHT_LIFT_SCALE;
 }
 
 describe('camera behavior (段階1)', () => {
@@ -65,8 +65,10 @@ describe('camera behavior (段階1)', () => {
       `  先読み: ${lead.toFixed(0)}px 前方 → ボールの画面Y ${(ballScreenStill / VIEWPORT_HEIGHT * 100).toFixed(1)}% → ${(ballScreenFast / VIEWPORT_HEIGHT * 100).toFixed(1)}%`,
     );
     expect(lead).toBeGreaterThan(0);
-    // 先読みでボールが画面外に出てはいけない。
-    expect(ballScreenFast).toBeLessThan(VIEWPORT_HEIGHT);
+    // ★段階1のユーザー指定の不変条件★
+    // 「先読み込みでもボールが画面Y 80%を超えないこと」。下端に貼り付くと進行方向が
+    // 見えなくなり、縦スクロール視点の弱点(奥が見えない)がそのまま悪化するため。
+    expect(ballScreenFast).toBeLessThanOrEqual(VIEWPORT_HEIGHT * 0.8);
     expect(ballScreenFast).toBeGreaterThan(0);
   });
 
@@ -88,21 +90,32 @@ describe('camera behavior (段階1)', () => {
     expect(screenStep).toBeLessThan(VIEWPORT_HEIGHT * 0.02);
   });
 
-  it('4. 浮き球が画面外へ消えない', () => {
+  it('4. 浮き球が「浮いて見える」かつ画面外へ消えない', () => {
     // 最大弾道 (zVel 上限) の頂点の高さ。h = v^2 / (2g)。
     const v = toFloat(KICK_Z_VEL_MAX_FIXED);
     const g = toFloat(GRAVITY_FIXED);
     const maxHeight = (v * v) / (2 * g);
-    // 最悪ケース: 注視点がまだ追いついておらず、ボールが画面のかなり上 (奥) にある時に浮く。
     const ballY = PITCH_HEIGHT / 2;
-    const worstFocus = ballY + 250; // カメラが 250px 後ろに取り残されている
-    const y = ballScreenY(worstFocus, ballY, maxHeight);
-    const yFlat = ballScreenY(worstFocus, ballY, 0);
+
+    // (a) 通常の構図 (注視点が追いついている)。
+    const rise = (focus: number): number =>
+      ballScreenY(focus, ballY, 0) - ballScreenY(focus, ballY, maxHeight);
+    const normalRise = rise(ballY);
+    // (b) 最悪ケース: 注視点が 250px 後ろに取り残され、ボールが奥に見えている時。
+    const worstFocus = ballY + 250;
+    const worstRise = rise(worstFocus);
+    const worstTop = ballScreenY(worstFocus, ballY, maxHeight);
+
     console.log(
-      `  浮き球: 最大高さ ${maxHeight.toFixed(1)}px → 画面Y ${(yFlat / VIEWPORT_HEIGHT * 100).toFixed(1)}% から ${(y / VIEWPORT_HEIGHT * 100).toFixed(1)}% へ上昇`,
+      `  浮き球: 最大高さ ${maxHeight.toFixed(1)}px → 画面上の上昇量 通常 ${normalRise.toFixed(0)}px (${((normalRise / VIEWPORT_HEIGHT) * 100).toFixed(1)}%) / 最遠 ${worstRise.toFixed(0)}px (${((worstRise / VIEWPORT_HEIGHT) * 100).toFixed(1)}%)`,
     );
-    // 地平線より上 (スタンドの中) へ消えないこと。
-    expect(y).toBeGreaterThan(DEFAULT_PROJECTION_CONFIG.horizonY);
+
+    // ★段階1★ 「浮いている」と分かる高さがあること (D-3)。1.6倍だった頃は通常でも
+    // 画面の8%しか上がらず、ロングフィード/センタリングの手応えが無かった。
+    expect(normalRise).toBeGreaterThanOrEqual(VIEWPORT_HEIGHT * 0.12);
+    expect(worstRise).toBeGreaterThanOrEqual(VIEWPORT_HEIGHT * 0.08);
+    // 強調しすぎて地平線より上 (スタンドの中) へ消えないこと。
+    expect(worstTop).toBeGreaterThan(DEFAULT_PROJECTION_CONFIG.horizonY);
   });
 
   it('5. セットプレー: キッカーとゴールが同時に見える', () => {
