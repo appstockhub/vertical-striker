@@ -1226,6 +1226,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     lastTouchTeam = foulEvent.restartTeam;
     restartGraceTeam = foulEvent.restartTeam;
     restartGraceTicksLeft = RESTART_GRACE_TICKS;
+    pendingOffside = null; // 笛=アウトオブプレー。オフサイドの保留も消滅する (境界復帰と同じ)
     lastEvent = { kind: isPenalty ? 'penalty' : 'foul', team: foulEvent.restartTeam, atFrame: nextFrame };
     // 反則した選手のタックルは即座に終了させる (滑り続けたまま再開しない)。
     tackleAdvance = NO_TACKLE;
@@ -1292,6 +1293,11 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     // 選手移動処理はこのまま続ける (Team Aはカーソルスナップ、Team Bはボール引力AIが
     // 自然にリスタート位置へ収束する、計画セクションC)。
     ball = { pos: boundaryEvent.pos, vel: vZero(), height: ZERO_FIXED, zVel: ZERO_FIXED };
+    // ★遅延オフサイドの保留はアウトオブプレーで消滅する (競技規則: オフサイドは
+    // インプレー中の関与にのみ適用。批評役サイクル④付帯指摘1)★ これが無いと、
+    // オフサイド位置だった選手が自チームのスローイン等の最初のタッチャーになった時に
+    // 誤って笛が鳴る。
+    pendingOffside = null;
     // リスタートのボールは再開するチームのものとして扱う (観戦シミュレーターで発覚した
     // リスタート・キャンプ問題の修正の一部: lastTouchTeam=nullだと「競り合い」扱いになり
     // 両チームの追跡権保持者が同数でスポットに殺到する。再開チームに帰属させることで、

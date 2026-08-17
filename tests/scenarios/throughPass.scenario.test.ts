@@ -44,10 +44,13 @@ describe('シナリオ: スルーパス', () => {
     const receivedAt = trace.findIndex((t) => t.holderIndex === RECEIVER && t.ballHeight <= 2.0);
     expect(receivedAt, 'FWがボールを受け取れなかった(スルーパス不成立)').toBeGreaterThanOrEqual(0);
     const reception = trace[receivedAt]!;
+    // しきい値50px (批評役サイクル④付帯指摘2): 実測+124.6pxに対し旧10pxは緩すぎ、
+    // 「+15pxのこぼれ受け」でも通ってしまう。「明確に走り込んで受けた」と言える下限として
+    // 実測の約4割 = 50px をラチェットにする。
     expect(
       reception.ballY,
-      '受け取り地点が受け手の開始位置より後方(走り込みに通っていない)',
-    ).toBeLessThan(receiverStartY - 10);
+      '受け取り地点が受け手の開始位置より十分前方でない(走り込みに通っていない)',
+    ).toBeLessThan(receiverStartY - 50);
   });
 
   /**
