@@ -165,3 +165,50 @@ body {
   font-size: 10px;
   font-weight: 700;
 }
+
+/* キー一覧 (K)。行数が多いので横幅を広げ、左揃えの表にする。 */
+#keymap-overlay {
+  max-width: min(92vw, 560px);
+  text-align: left;
+}
+
+#keymap-overlay table.keymap {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+
+#keymap-overlay table.keymap th {
+  text-align: left;
+  padding: 2px 8px 6px 0;
+  opacity: 0.6;
+  font-weight: 600;
+}
+
+#keymap-overlay table.keymap td {
+  padding: 3px 8px 3px 0;
+  vertical-align: top;
+}
+
+#keymap-overlay table.keymap td.k {
+  white-space: nowrap;
+  font-family: ui-monospace, "Consolas", monospace;
+  color: #9ee6ff;
+}
+
+#keymap-overlay table.keymap td.b {
+  white-space: nowrap;
+  opacity: 0.75;
+}
+
+#keymap-overlay table.keymap tr.sep td {
+  padding-top: 10px;
+  opacity: 0.6;
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+#keymap-overlay .row.hint {
+  display: block;
+  margin-top: 10px;
+  line-height: 1.5;
+}

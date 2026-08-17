@@ -79,24 +79,75 @@ export function classifyDrillEvent(
   const charge = prev.players[prev.controlledPlayerIndex]?.kickChargeFrames ?? 0;
   const stillMine =
     next.lastTouchPlayerIndex === next.controlledPlayerIndex && (next.ball.height as number) > 0;
+  // L/R を押しながら蹴っていれば「シフトキック」。B だけでなく A/X/Y すべてに付く
+  // (23周目に修正。旧実装は溜めキック時しか表示しておらず、A/X/Y でシフトを試した時に
+  //  「効いていないのか、表示が無いだけか」が切り分けられなかった)。
+  const shift = held?.R ? ' +Rシフト' : held?.L ? ' +Lシフト' : '';
+  // ボールを受けたその tick に蹴っていれば「ワンツー」(即時リターン)。
+  const justReceived =
+    prev.lastTouchPlayerIndex !== next.controlledPlayerIndex &&
+    next.lastTouchPlayerIndex === next.controlledPlayerIndex;
 
   let name: string;
-  if (stillMine && zVel > 0.4 && speed < 5) {
+  // リフティングは「ターンアクション中に蹴り上げる」動作なので、溜めキックとは別物。
+  // ★charge === 0 の条件が無いと、B長押しでふかした球 (高く上がって水平速度が落ちる) を
+  //   リフティングと誤表示する★ 23周目の実機確認で発覚した。
+  if (stillMine && zVel > 0.4 && speed < 5 && charge === 0) {
     name = 'リフティング';
   } else if (held?.Y) {
-    name = 'Y カーソルパス';
+    name = justReceived ? `ワンツー (Y カーソルパス)${shift}` : `Y カーソルパス${shift}`;
   } else if (held?.A) {
-    name = 'A 進行方向パス';
+    name = justReceived ? `ワンツー (A 進行方向パス)${shift}` : `A 進行方向パス${shift}`;
   } else if (held?.X) {
-    name = 'X ロングフィード';
+    name = `X ロングフィード${shift}`;
   } else if (charge > 0) {
-    const shift = held?.R ? '(Rシフト)' : held?.L ? '(Lシフト)' : '';
-    name = charge >= KICK_MAX_CHARGE_FRAMES * 0.6 ? `B 長押しシュート${shift}` : `B キック${shift}`;
+    const long = charge >= KICK_MAX_CHARGE_FRAMES * 0.6;
+    // 続編仕様「Bは強く蹴ると高い弾道になりバーを越えることがある」の可視化。
+    // 弾道が立った時に明示しないと「弱くなった」と誤解される (実際は威力が上へ逃げている)。
+    const lofted = zVel > 2 ? ' ※弾道が高い(ふかし)' : '';
+    name = `B ${long ? '長押し' : '短押し'}シュート${shift}${lofted}`;
   } else {
-    name = 'キック';
+    name = `キック${shift}`;
   }
 
   return { name, speed, zVel, charge, atFrame: next.frame };
+}
+
+/**
+ * 蹴り出しドリブル (L+R 同時押し) の発動。キックではないので classifyDrillEvent の
+ * 速度跳ね上がり判定には掛からず、別途 off→on の立ち上がりで検出する。
+ */
+export function classifyKickDribbleStart(prev: GameState, next: GameState): DrillEvent | null {
+  const before = prev.players[prev.controlledPlayerIndex]?.kickDribbleActive ?? false;
+  const after = next.players[next.controlledPlayerIndex]?.kickDribbleActive ?? false;
+  if (before || !after) return null;
+  return {
+    name: 'L+R 蹴り出しドリブル',
+    speed: Math.hypot(toFloat(next.ball.vel.x), toFloat(next.ball.vel.y)),
+    zVel: toFloat(next.ball.zVel),
+    charge: 0,
+    atFrame: next.frame,
+  };
+}
+
+/**
+ * ライン操作 (START) の発動。
+ *
+ * ★0 から動き出した瞬間だけ記録する★ オフセットは押している間 1tickごとに増え、離すと
+ * 徐々に0へ戻るので、毎tick記録すると発動ログが一瞬で埋まって他の操作が流れてしまう
+ * (23周目の実機確認で発覚)。現在値そのものはパネル上段に常時表示している。
+ */
+export function classifyLineShift(prev: GameState, next: GameState): DrillEvent | null {
+  const before = toFloat(prev.manualLineOffset);
+  const after = toFloat(next.manualLineOffset);
+  if (before !== 0 || after === 0) return null;
+  return {
+    name: `START ライン操作 開始 (${after < 0 ? '後ろへ' : '前へ'})`,
+    speed: 0,
+    zVel: 0,
+    charge: 0,
+    atFrame: next.frame,
+  };
 }
 
 /** これ以上の速度の跳ね上がりがあれば「蹴った」とみなす (ドリブルタッチは3.6程度)。 */
@@ -111,34 +162,40 @@ export function formatInputLine(inputs: InputFrame | null): string {
   return `方向 ${DIRECTION_LABEL[inputs.direction]}   押下 [${pressed.join(' ') || '---'}]`;
 }
 
+/** 発動ログに残す件数。1項目ずつ試す評価では「直近1件」だと連続操作で流れてしまう。 */
+export const DRILL_LOG_SIZE = 5;
+
 /** 直近イベント + カーブの数値表示 (複数行)。 */
 export function formatDrillPanel(
   state: GameState,
   inputs: InputFrame | null,
-  lastEvent: DrillEvent | null,
+  log: readonly DrillEvent[],
   lastCurve: DrillCurve | null,
 ): string {
   const carrier = state.players[state.controlledPlayerIndex];
   const charge = carrier?.kickChargeFrames ?? 0;
   const ballSpeed = Math.hypot(toFloat(state.ball.vel.x), toFloat(state.ball.vel.y));
   const lines = [
-    '── 操作確認モード  T:解除  R:ボールを足元へ ──',
+    '── 操作確認モード   T:解除   R:ボールを足元へ   K:キー一覧 ──',
     formatInputLine(inputs),
     `溜め ${charge}/${KICK_MAX_CHARGE_FRAMES}   ボール 速度${ballSpeed.toFixed(2)} 高さ${toFloat(state.ball.height).toFixed(1)}`,
     `蹴出しドリブル ${carrier?.kickDribbleActive ? 'ON' : 'off'}   ライン操作 ${toFloat(state.manualLineOffset).toFixed(0)}`,
+    lastCurve
+      ? `カーブ: ${DIRECTION_LABEL[lastCurve.direction]} 方向 (${state.frame - lastCurve.atFrame}f前)`
+      : 'カーブ: (未発動)',
+    '── 発動ログ (新しい順) ──',
   ];
-  if (lastEvent) {
-    const age = state.frame - lastEvent.atFrame;
-    lines.push(
-      `直近: ${lastEvent.name}  初速${lastEvent.speed.toFixed(2)} 弾道zVel${lastEvent.zVel.toFixed(2)} 溜め${lastEvent.charge}  (${age}f前)`,
-    );
+  if (log.length === 0) {
+    lines.push('  (まだ何も発動していません)');
   } else {
-    lines.push('直近: (まだ何も発動していません)');
-  }
-  if (lastCurve) {
-    lines.push(`カーブ: ${DIRECTION_LABEL[lastCurve.direction]} 方向へ作用中/直近 (${state.frame - lastCurve.atFrame}f前)`);
-  } else {
-    lines.push('カーブ: (未発動)');
+    for (const event of log) {
+      const age = state.frame - event.atFrame;
+      const detail =
+        event.speed > 0 || event.zVel > 0
+          ? `初速${event.speed.toFixed(2)} 弾道${event.zVel.toFixed(2)} 溜め${event.charge}`
+          : '';
+      lines.push(`  ${String(age).padStart(4)}f前  ${event.name}  ${detail}`);
+    }
   }
   return lines.join('\n');
 }

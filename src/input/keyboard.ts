@@ -26,8 +26,14 @@ const DIRECTION_KEYS = new Set([
   'KeyD',
 ]);
 
-// SFC論理ボタンの仮キーボード割り当て (Phase 0 の動作確認用)。
-const BUTTON_KEYS: Record<string, LogicalButton> = {
+/**
+ * SFC論理ボタンの仮キーボード割り当て (Phase 0 の動作確認用)。
+ *
+ * ★export している理由★ 画面のキー一覧 (input/keymapOverlay.ts) がこの定義を直接読む。
+ * 一覧を別途手書きすると必ず食い違う (dd0fda6「ボタン表と実装の食い違いを全面修正」の再発)。
+ * 割り当てを変えたら一覧は自動で追従する。
+ */
+export const BUTTON_KEYS: Record<string, LogicalButton> = {
   KeyZ: LogicalButton.B,
   KeyX: LogicalButton.A,
   KeyC: LogicalButton.Y,

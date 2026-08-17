@@ -30,6 +30,7 @@ import {
   preloadGbPlayerSprites,
 } from './gbPlayerSprites';
 import { PauseOverlay } from '../input/pauseOverlay';
+import { KeymapOverlay } from '../input/keymapOverlay';
 import {
   DEFAULT_AUDIO_SETTINGS,
   loadAudioSettings,
@@ -45,7 +46,10 @@ import { isTeamAInPossession, selectPassTarget } from '../sim/cursor';
 import { toFixed, toFloat } from '../core/fixed';
 import {
   classifyDrillEvent,
+  classifyKickDribbleStart,
+  classifyLineShift,
   formatDrillPanel,
+  DRILL_LOG_SIZE,
   type DrillCurve,
   type DrillEvent,
 } from './drillHud';
@@ -187,7 +191,7 @@ export class PitchScene extends Phaser.Scene {
   private practiceText!: Phaser.GameObjects.Text;
   /** 操作確認モードのデバッグパネル (drillHud.ts)。 */
   private drillText!: Phaser.GameObjects.Text;
-  private lastDrillEvent: DrillEvent | null = null;
+  private drillLog: DrillEvent[] = [];
   private lastDrillCurve: DrillCurve | null = null;
   /** 前フレームのボール速度 (あらゆる種類のキックを検出してフラッシュを出すため)。 */
   private prevBallSpeed = 0;
@@ -218,6 +222,8 @@ export class PitchScene extends Phaser.Scene {
   private matchSetupOverlay: MatchSetupOverlay | null = null;
   /** 試合中のポーズ画面 (Esc)。23周目に新設。 */
   private pauseOverlay: PauseOverlay | null = null;
+  /** キーボード割り当ての一覧 (K)。23周目に新設。 */
+  private keymapOverlay: KeymapOverlay | null = null;
   private audioSettings: AudioSettings = DEFAULT_AUDIO_SETTINGS;
 
   constructor() {
@@ -247,6 +253,9 @@ export class PitchScene extends Phaser.Scene {
     this.audioSettings = loadAudioSettings();
     this.applyAudioSettings(this.audioSettings);
 
+    const keymapEl = document.getElementById('keymap-overlay');
+    if (keymapEl) this.keymapOverlay = new KeymapOverlay(keymapEl);
+
     const pauseEl = document.getElementById('pause-overlay');
     if (pauseEl) {
       this.pauseOverlay = new PauseOverlay(pauseEl, this.audioSettings);
@@ -275,6 +284,12 @@ export class PitchScene extends Phaser.Scene {
       this.soundPlayer.ensureStarted();
       this.musicPlayer.ensureStarted();
 
+      // ★キー一覧 (K)★ どの場面でも開ける。段階2の手触り評価で「どのキーが何か」を
+      // 画面上で確認できるようにするため (input/keymapOverlay.ts)。
+      if (e.code === 'KeyK') {
+        this.keymapOverlay?.toggle();
+        return;
+      }
       // ★ポーズ (Esc)★ 試合中だけ効く。ポーズ中は fixedUpdate を止め、音の設定を変えられる。
       if (e.code === 'Escape' && this.matchStarted) {
         this.pauseOverlay?.setVisible(!this.pauseOverlay.isVisible());
@@ -300,7 +315,7 @@ export class PitchScene extends Phaser.Scene {
       // 以後 GameState.drillMode により21人は完全静止し、CPUの判断も一切走らない。
       if (e.code === 'KeyT') {
         this.state = this.state.drillMode ? this.exitDrillMode() : this.enterDrillMode();
-        this.lastDrillEvent = null;
+        this.drillLog = [];
         this.lastDrillCurve = null;
       }
       // ★操作確認モード中の R★ ボールを足元へ戻す。蹴るたびにボールが転がっていってしまい、
@@ -367,6 +382,14 @@ export class PitchScene extends Phaser.Scene {
         }
         return this.state.frame;
       },
+      /**
+       * 操作確認モードのパネル文字列 (読み取り専用)。23周目に追加。
+       * 「押したらこの操作が発動する」を自動で検証するために要る (CLAUDE.md
+       * 「検証の絶対原則」1: 統計ではなく因果を見る)。表示と同じ文字列を返すので、
+       * 画面で見えているものとテストが見ているものが一致する。
+       */
+      getDrillPanelText: (): string =>
+        formatDrillPanel(this.state, this.cachedInputs, this.drillLog, this.lastDrillCurve),
       /**
        * 焼き込み済みテクスチャの原画を取り出す (読み取り専用)。
        * 23周目に追加。スプライトの造形を「試合の1コマを切り出して拡大する」のではなく、
@@ -776,8 +799,17 @@ export class PitchScene extends Phaser.Scene {
     if (events.includes(SoundEventId.Goal)) this.goalCelebrationMs = GOAL_CELEBRATION_MS;
 
     // 操作確認モードの「いま何が発動したか」を推定して記録する (描画専用、drillHud.ts)。
-    const drill = classifyDrillEvent(prevState, this.state, inputs);
-    if (drill) this.lastDrillEvent = drill;
+    // キック系・蹴り出しドリブル・ライン操作の3系統を拾い、新しい順のログとして残す
+    // (1項目ずつ試す評価では「直近1件」だと連続操作で流れてしまうため)。
+    for (const drill of [
+      classifyDrillEvent(prevState, this.state, inputs),
+      classifyKickDribbleStart(prevState, this.state),
+      classifyLineShift(prevState, this.state),
+    ]) {
+      if (!drill) continue;
+      this.drillLog.unshift(drill);
+      if (this.drillLog.length > DRILL_LOG_SIZE) this.drillLog.length = DRILL_LOG_SIZE;
+    }
     const curveDir = this.state.ball.curveDirection;
     if (curveDir && curveDir !== Direction8.None && prevState.ball.curveDirection !== curveDir) {
       this.lastDrillCurve = { direction: curveDir, atFrame: this.state.frame };
@@ -1001,7 +1033,7 @@ export class PitchScene extends Phaser.Scene {
     this.drillText.setVisible(this.state.drillMode);
     if (this.state.drillMode) {
       this.drillText.setText(
-        formatDrillPanel(this.state, this.cachedInputs, this.lastDrillEvent, this.lastDrillCurve),
+        formatDrillPanel(this.state, this.cachedInputs, this.drillLog, this.lastDrillCurve),
       );
     }
     // ボタンガイド (いまの文脈で各ボタンが何をするか)。
