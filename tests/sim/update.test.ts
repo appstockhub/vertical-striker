@@ -517,26 +517,70 @@ function withOffsideSetup(seed: number, offsideEnabled: boolean): GameState {
 }
 
 describe('simulate — Phase 3: offside rule (milestone 5)', () => {
-  it('blocks a charge-kick release when a teammate is offside, awarding an indirect free kick to the opponent', () => {
+  it('★遅延判定 (24周目サイクル④)★ キック時のオフサイド位置は記録され、キック自体は発射される', () => {
+    // 旧仕様は「オフサイド位置の味方が居ればキック自体を没収して即笛」だったが、
+    // 競技規則 第11条の実体は「オフサイド位置の選手がその後ボールに関与した時に成立」。
+    // 旧仕様はライン押し上げ時に全ての前進パスを没収する欠陥だった (offsideRule.ts参照)。
+    // ここでは新しい契約を検証する: (1) キックは通常どおり発射される (2) キック瞬間の
+    // オフサイド位置の味方が GameState.pendingOffside に記録される。
     let state = withOffsideSetup(1, true);
     const offsideIdx = 1;
 
     state = simulate(state, inputsWithButtons(Direction8.None, { B: true })); // キック溜め開始
     expect(controlled(state).kickChargeFrames).toBeGreaterThan(0);
 
-    // 解放 = ワインドアップ開始。オフサイド判定は「ボールが蹴られた瞬間」= 発射tickに行われる
-    // (競技規則どおり)。発射tickの直前の選手位置を捕まえてから、最後の1tickで発射させる。
     let s = simulate(state, inputsWithButtons(Direction8.Right, {}));
     expect(controlled(s).kickChargeFrames).toBe(0);
     for (let i = 0; i < KICK_WINDUP_TICKS - 1; i++) s = simulate(s, inputs(Direction8.None));
-    const offsidePlayerBeforeFire = s.players[offsideIdx];
-    const next = simulate(s, inputs(Direction8.None)); // 発射tick -> オフサイド判定
+    const next = simulate(s, inputs(Direction8.None)); // 発射tick
 
-    expect(toFloat(next.ball.vel.x)).toBe(0);
-    expect(toFloat(next.ball.vel.y)).toBe(0);
-    expect(toFloat(next.ball.zVel)).toBe(0);
-    expect(next.ball.pos).toEqual(offsidePlayerBeforeFire?.pos);
-    expect(next.lastTouchTeam).toBe(TeamId.B);
+    const ballMoved =
+      toFloat(next.ball.vel.x) !== 0 || toFloat(next.ball.vel.y) !== 0 || toFloat(next.ball.zVel) !== 0;
+    expect(ballMoved, 'キックは没収されず発射されるべき').toBe(true);
+    expect(next.pendingOffside, 'オフサイド位置の味方が保留として記録されるべき').not.toBeNull();
+    expect(next.pendingOffside?.team).toBe(TeamId.A);
+    expect(next.pendingOffside?.indices).toContain(offsideIdx);
+  });
+
+  it('★遅延判定★ オフサイド位置の選手が触れた瞬間に笛 (間接FK相当の再開が相手に渡る)', () => {
+    // 無菌構成: キッカーA9が上へ蹴り、その弾道上のオフサイド位置にA1を置く。
+    // A1がボールに触れたtickでオフサイド成立 = ボールがA1の位置へ再開配置され、
+    // lastTouchTeam が相手(B)になる。
+    const base = createInitialState(1, { offsideEnabled: true });
+    const kickerIdx = 9;
+    const offsideIdx = 1;
+    const kickerPos = { x: toFixed(240), y: toFixed(700) };
+    let state: GameState = {
+      ...base,
+      controlledPlayerIndex: kickerIdx,
+      ball: { ...base.ball, pos: kickerPos, vel: { x: toFixed(0), y: toFixed(0) }, height: toFixed(0), zVel: toFixed(0) },
+      players: base.players.map((p, i) => {
+        if (i === kickerIdx) return { ...p, pos: kickerPos, facing: Direction8.Up };
+        // A1 を弾道上 (60px前方)・オフサイドライン超えに置く
+        if (i === offsideIdx) return { ...p, pos: { x: toFixed(240), y: toFixed(640) } };
+        // B は GK(y=20) 以外を y=660 に敷く → 2番目に深いB = 660 がオフサイドライン。
+        // A1(y=640) はライン超え+相手陣内 = オフサイド位置。
+        if (p.team === TeamId.B && !p.isGoalkeeper) return { ...p, pos: { x: toFixed(60 + (i % 5) * 20), y: toFixed(660) } };
+        if (p.team === TeamId.B) return { ...p, pos: { x: toFixed(240), y: toFixed(20) } };
+        // 残りのAは遠くへ退避 (判定を汚さない)
+        return { ...p, pos: { x: toFixed(30 + (i % 5) * 20), y: toFixed(1600) } };
+      }),
+      lastTouchTeam: TeamId.A,
+      lastTouchPlayerIndex: kickerIdx,
+    };
+    state = simulate(state, inputsWithButtons(Direction8.None, { B: true }));
+    state = simulate(state, inputsWithButtons(Direction8.Up, {})); // 解放 = ワインドアップ
+    for (let i = 0; i < KICK_WINDUP_TICKS; i++) state = simulate(state, inputs(Direction8.None));
+    expect(state.pendingOffside?.indices).toContain(offsideIdx);
+
+    // ボールが A1 に到達して touch-priority を取るまで回す (最大120tick)
+    let whistled = false;
+    for (let i = 0; i < 120 && !whistled; i++) {
+      state = simulate(state, inputs(Direction8.None));
+      if (state.lastTouchTeam === TeamId.B) whistled = true;
+    }
+    expect(whistled, 'オフサイド位置の選手の関与で笛が鳴るべき').toBe(true);
+    expect(state.pendingOffside).toBeNull();
   });
 
   it('does not check offside when offsideEnabled is false: the kick fires normally', () => {
@@ -599,19 +643,26 @@ describe('simulate — Phase 3: CPU (Team B) attack AI (milestone 6)', () => {
     expect(next.rngState).not.toBe(state.rngState);
   });
 
-  it('offside also blocks a CPU shot, awarding the restart to Team A', () => {
+  it('★遅延判定★ CPUのキックでもオフサイド位置の味方が保留として記録される', () => {
     const base = withCpuCarrier(1, 'hard', true);
     const advancedTeammateIdx = TeamId.B * 11 + 1; // 別のTeam B選手をオフサイドポジションに置く
     const state: GameState = {
       ...base,
       players: base.players.map((p, i) =>
-        // ゴールライン判定のしきい値(ボール半径7px)より確実に手前に置く
-        // (オフサイドリスタート位置=この選手の位置が、そのまま境界越え判定に引っかからないようにする)。
         i === advancedTeammateIdx ? { ...p, pos: { x: toFixed(240), y: toFixed(1780) } } : p,
       ),
     };
-    const next = simulate(state, inputs(Direction8.None));
-    expect(next.lastTouchTeam).toBe(TeamId.A);
+    // CPUがシュート/パスを打つまで回し、打った瞬間の保留記録を確認する
+    // (遅延判定なのでキック自体は発射される。笛はその選手が触れた時)。
+    let s = state;
+    let recorded = false;
+    for (let i = 0; i < 120 && !recorded; i++) {
+      s = simulate(s, inputs(Direction8.None));
+      if (s.pendingOffside !== null && s.pendingOffside.team === TeamId.B) {
+        recorded = s.pendingOffside.indices.includes(advancedTeammateIdx);
+      }
+    }
+    expect(recorded, 'CPUのキック瞬間にオフサイド位置の味方が記録されるべき').toBe(true);
   });
 });
 

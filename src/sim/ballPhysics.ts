@@ -6,6 +6,7 @@ import { DIRECTION_VECTORS, PITCH_BOUNDS } from './constants';
 import {
   BALL_RADIUS_FIXED,
   BOUNCE_DAMPING_FIXED,
+  BOUNCE_HORIZONTAL_DAMPING_FIXED,
   BOUNCE_MIN_VEL_FIXED,
   CURVE_ROTATION_INTERVAL,
   CURVE_ROTATION_STEP_FIXED,
@@ -34,6 +35,7 @@ export interface BallPhysicsStep {
 export function stepBallPhysicsDetailed(ball: BallState): BallPhysicsStep {
   let height: Fixed = ball.height;
   let zVel: Fixed = ball.zVel;
+  let horizontalVel: Vec2Fixed = ball.vel;
 
   const airborne = (height as number) > (ZERO_FIXED as number) || (zVel as number) > (ZERO_FIXED as number);
 
@@ -44,10 +46,19 @@ export function stepBallPhysicsDetailed(ball: BallState): BallPhysicsStep {
     if ((height as number) <= (ZERO_FIXED as number)) {
       const impactSpeed = -(zVel as number) as Fixed; // 正の値 (着地速度)
       height = ZERO_FIXED;
-      zVel =
-        (impactSpeed as number) > (BOUNCE_MIN_VEL_FIXED as number)
-          ? fixedMul(impactSpeed, BOUNCE_DAMPING_FIXED) // バウンド
-          : ZERO_FIXED; // 静かに着地、跳ねない
+      const bounces = (impactSpeed as number) > (BOUNCE_MIN_VEL_FIXED as number);
+      zVel = bounces
+        ? fixedMul(impactSpeed, BOUNCE_DAMPING_FIXED) // バウンド
+        : ZERO_FIXED; // 静かに着地、跳ねない
+      // ★24周目サイクル④★ バウンドする着地は水平速度も削る (芝との衝突)。これが無いと
+      // 浮き球が着地後も初速のままバウンドし続け、Xロングフィード(飛距離180px)が着地後
+      // さらに175px転がって受け手を置き去りにする (スルーパス不成立の一因)。
+      // 「静かな着地」(微小ホップの接地) には適用しない: 低い弾道のキックの転がりまで
+      // 削ってしまい、グラウンダーの飛程(=K7カーブ等の基準)を歪めるため。値の根拠は
+      // BOUNCE_HORIZONTAL_DAMPING_FIXED (ballConstants.ts) のコメント参照。
+      if (bounces) {
+        horizontalVel = vScaleFixed(horizontalVel, BOUNCE_HORIZONTAL_DAMPING_FIXED);
+      }
     }
   } else {
     height = ZERO_FIXED;
@@ -59,8 +70,8 @@ export function stepBallPhysicsDetailed(ball: BallState): BallPhysicsStep {
   // (24周目サイクル②、離散タッチドリブルの成立条件。ballConstants.ts参照)。
   const slowSq = fixedMul(ROLL_SLOW_SPEED_FIXED, ROLL_SLOW_SPEED_FIXED) as number;
   const friction =
-    (dotFixed(ball.vel, ball.vel) as number) < slowSq ? ROLL_SLOW_FRICTION_FIXED : ROLLING_FRICTION_FIXED;
-  let vel: Vec2Fixed = grounded ? vScaleFixed(ball.vel, friction) : ball.vel; // 空中は摩擦なし
+    (dotFixed(horizontalVel, horizontalVel) as number) < slowSq ? ROLL_SLOW_FRICTION_FIXED : ROLLING_FRICTION_FIXED;
+  let vel: Vec2Fixed = grounded ? vScaleFixed(horizontalVel, friction) : horizontalVel; // 空中は摩擦なし
 
   // カーブ (続編仕様③): curveTicksLeftが残っている間、毎tick速度ベクトルを入力方向側へ
   // 微小角回転させる (24周目サイクル①で加算方式から変更。理由は ballConstants.ts の

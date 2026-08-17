@@ -10,6 +10,8 @@ import {
   KICK_MIN_CHARGE_FRAMES,
   KICK_Z_VEL_MAX_FIXED,
   KICK_Z_VEL_MIN_FIXED,
+  LONG_FEED_DISTANCE_FIXED,
+  LONG_FEED_SPEED_FIXED,
   PASS_GROUND_MAX_DIST_FIXED,
   PASS_GROUND_SPEED_PER_DIST_FIXED,
   PASS_LOB_SPEED_FIXED,
@@ -69,6 +71,28 @@ export function applyAimedPass(ball: BallState, from: Vec2Fixed, targetPos: Vec2
     fixedDiv(fixedMul(dist, GRAVITY_FIXED), fixedMul(toFixed(2), PASS_LOB_SPEED_FIXED)),
     PASS_MIN_LOB_Z_FIXED,
     PASS_MAX_LOB_Z_FIXED,
+  );
+  return { ...ball, vel, zVel };
+}
+
+/**
+ * X = ロングフィード (24周目サイクル④)。方向キックの弾道版: 水平速度は固定
+ * (LONG_FEED_SPEED)、zVel は狙い飛距離 (LONG_FEED_DISTANCE) から逆算する
+ * (applyAimedPass のロビングと同じ物理。gravity を変えても飛距離が保たれる)。
+ * 方向は+字 (無入力なら向いている方向)、シフトキック対応。
+ */
+export function applyLongFeed(
+  ball: BallState,
+  player: PlayerState,
+  releaseDirection: Direction8,
+  buttons?: Pick<ButtonState, LogicalButton.L | LogicalButton.R>,
+): BallState {
+  const baseDirection = releaseDirection !== Direction8.None ? releaseDirection : player.facing;
+  const shiftedDirection = buttons ? shiftKickDirection(baseDirection, buttons) : baseDirection;
+  const vel = vScaleFixed(DIRECTION_VECTORS[shiftedDirection], LONG_FEED_SPEED_FIXED);
+  const zVel = fixedDiv(
+    fixedMul(LONG_FEED_DISTANCE_FIXED, GRAVITY_FIXED),
+    fixedMul(toFixed(2), LONG_FEED_SPEED_FIXED),
   );
   return { ...ball, vel, zVel };
 }

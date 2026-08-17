@@ -18,8 +18,8 @@ import type { BallState, GameState, PendingKick, PlayerState, SetPieceLock, Wind
 import { PLAYERS_PER_TEAM, TacklePhase, TeamId } from './state';
 import { attackingIsUpward, getHomePosition, opponentOf, type Half } from './formations';
 import { PITCH_HEIGHT } from '../config/pitch';
-import { checkOffside } from './offsideRule';
-import { DIRECTION_VECTORS, PLAYER_RADIUS_FIXED, PLAYER_SPEED_FIXED } from './constants';
+import { computeOffsidePositions } from './offsideRule';
+import { CPU_EASY_PLAYER_SPEED_FIXED, DIRECTION_VECTORS, PLAYER_RADIUS_FIXED, PLAYER_SPEED_FIXED } from './constants';
 import {
   CURVE_DURATION_TICKS,
   CURVE_INPUT_WINDOW_TICKS,
@@ -31,12 +31,11 @@ import {
   LIFT_INPUT_WINDOW_TICKS,
   KICK_MIN_CHARGE_FRAMES,
   KICK_REACH_FIXED,
-  LONG_FEED_CHARGE_FRAMES,
   LIFT_Z_VEL_FIXED,
   LONG_DRIBBLE_PLAYER_SPEED_FIXED,
 } from './ballConstants';
 import { applyDribbleTouch, computeKickDribbleState, isInDribbleContact } from './dribble';
-import { applyAimedPass, applyKick, updateKickCharge } from './kick';
+import { applyAimedPass, applyKick, applyLongFeed, updateKickCharge } from './kick';
 import { clampToPitchBounds, stepBallPhysicsDetailed } from './ballPhysics';
 import { findTouchPriorityPlayer } from './ballTouch';
 import { computeChaseRightIndices, computeNonControlledDirection } from './teamAI';
@@ -107,6 +106,23 @@ const NO_TACKLE: TackleAdvance = { tacklePhase: TacklePhase.None, tackleFrames: 
 /** オフサイド成立時のリスタート用ボール状態 (該当選手の位置へ速度0で置く、間接FK相当)。 */
 function offsideRestartBall(offsidePlayer: PlayerState): BallState {
   return { pos: offsidePlayer.pos, vel: vZero(), height: ZERO_FIXED, zVel: ZERO_FIXED };
+}
+
+/**
+ * ★遅延オフサイド (24周目サイクル④)★ キックの瞬間にオフサイド位置の味方の集合を記録する。
+ * 集合が空 (全員オンサイド) なら保留なし (null)。判定OFF時も null。
+ * 詳細は offsideRule.ts / GameState.pendingOffside のコメント参照。
+ */
+function registerPendingOffside(
+  active: boolean,
+  kickerIndex: number,
+  kickerTeam: TeamId,
+  players: readonly PlayerState[],
+  half: Half,
+): GameState['pendingOffside'] {
+  if (!active) return null;
+  const indices = computeOffsidePositions(kickerIndex, kickerTeam, players, half);
+  return indices.length > 0 ? { team: kickerTeam, indices } : null;
 }
 
 /**
@@ -366,6 +382,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       lastEvent: null,
       setPieceLock: createKickoffLock(kickoffTeam, reset.ball.pos),
       manualLineOffset: ZERO_FIXED,
+      pendingOffside: null,
     };
   }
 
@@ -400,6 +417,28 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
    * ボタンが壊れているようにしか見えない)。無菌室の趣旨からしてオフサイドは不要なので外す。
    */
   const offsideActive = state.offsideEnabled && !state.drillMode;
+
+  /**
+   * ★遅延オフサイドの解決 (24周目サイクル④、競技規則第11条)★
+   * 前のキックで記録した「オフサイド位置の味方の集合」(pendingOffside) の選手が、
+   * このtickに新しくボールへ触れた (touch-priorityを取った) ならオフサイド成立。
+   * 別の誰か (オンサイドの味方・相手) が先に触れたら保留は消滅する。
+   * 成立時の再開処理 (offsideRestartBall) は、このtickのボール処理がすべて終わった後に
+   * 適用する (旧・即時笛と同じ「そのtickのボールを笛の位置へ差し替える」扱い)。
+   */
+  let pendingOffside = state.pendingOffside ?? null;
+  let offsideWhistledIndex: number | null = null;
+  if (pendingOffside && touchPriorityIndex !== null && touchPriorityIndex !== state.lastTouchPlayerIndex) {
+    const toucher = state.players[touchPriorityIndex];
+    if (
+      toucher &&
+      toucher.team === pendingOffside.team &&
+      pendingOffside.indices.includes(touchPriorityIndex)
+    ) {
+      offsideWhistledIndex = touchPriorityIndex;
+    }
+    pendingOffside = null; // 新しいタッチが誰であれ、保留はこのtickで解決する
+  }
 
   const teamAGoalkeeper = state.players[TEAM_A_GK_INDEX];
   const currentControlled = state.players[state.controlledPlayerIndex];
@@ -597,7 +636,19 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
    * (どのscriptSeedでも同一に再現する = シードの付け替えでは絶対に消せない本物のバグ)。
    * 実サッカーでも、リスタート時に味方がボールに群がることはない。
    */
-  const chaseRightIndices = computeChaseRightIndices(state.players, state.ball.pos, chasePossessionTeam, suppressedTeam);
+  // excludeIndex = 操作中の人間選手 (24周目サイクル④): 追跡権をAI味方へ譲る。
+  // これが無いと保持側の1枠が常にキャリア自身へ割り当たり、パスを誰も迎えに行かない
+  // (P2スルーパス不成立の根本原因)。詳細は computeChaseRightIndices のコメント参照。
+  const chaseRightIndices = computeChaseRightIndices(
+    state.players,
+    state.ball.pos,
+    chasePossessionTeam,
+    suppressedTeam,
+    state.controlledPlayerIndex,
+    touchPriorityIndex,
+    // easyのCPU(Team B)は守備の追跡が1枚 (人間の攻撃チェーンが成立する余地。teamAIConstants.ts参照)
+    state.difficulty === 'easy' ? TeamId.B : null,
+  );
 
   // マーク割り当て (Phase 4): 守備側のDFライン(追跡権なし)に相手侵入者を1:1で割り当てる。
   // 追跡権(プレス、生のpossessionTeamで即応)と違い、マークは陣形挙動なのでライン押し引きと
@@ -757,37 +808,23 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // 排他 — 速いボールが飛んできている時は常にセーブ判定を優先する。
   let oneTwoFired = false;
   if (justReceivedByControlled && !inSaveRange && controlledPlayer) {
-    const offside = offsideActive
-      ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
-      : { offside: false, offsidePlayerIndex: null };
-    const offsidePlayer =
-      offside.offside && offside.offsidePlayerIndex !== null ? state.players[offside.offsidePlayerIndex] : undefined;
-
     if (inputs.buttons.Y) {
       // Y = パスカーソル先の選手へ。受け手が見つからなければワンツーは発火せず、
       // このtickは通常のドリブルタッチ等へフォールスルーする。
       const targetIndex = selectPassTarget(controlledPlayerIndex, state.players);
       const receiver = targetIndex !== null ? state.players[targetIndex] : undefined;
       if (receiver) {
-        if (offsidePlayer) {
-          ball = offsideRestartBall(offsidePlayer);
-          lastTouchTeam = opponentOf(controlledPlayer.team);
-        } else {
-          // 実照準パス (不具合#2-③、24周目サイクル③): 8方向量子化をやめ受け手へ正確に送る。
-          ball = applyAimedPass(ball, controlledPlayer.pos, receiver.pos);
-          lastTouchTeam = controlledPlayer.team;
-        }
+        // 実照準パス (不具合#2-③、24周目サイクル③): 8方向量子化をやめ受け手へ正確に送る。
+        ball = applyAimedPass(ball, controlledPlayer.pos, receiver.pos);
+        lastTouchTeam = controlledPlayer.team;
+        pendingOffside = registerPendingOffside(offsideActive, controlledPlayerIndex, controlledPlayer.team, state.players, half);
         oneTwoFired = true;
       }
     } else if (inputs.buttons.A) {
       // A = +字入力方向へ (方向が無ければ既存のapplyKickのフォールバックでfacing方向)。
-      if (offsidePlayer) {
-        ball = offsideRestartBall(offsidePlayer);
-        lastTouchTeam = opponentOf(controlledPlayer.team);
-      } else {
-        ball = applyKick(ball, controlledPlayer, KICK_MIN_CHARGE_FRAMES, inputs.direction);
-        lastTouchTeam = controlledPlayer.team;
-      }
+      ball = applyKick(ball, controlledPlayer, KICK_MIN_CHARGE_FRAMES, inputs.direction);
+      lastTouchTeam = controlledPlayer.team;
+      pendingOffside = registerPendingOffside(offsideActive, controlledPlayerIndex, controlledPlayer.team, state.players, half);
       oneTwoFired = true;
     }
   }
@@ -853,20 +890,12 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     if (cursor.passTriggered && cursor.passTargetIndex !== null && controlledPlayer) {
       const receiver = state.players[cursor.passTargetIndex];
       if (receiver) {
-        const offside = offsideActive
-          ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
-          : { offside: false, offsidePlayerIndex: null };
-        const offsidePlayer =
-          offside.offside && offside.offsidePlayerIndex !== null ? state.players[offside.offsidePlayerIndex] : undefined;
-        if (offsidePlayer) {
-          // オフサイド成立: パスを実行させず、間接FK相当のリスタートにする。
-          ball = offsideRestartBall(offsidePlayer);
-          lastTouchTeam = opponentOf(controlledPlayer.team);
-        } else {
-          // 確定パス (不具合#2-③、24周目サイクル③): 受け手への実照準。近距離はグラウンダー、
-          // 遠距離は浮き球で確実に届かせる (applyAimedPass、kick.ts)。
-          ball = applyAimedPass(ball, controlledPlayer.pos, receiver.pos);
-        }
+        // 確定パス (不具合#2-③、24周目サイクル③): 受け手への実照準。近距離はグラウンダー、
+        // 遠距離は浮き球で確実に届かせる (applyAimedPass、kick.ts)。
+        // オフサイドは即時笛ではなく遅延判定 (キック瞬間の位置集合を記録し、その選手が
+        // 触れたら成立。offsideRule.ts参照)。
+        ball = applyAimedPass(ball, controlledPlayer.pos, receiver.pos);
+        pendingOffside = registerPendingOffside(offsideActive, controlledPlayerIndex, controlledPlayer.team, state.players, half);
       }
     }
 
@@ -881,26 +910,17 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         !(holderAtFire && holderAtFire.team !== controlledPlayer.team) &&
         !(setPieceLock && setPieceLock.restartTeam !== controlledPlayer.team);
       if (canFire) {
-        const offside = offsideActive
-          ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
-          : { offside: false, offsidePlayerIndex: null };
-        const offsidePlayer =
-          offside.offside && offside.offsidePlayerIndex !== null ? state.players[offside.offsidePlayerIndex] : undefined;
-        if (offsidePlayer) {
-          ball = offsideRestartBall(offsidePlayer);
-          lastTouchTeam = opponentOf(controlledPlayer.team);
-        } else {
-          ball = applyKick(ball, controlledPlayer, windupKick.chargeFrames, windupKick.direction, {
-            L: windupKick.shiftL,
-            R: windupKick.shiftR,
-          });
-          const curve = windupKick.curveDirection;
-          ball =
-            curve !== Direction8.None
-              ? { ...ball, curveDirection: curve, curveTicksLeft: CURVE_DURATION_TICKS, curveWindowTicksLeft: 0 }
-              : { ...ball, curveDirection: Direction8.None, curveTicksLeft: 0, curveWindowTicksLeft: CURVE_INPUT_WINDOW_TICKS };
-          lastTouchTeam = controlledPlayer.team;
-        }
+        ball = applyKick(ball, controlledPlayer, windupKick.chargeFrames, windupKick.direction, {
+          L: windupKick.shiftL,
+          R: windupKick.shiftR,
+        });
+        const curve = windupKick.curveDirection;
+        ball =
+          curve !== Direction8.None
+            ? { ...ball, curveDirection: curve, curveTicksLeft: CURVE_DURATION_TICKS, curveWindowTicksLeft: 0 }
+            : { ...ball, curveDirection: Direction8.None, curveTicksLeft: 0, curveWindowTicksLeft: CURVE_INPUT_WINDOW_TICKS };
+        lastTouchTeam = controlledPlayer.team;
+        pendingOffside = registerPendingOffside(offsideActive, controlledPlayerIndex, controlledPlayer.team, state.players, half);
       }
       windupKick = null;
     }
@@ -959,23 +979,23 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
             const slideDirection = inputs.direction !== Direction8.None ? inputs.direction : controlledPlayer.facing;
             tackleAdvance = advanceTacklePhase(controlledPlayer, true, slideDirection);
           } else {
-            const offside = offsideActive
-              ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
-              : { offside: false, offsidePlayerIndex: null };
-            const offsidePlayer =
-              offside.offside && offside.offsidePlayerIndex !== null
-                ? state.players[offside.offsidePlayerIndex]
-                : undefined;
-            if (offsidePlayer) {
-              ball = offsideRestartBall(offsidePlayer);
-              lastTouchTeam = opponentOf(controlledPlayer.team);
-            } else {
-              // A = 溜め無しの速いグラウンダー / X = 溜め済み相当の高い弾道 (ロングフィード)。
-              const chargeFrames = isA ? KICK_MIN_CHARGE_FRAMES : LONG_FEED_CHARGE_FRAMES;
-              ball = applyKick(ball, controlledPlayer, chargeFrames, inputs.direction, inputs.buttons);
-              lastTouchTeam = controlledPlayer.team;
-            }
+            // A = 溜め無しの速いグラウンダー / X = 固定飛距離180pxの弾道 (ロングフィード)。
+            // オフサイドは遅延判定 (offsideRule.ts参照)。
+            ball = isA
+              ? applyKick(ball, controlledPlayer, KICK_MIN_CHARGE_FRAMES, inputs.direction, inputs.buttons)
+              : applyLongFeed(ball, controlledPlayer, inputs.direction, inputs.buttons);
+            lastTouchTeam = controlledPlayer.team;
+            pendingOffside = registerPendingOffside(offsideActive, controlledPlayerIndex, controlledPlayer.team, state.players, half);
           }
+        } else if (windupKick !== null) {
+          // ★キックモーションのコミット (24周目サイクル④)★ ワインドアップ進行中は新しい
+          // チャージ/解放を受け付けない。これが無いと、B連打 (2〜4tick間隔の再押下) のたびに
+          // 新しい解放が windupKick を上書きして ticksLeft がリセットされ、**キックが永遠に
+          // 発射されない**(観戦シミュレーターのaggressiveスクリプトがシュート圏内1400tick・
+          // B押下191回でシュート0本、の根本原因)。原作でもキックモーション開始後の
+          // ボタン連打はモーションを再始動しない。溜めカウンタは0のまま維持し、発射後に
+          // B が押されていれば通常の新規チャージとして扱われる。
+          nextControlledKickChargeFrames = 0;
         } else {
           // 既存のチャージキック (タックル状態は自然にNoneへ収束させる)。
           const charge = updateKickCharge(controlledPlayer.kickChargeFrames, inputs.buttons.B);
@@ -1108,20 +1128,12 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     touchPriorityIndex !== null &&
     (cpuDecision.action === 'shoot' || cpuDecision.action === 'pass')
   ) {
-    // CPU(Team B)のシュート/パス実行。オフサイド判定はTeam Aの2箇所(カーソルパス/チャージキック)と
-    // 同じ扱いにする (計画セクションF、offsideフックをCPUのキックにも適用)。溜め無し・
-    // 即座グラウンダー固定 (計画の仮定8、弾道バリエーションはPhase 4に先送り)。
+    // CPU(Team B)のシュート/パス実行。オフサイド判定はTeam Aと同じ遅延判定
+    // (offsideRule.ts参照)。溜め無し・即座グラウンダー固定 (計画の仮定8、
+    // 弾道バリエーションはPhase 4に先送り)。
     const carrier = state.players[touchPriorityIndex];
     if (carrier) {
-      const offside = offsideActive
-        ? checkOffside(touchPriorityIndex, carrier.team, state.players, half)
-        : { offside: false, offsidePlayerIndex: null };
-      const offsidePlayer =
-        offside.offside && offside.offsidePlayerIndex !== null ? state.players[offside.offsidePlayerIndex] : undefined;
-      if (offsidePlayer) {
-        ball = offsideRestartBall(offsidePlayer);
-        lastTouchTeam = opponentOf(carrier.team);
-      } else if (cpuDecision.action === 'pass' && cpuDecision.passTargetIndex !== null) {
+      if (cpuDecision.action === 'pass' && cpuDecision.passTargetIndex !== null) {
         // CPUのパスも人間のカーソルパスと同じ実照準 (不具合#2-③と同根の量子化ミスを解消)。
         const cpuReceiver = state.players[cpuDecision.passTargetIndex];
         ball = cpuReceiver
@@ -1130,6 +1142,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       } else {
         ball = applyKick(ball, carrier, KICK_MIN_CHARGE_FRAMES, cpuDecision.direction);
       }
+      pendingOffside = registerPendingOffside(offsideActive, touchPriorityIndex, carrier.team, state.players, half);
     }
   }
 
@@ -1218,6 +1231,16 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     tackleAdvance = NO_TACKLE;
   }
 
+  // ★遅延オフサイドの笛 (24周目サイクル④)★ このtickの冒頭で「オフサイド位置の選手が
+  // 新しくボールに触れた」と判定済みなら、このtickのボール処理の結果を破棄して
+  // 笛の位置 (間接FK相当のリスタート) へ差し替える。旧・即時笛と同じ再開処理。
+  if (offsideWhistledIndex !== null) {
+    const offender = state.players[offsideWhistledIndex]!;
+    ball = offsideRestartBall(offender);
+    lastTouchTeam = opponentOf(offender.team);
+    pendingOffside = null; // 笛のtickに同時発生した新規の保留も破棄する
+  }
+
   const ballStep = stepBallPhysicsDetailed(ball);
   const boundaryEvent = detectBoundaryEvent(ballStep.tentativePos, ballStep.ball.height, half, lastTouchTeam);
 
@@ -1260,6 +1283,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       lastEvent: null,
       setPieceLock: createKickoffLock(kickoffTeam, reset.ball.pos),
       manualLineOffset: ZERO_FIXED,
+      pendingOffside: null,
     };
   }
 
@@ -1332,6 +1356,21 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
 
     let effectiveDirection = playerInputs.direction;
     let speedOverride = isAutoGoalkeeper ? GK_AUTO_SPEED_FIXED : undefined;
+
+    // ★24周目サイクル④: 難易度=CPU選手の速度★ 原作の難易度はCPUチームの選手能力差
+    // (走力等) で表現される。当実装はPhase 4後半まで選手個性が無いため、その先取りとして
+    // easyのCPU(Team B)全員の移動速度を CPU_SPEED_MULTIPLIER_EASY 倍に落とす。
+    // 根拠 (c6=人間の攻撃が成立しない問題の計測): 同速の純追跡は数学的に振り切れず、
+    // 人間側キャリアは中盤596pxの壁を一度も越えられなかった。速度差があって初めて
+    // 「ドリブルでかわす」「マークを外して受ける」という原作の攻防が成立する。
+    if (
+      speedOverride === undefined &&
+      state.difficulty === 'easy' &&
+      player.team === TeamId.B &&
+      index !== controlledPlayerIndex
+    ) {
+      speedOverride = CPU_EASY_PLAYER_SPEED_FIXED;
+    }
 
     // ★24周目サイクル②★ 再開キッカーはロック中ボール脇で待機する (人間操作選手を除く)。
     // これが無いとAI(追跡権はロック中ゼロ)がホームへ歩き去り、CPUの再開が誰にも
@@ -1430,6 +1469,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     lastEvent,
     setPieceLock,
     manualLineOffset,
+    pendingOffside,
   };
 }
 

@@ -32,7 +32,9 @@ import { computeMarkHomePosition } from './marking';
 import { computeSupportHomePosition, isSupportRunner } from './supportRun';
 import {
   AI_BALL_DEADZONE_PRIMARY_SQ_FIXED,
+  CHASE_RIGHT_HOLDERS_DEFENDING_CPU_EASY,
   PRIMARY_PURE_CHASE_RADIUS_SQ_FIXED,
+  REST_OFFENSE_MIN_DEPTH_FIXED,
   AI_BALL_DEADZONE_SQ_FIXED,
   AI_FINAL_DEADZONE_SQ_FIXED,
   AI_HOME_DEADZONE_SQ_FIXED,
@@ -121,13 +123,32 @@ export type ChaseRole = 'primary' | 'cover';
  * 実プレイで「ゴールキックなのにボールを奪われる」報告が続いた。そのため
  * 「そのチームには追跡権を与えない」という別軸を新設する。デフォルト値nullは
  * 既存の全呼び出し箇所(update.ts含む)を無変更のまま動作させる。
+ *
+ * excludeIndex (24周目サイクル④、P2スルーパスの根本修正): 人間が操作中の選手は
+ * 追跡権の候補から除外する。追跡権はAIの移動を駆動する仕組みであり、操作中の選手は
+ * 人間が動かすため役割を消費するだけ無駄になる — 実害として、保持側の1枠
+ * (「パスの受け手/こぼれ球回収」用と設計されていた) が距離0のキャリア自身に常に
+ * 割り当たり、**Aパス/Yパスを出しても味方の誰一人ボールを迎えに行かない**
+ * (受け手はホームポジションへ漂って終わる) というスルーパス不成立の根本原因だった。
+ *
+ * ただし除外の副作用として「人間がキープしている最中に、最寄りの味方が枠を得て
+ * ボール(=キャリアの足元)へ突進する」団子化が起きるため、呼び出し側(update.ts)は
+ * 「touch-priority保持者が操作選手そのものである間は、そのチームをsuppressedTeam扱い
+ * にする」ことで両立させる (キープ中=味方はサポート位置取り、パスが出て
+ * ボールが浮いた瞬間=最寄りの味方が受け手として走り込む)。
  */
 export function computeChaseRightIndices(
   players: readonly PlayerState[],
   ballPos: Vec2Fixed,
   possessionTeam: TeamId | null,
   suppressedTeam: TeamId | null = null,
+  excludeIndex: number | null = null,
+  holderIndex: number | null = null,
+  easedDefendingTeam: TeamId | null = null,
 ): ReadonlyMap<number, ChaseRole> {
+  // 操作選手がまさに保持している間は、そのチームへ追跡権を割り当てない (上記コメント参照)。
+  const holderTeamSuppressed =
+    excludeIndex !== null && holderIndex === excludeIndex ? (players[excludeIndex]?.team ?? null) : null;
   const result = new Map<number, ChaseRole>();
 
   // 距離はバケットに量子化してから順位付けする (メンバーシップの安定化):
@@ -151,12 +172,23 @@ export function computeChaseRightIndices(
 
   for (const team of [TeamId.A, TeamId.B]) {
     if (team === suppressedTeam) continue; // リスタート猶予中: このチームは追跡権ゼロ
+    if (team === holderTeamSuppressed) continue; // 操作選手がキープ中: 味方は寄らずサポート位置取り
     const holders =
-      possessionTeam === team ? CHASE_RIGHT_HOLDERS_POSSESSING : CHASE_RIGHT_HOLDERS_DEFENDING;
+      possessionTeam === team
+        ? CHASE_RIGHT_HOLDERS_POSSESSING
+        : team === easedDefendingTeam
+          ? CHASE_RIGHT_HOLDERS_DEFENDING_CPU_EASY // easyのCPU守備は1枚 (teamAIConstants.ts参照)
+          : CHASE_RIGHT_HOLDERS_DEFENDING;
+    // 操作選手の除外は「自チームが保持文脈」の時だけ (24周目サイクル④の是正):
+    // 保持文脈 = パスの受け手枠なのでAI味方が走り込むべき。一方、競り合い/守備文脈で
+    // まで除外すると「カーソルは最寄り選手を握る(人間が追う想定)のに、AI枠は遠い選手に
+    // 渡って歩いて来る」の間隙で、無人のルーズボールを350tick誰も回収しない実測デッドが
+    // 生じた。守備/競り合いは従来どおり操作選手も候補に含める (近い者が担当する)。
+    const exclude = possessionTeam === team ? excludeIndex : null;
     const candidates: Array<{ index: number; bucket: number }> = [];
     for (let i = 0; i < players.length; i++) {
       const player = players[i];
-      if (!player || player.team !== team || player.isGoalkeeper) continue;
+      if (!player || player.team !== team || player.isGoalkeeper || i === exclude) continue;
       const distSq = distSqFixed(player.pos, ballPos) as number;
       candidates.push({ index: i, bucket: Math.floor(distSq / DIST_BUCKET) });
     }
@@ -322,14 +354,26 @@ export function computeNonControlledDirection(
   // 3. サポートランナー枠 (攻撃側、isSupportRunner は静的述語)
   //    → ボール前方への走り込み点 (オフサイドは既存クランプが頭打ちにする)
   // 4. それ以外 → ライン調整ホームのまま
+  // 2.5. レストオフェンス (24周目サイクル④): サポートランナー枠は守備時もハーフウェー
+  //      以深へは引かない (カウンターの出し所。REST_OFFENSE_MIN_DEPTH_FIXED参照)。
+  //      マークより優先する = 前線スロットは守備時マーカーにならない (実サッカーのFWと同じ)。
+  const isRestRunner = isSupportRunner(player.slotIndex, teamFormations[player.team]);
+  const restOffenseHome = (): Vec2Fixed => {
+    const minY = depthToY(player.team, half, REST_OFFENSE_MIN_DEPTH_FIXED);
+    const attacksUpLocal = attackingIsUpward(player.team, half);
+    const heldY = attacksUpLocal
+      ? (Math.min(lineHome.y as number, minY as number) as Fixed)
+      : (Math.max(lineHome.y as number, minY as number) as Fixed);
+    return { x: lineHome.x, y: heldY };
+  };
   const baseHome =
-    chaseRole === null && markTargetIndex !== null && allPlayers[markTargetIndex]
-      ? computeMarkHomePosition(allPlayers[markTargetIndex].pos, player.team, half)
-      : chaseRole === null &&
-          possessionTeam === player.team &&
-          isSupportRunner(player.slotIndex, teamFormations[player.team])
-        ? computeSupportHomePosition(player, allPlayers, lineHome, ballPos, half)
-        : lineHome;
+    chaseRole === null && possessionTeam !== null && possessionTeam !== player.team && isRestRunner
+      ? restOffenseHome()
+      : chaseRole === null && markTargetIndex !== null && allPlayers[markTargetIndex]
+        ? computeMarkHomePosition(allPlayers[markTargetIndex].pos, player.team, half)
+        : chaseRole === null && possessionTeam === player.team && isRestRunner
+          ? computeSupportHomePosition(player, allPlayers, lineHome, ballPos, half)
+          : lineHome;
 
   const offsideLineY = computeOffsideLine(allPlayers, opponentOf(player.team), half);
   const attacksUp = attackingIsUpward(player.team, half);

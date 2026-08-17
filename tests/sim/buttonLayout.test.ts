@@ -190,7 +190,10 @@ describe('ボタン表: ルーズボール時', () => {
 
   it('★X でロビング (高い弾道) が出る', () => {
     const next = press(loose(), 'X');
-    expect(toFloat(next.ball.zVel), 'Xでロビングにならない').toBeGreaterThan(1);
+    // しきい値の導出 (24周目サイクル④): Xは固定飛距離180pxの弾道になった
+    // (kick.ts applyLongFeed)。zVel = 180·g/(2·2.7) ≈ 0.98。「浮いている」ことの
+    // 弁別として、グラウンダー(A/タップB、zVel=0)から明確に離れた 0.9 を下限にする。
+    expect(toFloat(next.ball.zVel), 'Xでロビングにならない').toBeGreaterThan(0.9);
   });
 
   it('★A でスライディング (ボールへ飛び込む) が出る', () => {

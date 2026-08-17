@@ -100,11 +100,20 @@ export const LONG_DRIBBLE_PLAYER_SPEED_FIXED: Fixed = toFixed(4.2 * RUN_TEMPO);
 export const KICKOUT_IMPULSE_SPEED_FIXED: Fixed = toFixed(2.0);
 
 /**
- * X (ロングフィード/センタリング/ロビング) が使う溜め相当のフレーム数。
- * 溜め無し(1)だと低い弾道になり「浮かせて前線へ送る」表現にならないため、最大溜めの
- * 7割相当にして高い弾道 (zVel約4.3) を出す。続編仕様のボタン表 X に対応する。
+ * X (ロングフィード/センタリング/ロビング) の狙い飛距離と水平速度 (24周目サイクル④)。
+ *
+ * 旧実装 (LONG_FEED_CHARGE_FRAMES=22 で applyKick に委譲) は溜め22相当の
+ * 高弾道+速度倍率で**第一飛行だけで577px (約79m) 飛ぶ**ことがプローブ実測で判明した。
+ * ロングフィードは「FWライン(前線)へ浮かせて送る」ボタンであり、ゴールからゴールへ
+ * 届く距離は用途に合わない。そこで applyAimedPass のロビングと同じ物理
+ * (zVel = dist·g/(2·vx) の逆算) を方向キック版として使い、飛距離を定数で固定する。
+ *
+ * 180px ≈ 12.3身長 ≈ 25m: 中盤からFWラインへ届く距離。S-P1 (スルーパス北極星ゲート、
+ * 150px先のFWの頭を越えて前方空間へ落とす) の根拠でもある。着地後は通常の
+ * バウンド+転がりで数十px伸びる。
  */
-export const LONG_FEED_CHARGE_FRAMES = 22;
+export const LONG_FEED_DISTANCE_FIXED: Fixed = toFixed(180);
+export const LONG_FEED_SPEED_FIXED: Fixed = toFixed(9.0 * BALL_TEMPO);
 
 /** キック溜め時間の下限/上限 (tick、60fps基準。上限は約0.5秒、仮値)。 */
 export const KICK_MIN_CHARGE_FRAMES = 1;
@@ -168,6 +177,15 @@ export const HIGH_ARC_SPEED_MULTIPLIER_FIXED: Fixed = toFixed(1.4);
 export const GRAVITY_FIXED: Fixed = toFixed(0.35 * BALL_TEMPO_SQ);
 /** バウンド時に残る垂直速度の割合 (仮値)。 */
 export const BOUNCE_DAMPING_FIXED: Fixed = toFixed(0.5);
+
+/**
+ * 着地時の水平速度の減衰率 (24周目サイクル④)。芝との衝突でボールは前方への勢いも失う。
+ * これが無いと浮き球は着地後も初速の水平速度のままバウンドし続け、Xロングフィード
+ * (飛距離180px) が着地後さらに175px転がる (プローブ実測)。0.75で着地後の伸びは
+ * 約60〜80pxに収まり、「落とし所の少し先で受け手が追いつく」スルーパスの間合いになる。
+ * 転がり摩擦(ROLLING_FRICTION)とは別軸: こちらは衝突1回ごとの離散的な減衰。
+ */
+export const BOUNCE_HORIZONTAL_DAMPING_FIXED: Fixed = toFixed(0.75);
 /** これ未満の着地速度はバウンドさせず静止させる (px/tick, 仮値)。無限微小バウンド防止。 */
 export const BOUNCE_MIN_VEL_FIXED: Fixed = toFixed(0.5 * BALL_TEMPO);
 /**

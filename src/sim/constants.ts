@@ -24,6 +24,15 @@ export const DIRECTION_VECTORS: Readonly<Record<Direction8, Vec2Fixed>> = {
 /** プレイヤーの移動速度 (px/tick, 仮値)。60fpsで秒速約3px*60=180px/secに相当。 */
 export const PLAYER_SPEED_FIXED: Fixed = toFixed(3.0 * RUN_TEMPO);
 
+/**
+ * ★24周目サイクル④★ easy難易度のCPU(Team B)フィールドプレイヤーの移動速度。
+ * 原作の難易度差はCPUチームの選手能力(走力等)で表現されるため、選手個性(Phase 4後半)の
+ * 先取りとして easy のみCPU全員を15%減速する。人間(0.525px/tick)との速度差 0.079px/tick は
+ * 100tickの追走で約8px開く = ドリブルで振り切る・マークを外すことが「できる」差。
+ * medium/hard は等速のまま (原作でも上位難易度のCPUは俊敏)。GKは対象外 (セーブの信頼性維持)。
+ */
+export const CPU_EASY_PLAYER_SPEED_FIXED: Fixed = toFixed(3.0 * RUN_TEMPO * 0.85);
+
 /** プレイヤーの当たり半径 (px, 仮値。ピッチ境界クランプの余白に使う)。ボール用は ballConstants.ts 参照。 */
 export const PLAYER_RADIUS_FIXED: Fixed = toFixed(10);
 

@@ -208,6 +208,14 @@ export interface GameState {
    * computeLineAdjustedHomePosition(teamAI.ts)がtargetDepthに加算する。
    */
   readonly manualLineOffset: Fixed;
+  /**
+   * ★遅延オフサイド (24周目サイクル④、競技規則第11条準拠)★
+   * キックの瞬間にオフサイド位置に居た味方の集合。この集合の選手が次にボールへ触れた
+   * 瞬間にオフサイド成立 (update.ts の解決ロジック)。別の選手 (オンサイドの味方・相手)
+   * が先に触れたら消滅する。null = 保留なし。旧実装の「キック瞬間に位置だけで即笛」は
+   * ライン押し上げ時に全ての前進パスを没収してしまう欠陥だった (offsideRule.ts 参照)。
+   */
+  readonly pendingOffside: { readonly team: TeamId; readonly indices: readonly number[] } | null;
 }
 
 /** GameState.lastEvent の種別。goalはscoreの変化で既に検出可能なため対象外。 */
@@ -344,5 +352,6 @@ export function createInitialState(seed: number, options: CreateInitialStateOpti
       elapsedTicks: 0,
     },
     manualLineOffset: ZERO_FIXED,
+    pendingOffside: null,
   };
 }
