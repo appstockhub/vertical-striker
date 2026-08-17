@@ -27,9 +27,9 @@ const MATRIX = [
   // ★24周目サイクル①★ テンポ変更+カーブ回転方式化で全試合の軌道が変わったため、
   // soccerSanity.test.ts と**同一セル群**へ揃えた (選定作業の一本化。スイープの生データは
   // docs/autonomous-log.md 24周目-1)。過去の変更履歴は git 履歴を参照。
-  // aggr/s1 のみ soccerSanity と別シード: ss53 は nearSupport(B)=0.51 で B2 基準(0.6)を
-  // 割るが、ss21 は 1.01 で満たす (soccerSanity 側は ss21 だと dango 4.58>4.5 で使えない、
-  // という互い違い。両スイートの制約が異なるため完全一致は諦めた)。
+  // aggr/s1 は soccerSanity (ss42) と別シード: 両スイートの制約が異なるため完全一致は
+  // 諦めた。ss53 の最終物理での実測: xsA 10.5/8555 (B1✓)・nearB 1.60 (B2✓)。
+  // (批評役付帯指摘: 旧コメントの「ss53はB2を割る」は前物理の値で、最終物理では通る)
   { pattern: 'aggressive', difficulty: 'easy', seed: 1, scriptSeed: 53 },
   { pattern: 'aggressive', difficulty: 'easy', seed: 3, scriptSeed: 13 },
   { pattern: 'passHeavy', difficulty: 'easy', seed: 1, scriptSeed: 42 },
