@@ -233,6 +233,7 @@ export function createHumanScript(pattern: HumanPattern, scriptSeed: number): (s
   let aimDirection: Direction8 = Direction8.None;
   let prevY = false;
   let prevB = false;
+  let prevX = false;
 
   const roll = (max: number): number => {
     let value: number;
@@ -259,7 +260,25 @@ export function createHumanScript(pattern: HumanPattern, scriptSeed: number): (s
     const finish = (): Inputs => {
       prevY = buttons.Y;
       prevB = buttons.B;
+      prevX = buttons.X;
       return { direction, buttons };
+    };
+
+    // Xロングフィードのレーン受け手: 攻め方向へ60〜280px先・横60px以内に味方が居るか
+    // (24周目サイクル④: 受け手の居ない無人地帯へのX = ただの敵ボール、を防ぐ。
+    //  実プレイヤーは前線のマーカーを見てから蹴る)。
+    const laneReceiverAhead = (): boolean => {
+      if (!controlled) return false;
+      const cx = toFloat(controlled.pos.x);
+      const cy = toFloat(controlled.pos.y);
+      for (let i = TeamId.A * 11; i < TeamId.A * 11 + 11; i++) {
+        if (i === state.controlledPlayerIndex) continue;
+        const p = state.players[i];
+        if (!p || p.isGoalkeeper) continue;
+        const ahead = attackUp ? cy - toFloat(p.pos.y) : toFloat(p.pos.y) - cy;
+        if (ahead >= 60 && ahead <= 280 && Math.abs(toFloat(p.pos.x) - cx) < 60) return true;
+      }
+      return false;
     };
 
     // 最寄りの相手選手 (プレス回避の判断材料。実プレイヤーは常に見ている情報)
@@ -416,21 +435,34 @@ export function createHumanScript(pattern: HumanPattern, scriptSeed: number): (s
           buttons.B = true;
           return finish();
         }
-        if (isCarrier && distToGoalLine > 400 && nearestOppDist > 70 && roll(100) < 12) {
-          // 自陣/中盤からのロングパント (溜めて高弾道、空中は転がり摩擦が無いため大きく前進する。
-          // 前線の味方(保持側の追跡権1人+押し上げたライン)が回収する、実プレイのロングボール戦術)
-          chargeTicksLeft = 8 + roll(7);
-          buttons.B = true;
+        if (isCarrier && distToGoalLine > 350 && nearestOppDist > 60 && !prevX && laneReceiverAhead() && roll(100) < 20) {
+          // ★24周目サイクル④★ 自陣/中盤からは X ロングフィード (固定飛距離180pxの弾道) で
+          // 前線へ送る。受け手の走り込み (追跡権の操作選手除外) とカーソル自動切替で、
+          // S-P1 (スルーパス北極星) と同じ前進手段になる。旧Bロングパント (溜め8〜14) は
+          // 飛距離が過大で相手GK/DFに直接渡っていたため置き換えた。
+          buttons.X = true;
+          direction = towardGoal;
           return finish();
         }
         if (isCarrier) {
-          // プレスが迫っていたら味方への逃がしパス (受け手がいる時のみ)
-          if (nearestOppDist < 50 && !prevY && roll(100) < 30) {
+          // プレスが迫っていたら味方への逃がしパス (受け手がいる時のみ)。
+          // ★24周目サイクル④★ 50px→90px・30%→45%: 受け手が走り込むようになった
+          // (追跡権の修正) ため、パスの価値が上がった。実プレイヤーの使用頻度に寄せる。
+          if (nearestOppDist < 90 && !prevY && roll(100) < 45) {
             if (selectPassTarget(state.controlledPlayerIndex, state.players) !== null) {
               buttons.Y = true;
               direction = towardGoal;
               return finish();
             }
+          }
+          // ★24周目サイクル④: パス&ムーブ★ スペースがあっても約1.5秒に1回は前方へ繋ぐ。
+          // ドリブル(0.525px/tick)だけでは1チェーン(平均153tick)で80px程度しか前進できず、
+          // 敵陣1/3へ一度も入れない (実測: ボールの攻めゴール最近接596px)。パスは2.2px/tickで
+          // ボールを進め、追跡者の幾何もリセットする — 原作の「パスで運ぶ」攻撃の再現。
+          if (!prevY && roll(100) < 2 && selectPassTarget(state.controlledPlayerIndex, state.players) !== null) {
+            buttons.Y = true;
+            direction = towardGoal;
+            return finish();
           }
           // プレスが近い時は斜めに外しながら前進、遠い時はゴールへ直進
           const r = roll(100);
@@ -439,16 +471,17 @@ export function createHumanScript(pattern: HumanPattern, scriptSeed: number): (s
           } else {
             direction = r < 75 ? towardGoal : r < 92 ? randomDirection() : forward;
           }
-          // ロングドリブル(L)はスペースがある時だけ (蹴り出しが大きい=プレスに弱い、CLAUDE.mdの
-          // リスクリターン設計どおりの使い分け)
-          buttons.L = nearestOppDist > 80;
+          // ★24周目サイクル④★ L蹴り出しドリブルは使わない: ボールが touch-priority
+          // (20px) の外へ出て isCarrier が偽になり、パス/シュートの意思決定分岐が
+          // 丸ごと沈黙する (実測: 蹴り出し常用でパス0.06本/チェーンまで低下)。
+          // 通常ドリブル (7〜13px) なら isCarrier が安定し、毎tick攻撃の選択肢を持てる。
         } else {
           // 非保持: ボールへ寄せる/前へ。近ければタックル。
           const distToBall = controlled
             ? Math.sqrt(distSqFixed(controlled.pos, state.ball.pos) as number) / 16
             : Infinity;
-          if (state.lastTouchTeam === TeamId.B && distToBall < 90 && !prevB && roll(100) < 10) {
-            buttons.A = true; // スライディング (17周目にボタン表へ合わせて B->A)
+          if (state.lastTouchTeam === TeamId.B && distToBall < 40 && !prevB && roll(100) < 10) {
+            buttons.A = true; // スライディング (24周目サイクル④: 射程90→40px、届く間合いだけ)
           }
           const r = roll(100);
           if (r < 50 && controlled) {
@@ -467,6 +500,12 @@ export function createHumanScript(pattern: HumanPattern, scriptSeed: number): (s
           aimDirection = shotDir;
           chargeTicksLeft = 1 + roll(2);
           buttons.B = true;
+          return finish();
+        }
+        if (isCarrier && distToGoalLine > 350 && nearestOppDist > 60 && !prevX && laneReceiverAhead() && roll(100) < 12) {
+          // ★24周目サイクル④★ passHeavyもXロングフィードで前線へ (aggressiveと同じ前進手段)
+          buttons.X = true;
+          direction = towardGoal;
           return finish();
         }
         if (isCarrier) {
