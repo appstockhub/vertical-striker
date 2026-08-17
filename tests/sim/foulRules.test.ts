@@ -6,6 +6,11 @@ import { simulate } from '../../src/sim/update';
 import { PITCH_HEIGHT } from '../../src/config/pitch';
 import { PENALTY_SPOT_DEPTH } from '../../src/render/pitchGeometry';
 import { SET_PIECE_EXCLUSION_RADIUS_FIXED } from '../../src/sim/boundsConstants';
+import {
+  TACKLE_ACTIVE_FRAMES,
+  TACKLE_RECOVERY_FRAMES,
+  TACKLE_WINDUP_FRAMES,
+} from '../../src/sim/tackleConstants';
 
 /**
  * ★ファウル / フリーキック / ペナルティキック (競技規則 第12〜14条)★
@@ -64,8 +69,12 @@ function slidingSetup(x: number, y: number, blockerAt: number | null): GameState
   };
 }
 
-/** スライディングを出して、決着 (ファウル or 奪取) が付くまで進める。 */
-function slideAndSettle(start: GameState, maxTicks = 40): GameState {
+/** スライディングを出して、決着 (ファウル or 奪取) が付くまで進める。
+ * テンポ変更追従: タックルのフレームが 1/RUN_TEMPO 倍 (溜め34f/判定57f/隙114f) に
+ * 伸びたため、決着待ちの上限もタックル定数から導出する (旧: 40tick固定)。 */
+const SLIDE_SETTLE_TICKS =
+  TACKLE_WINDUP_FRAMES + TACKLE_ACTIVE_FRAMES + TACKLE_RECOVERY_FRAMES + 30;
+function slideAndSettle(start: GameState, maxTicks = SLIDE_SETTLE_TICKS): GameState {
   let state = simulate(start, inp(Direction8.Down, { A: true })); // A = スライディング (ボタン表)
   for (let i = 0; i < maxTicks; i++) {
     state = simulate(state, inp(Direction8.Down));
@@ -76,8 +85,12 @@ function slideAndSettle(start: GameState, maxTicks = 40): GameState {
 
 describe('ファウル判定 (競技規則 第12条)', () => {
   it('ボールに届かないスライディングで相手に当たったらファウルになる', () => {
-    // ボールは保持者の遥か前方 (60px) = スライディングはボールに届かず相手だけに当たる。
-    const state = slideAndSettle(slidingSetup(240, 900, 918));
+    // 2人目の相手 (blocker) をスライドの進路上 (人間とボールの間) に置く =
+    // 「保持者を狙ったが別の相手に突っ込んだ」ケース。
+    // テンポ変更追従: 旧配置 (blocker=918、保持者の先) は、溜め34tickの間に保持者が
+    // ボールをクリアして blocker がボールを追って逃げてしまい、接触が二度と起きなくなった。
+    // 進路上 (890) に置けば Active 序盤に確実に接触する (実測: 46tick目にFK成立)。
+    const state = slideAndSettle(slidingSetup(240, 900, 890));
     expect(state.setPieceLock?.kind, 'ファウルが取られない').toBe('freeKick');
     expect(state.setPieceLock?.restartTeam, 'FKが反則した側に与えられている').toBe(TeamId.B);
   });
@@ -106,7 +119,8 @@ describe('ファウル判定 (競技規則 第12条)', () => {
 
 describe('フリーキック (競技規則 第13条)', () => {
   it('ファウル地点にボールが置かれ、キッカーがそこに立つ', () => {
-    const state = slideAndSettle(slidingSetup(240, 900, 918));
+    // blocker=890: スライドの進路上に置いてファウルを成立させる (上記ファウル判定テスト参照)。
+    const state = slideAndSettle(slidingSetup(240, 900, 890));
     expect(state.setPieceLock?.kind).toBe('freeKick');
     const restartTeam = state.setPieceLock!.restartTeam;
     let nearest = Infinity;
@@ -120,7 +134,7 @@ describe('フリーキック (競技規則 第13条)', () => {
   });
 
   it('相手は規定距離まで離される (9.15m相当)', () => {
-    const state = slideAndSettle(slidingSetup(240, 900, 918));
+    const state = slideAndSettle(slidingSetup(240, 900, 890));
     const restartTeam = state.setPieceLock!.restartTeam;
     const limit = toFloat(SET_PIECE_EXCLUSION_RADIUS_FIXED);
     state.players.forEach((p, i) => {
@@ -131,7 +145,7 @@ describe('フリーキック (競技規則 第13条)', () => {
   });
 
   it('蹴るまで相手はボールに触れない', () => {
-    let state = slideAndSettle(slidingSetup(240, 900, 918));
+    let state = slideAndSettle(slidingSetup(240, 900, 890));
     const foulingTeam = TeamId.A;
     for (let i = 0; i < 60; i++) {
       state = simulate(state, NO_INPUT);

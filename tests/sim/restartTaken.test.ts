@@ -5,6 +5,7 @@ import { createInitialState, TeamId, type GameState } from '../../src/sim/state'
 import { simulate } from '../../src/sim/update';
 import { PITCH_HEIGHT, PITCH_WIDTH } from '../../src/config/pitch';
 import { SET_PIECE_LOCK_MAX_TICKS } from '../../src/sim/boundsConstants';
+import { STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
 
 /**
  * ★セットプレーが「実際に再開されるか」のテスト (試合停止バグの再現)★
@@ -139,7 +140,8 @@ describe('セットプレー: 再開チームのキッカーが必ずボール�
     state = simulate(state, B);
     state = simulate(state, { direction: Direction8.Up, buttons: emptyButtonState() });
     const speed = Math.hypot(toFloat(state.ball.vel.x), toFloat(state.ball.vel.y));
-    expect(speed, '人間がセットプレーを蹴れない').toBeGreaterThan(3);
+    // テンポ変更追従: 強キック 9.0→2.7px/tick。裸の3ではなく定数からの相対値で判定する。
+    expect(speed, '人間がセットプレーを蹴れない').toBeGreaterThan(toFloat(STRONG_KICK_SPEED_FIXED) * 0.8);
     expect(state.setPieceLock, '蹴ったのにロックが解除されない').toBeNull();
   });
 

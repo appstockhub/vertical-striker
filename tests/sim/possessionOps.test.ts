@@ -4,7 +4,22 @@ import { Direction8, emptyButtonState, type ButtonState } from '../../src/input/
 import { createInitialState, TeamId, type GameState } from '../../src/sim/state';
 import { simulate } from '../../src/sim/update';
 import { findTouchPriorityPlayer } from '../../src/sim/ballTouch';
-import { KICK_MAX_CHARGE_FRAMES } from '../../src/sim/ballConstants';
+import {
+  HIGH_ARC_SPEED_MULTIPLIER_FIXED,
+  KICK_MAX_CHARGE_FRAMES,
+  STRONG_KICK_SPEED_FIXED,
+  WEAK_KICK_SPEED_FIXED,
+} from '../../src/sim/ballConstants';
+import { runTicks } from '../../src/sim/tempo';
+
+// テンポ変更 (24周目サイクル①) 追従: 「キック/パスが出た」のしきい値を裸の数字ではなく
+// キック速度定数からの相対値にする。ドリブルタッチ(0.63)や追従(最大0.88)とは明確に
+// 区別できる高さに置くこと (誤検出防止)。
+const KICK_FIRED = toFloat(STRONG_KICK_SPEED_FIXED) * 0.8;
+const WEAK_FIRED = toFloat(WEAK_KICK_SPEED_FIXED) * 0.85;
+// 最大溜めの強キックは HIGH_ARC_SPEED_MULTIPLIER (0.7) 倍まで水平速度が落ちる仕様。
+const CHARGED_FIRED =
+  toFloat(STRONG_KICK_SPEED_FIXED) * toFloat(HIGH_ARC_SPEED_MULTIPLIER_FIXED) * 0.9;
 
 /**
  * ★段階2: ボール保持時の全操作の棚卸しプローブ★
@@ -154,8 +169,11 @@ describe('段階2: ボール保持時の操作プローブ', () => {
   });
 
   it('D2. 蹴り出しドリブル (L+R): ボールが足元から前へ離れ、速くなる', () => {
-    const normal = run(carrying(), 40, inp(Direction8.Up));
-    const kickDribble = run(carrying(), 40, inp(Direction8.Up, { L: true, R: true }));
+    // テンポ変更追従: 蹴り出しサイクルの収束が遅くなったため、観測窓を同じ移動距離ぶん
+    // (40tick→runTicks(40)=229tick) に延長 (実測: 前進123px/176px、足元距離3.4px/8.2px)。
+    const N = runTicks(40);
+    const normal = run(carrying(), N, inp(Direction8.Up));
+    const kickDribble = run(carrying(), N, inp(Direction8.Up, { L: true, R: true }));
     const normalDist = Math.abs(ballPos(normal).y - 1000);
     const kickDist = Math.abs(ballPos(kickDribble).y - 1000);
     const gapNormal = Math.hypot(
@@ -170,7 +188,7 @@ describe('段階2: ボール保持時の操作プローブ', () => {
     report(
       '蹴り出しドリブル(L+R)',
       fired,
-      `40tickの前進 通常${normalDist.toFixed(0)}px / 蹴出${kickDist.toFixed(0)}px、足元との距離 ${gapNormal.toFixed(0)}→${gapKick.toFixed(0)}px`,
+      `${N}tickの前進 通常${normalDist.toFixed(0)}px / 蹴出${kickDist.toFixed(0)}px、足元との距離 ${gapNormal.toFixed(0)}→${gapKick.toFixed(0)}px`,
     );
     expect(kickDist).toBeGreaterThan(normalDist);
     expect(gapKick).toBeGreaterThan(gapNormal);
@@ -183,10 +201,10 @@ describe('段階2: ボール保持時の操作プローブ', () => {
     const longH = maxHeight(long.state);
     // 3D の総合的な「蹴りの強さ」= 水平速度と垂直初速の合成。
     const power = (r: { speed: number; zVel: number }) => Math.hypot(r.speed, r.zVel);
-    report('B 短押し(2f)', short.speed > 4, `解放tickで発動 水平${short.speed.toFixed(2)} zVel${short.zVel.toFixed(2)} 最高到達${shortH.toFixed(1)}px 総合${power(short).toFixed(2)}`);
-    report('B 長押し(最大)', long.speed > 4, `解放tickで発動 水平${long.speed.toFixed(2)} zVel${long.zVel.toFixed(2)} 最高到達${longH.toFixed(1)}px 総合${power(long).toFixed(2)}`);
-    expect(short.speed).toBeGreaterThan(4);
-    expect(long.speed).toBeGreaterThan(4);
+    report('B 短押し(2f)', short.speed > KICK_FIRED, `解放tickで発動 水平${short.speed.toFixed(2)} zVel${short.zVel.toFixed(2)} 最高到達${shortH.toFixed(1)}px 総合${power(short).toFixed(2)}`);
+    report('B 長押し(最大)', long.speed > CHARGED_FIRED, `解放tickで発動 水平${long.speed.toFixed(2)} zVel${long.zVel.toFixed(2)} 最高到達${longH.toFixed(1)}px 総合${power(long).toFixed(2)}`);
+    expect(short.speed).toBeGreaterThan(KICK_FIRED);
+    expect(long.speed).toBeGreaterThan(CHARGED_FIRED);
     // 弾道は有意に変わること (溜めの意味がある) — ここはゲート。
     expect(longH).toBeGreaterThan(shortH + 10);
 
@@ -206,15 +224,15 @@ describe('段階2: ボール保持時の操作プローブ', () => {
   it('K2. B 方向なし = 弱いキック / 方向あり = 強いキック', () => {
     const withDir = chargeKick(carrying(), 2, Direction8.Up);
     const noDir = chargeKick(carrying(), 2, Direction8.None);
-    report('B 方向なし(弱)', noDir.speed > 2, `水平${noDir.speed.toFixed(2)}（方向ありは${withDir.speed.toFixed(2)}）`);
-    expect(noDir.speed).toBeGreaterThan(2);
+    report('B 方向なし(弱)', noDir.speed > WEAK_FIRED, `水平${noDir.speed.toFixed(2)}（方向ありは${withDir.speed.toFixed(2)}）`);
+    expect(noDir.speed).toBeGreaterThan(WEAK_FIRED);
     expect(withDir.speed).toBeGreaterThan(noDir.speed);
   });
 
   it('K3. A = 進行方向へのグラウンダーパス (押した次のtickで出る)', () => {
     const s0 = carrying();
     const s1 = simulate(s0, inp(Direction8.Up, { A: true }));
-    const fired = speed(s1) > 4;
+    const fired = speed(s1) > KICK_FIRED;
     report('A 進行方向パス', fired, `1tickで発動 速度${speed(s1).toFixed(2)} zVel${toFloat(s1.ball.zVel).toFixed(2)}`);
     expect(fired).toBe(true);
     expect(toFloat(s1.ball.zVel)).toBeLessThan(1); // グラウンダー
@@ -224,7 +242,9 @@ describe('段階2: ボール保持時の操作プローブ', () => {
     const s0 = carrying();
     const s1 = simulate(s0, inp(Direction8.Up, { X: true }));
     const h = maxHeight(s1);
-    const fired = speed(s1) > 3 && h > 8;
+    // 高い弾道ぶん水平速度は落ちる (HIGH_ARC_SPEED_MULTIPLIER) ので弱キック基準で見る。
+    // 弾道の高さ(px)は空間量なのでテンポ変更の影響を受けない (8pxのまま)。
+    const fired = speed(s1) > WEAK_FIRED && h > 8;
     report('X ロングフィード', fired, `1tickで発動 速度${speed(s1).toFixed(2)} zVel${toFloat(s1.ball.zVel).toFixed(2)} 最高到達${h.toFixed(1)}px`);
     expect(fired).toBe(true);
     expect(h).toBeGreaterThan(8);
@@ -239,7 +259,7 @@ describe('段階2: ボール保持時の操作プローブ', () => {
     for (let k = 0; k < 6; k++) {
       cur = simulate(cur, inp(Direction8.Up, { Y: true }));
       t++;
-      if (speed(cur) > 4) {
+      if (speed(cur) > WEAK_FIRED) {
         fired = true;
         break;
       }
@@ -264,10 +284,25 @@ describe('段階2: ボール保持時の操作プローブ', () => {
   it('K7. カーブ: キック直後に別方向を入れると横へ曲がる', () => {
     // 解放tickの直後(受付ウィンドウ内)に右を入れる。ticksToKick のように解放後に
     // 何tickも空ける測り方では、6tickの受付ウィンドウが閉じてしまい必ず0になる。
+    // ★24周目サイクル①: カーブの死と再生の記録★
+    // (1) テンポ換算後の加算加速度 0.0036px/tick² は固定小数点の量子化下限(1/256=0.0039)を
+    //     割り、カーブが事実上死んだ (実測: 全飛程で横ずれ0.31px)。
+    // (2) sim側を「速度ベクトルの微小回転」方式へ再設計して修正した (ballPhysics.ts /
+    //     ballConstants.ts CURVE_ROTATION_STEP_FIXED 参照。合計曲げ角17.9°は旧設計と同水準)。
+    // (3) しきい値の再導出: 旧8px(絶対量)は「摩擦0.985・飛程591px」時代の校正値。摩擦を
+    //     原作実測0.968へ直した今、グラウンダーの飛程は82pxなので絶対8pxは飛程の10% =
+    //     旧比5倍のフックを要求してしまう。**曲がりの正しい不変量は飛程に対する比**:
+    //     旧 11px/591px≈1.9% → ゲートは2%とし、実測 3.3px/82px≈4.0% で合格。
     const kicked = chargeKick(carrying(), 2, Direction8.Up).state;
-    const curved = lateralDrift(kicked, 60, inp(Direction8.Right));
-    report('カーブ (別方向入力)', Math.abs(curved) > 8, `横ずれ ${curved.toFixed(1)}px`);
-    expect(Math.abs(curved)).toBeGreaterThan(8);
+    const start = ballPos(kicked);
+    const curved = lateralDrift(kicked, 200, inp(Direction8.Right));
+    let cur = kicked;
+    for (let k = 0; k < 200; k++) cur = simulate(cur, inp(Direction8.Right));
+    const end = ballPos(cur);
+    const flight = Math.hypot(end.x - start.x, end.y - start.y) || 1;
+    const ratio = Math.abs(curved) / flight;
+    report('カーブ (別方向入力)', ratio > 0.02, `横ずれ ${curved.toFixed(1)}px / 飛程 ${flight.toFixed(0)}px = ${(ratio * 100).toFixed(1)}%`);
+    expect(ratio).toBeGreaterThan(0.02);
   });
 
   it('K8. カーブの暴発: 照準方向を押しっぱなしにしても「曲がらない」', () => {
@@ -307,13 +342,16 @@ describe('段階2: ボール保持時の操作プローブ', () => {
     // A を1tickだけ押して離し、その後 20tick 無入力。速度が跳ね上がるのは1回だけのはず。
     let cur = carrying();
     const jumps: number[] = [];
+    // 「蹴った」と分かる速度ジャンプ。キック速度が1/3.3になったため相対値で判定する
+    // (ドリブルタッチのジャンプは最大0.63なので誤検出しない)。
+    const JUMP = toFloat(WEAK_KICK_SPEED_FIXED) * 0.75;
     let prev = speed(cur);
     cur = simulate(cur, inp(Direction8.Up, { A: true }));
-    if (speed(cur) - prev > 3) jumps.push(1);
+    if (speed(cur) - prev > JUMP) jumps.push(1);
     prev = speed(cur);
     for (let k = 0; k < 20; k++) {
       cur = simulate(cur, inp(Direction8.Up));
-      if (speed(cur) - prev > 3) jumps.push(k + 2);
+      if (speed(cur) - prev > JUMP) jumps.push(k + 2);
       prev = speed(cur);
     }
     report('二重発火 (A)', jumps.length === 1, `速度が跳ねた回数 ${jumps.length} (tick: ${jumps.join(',') || 'なし'})`);

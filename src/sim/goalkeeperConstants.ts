@@ -1,6 +1,7 @@
 import { fixedMul, toFixed } from '../core/fixed';
 import type { Fixed } from '../core/types';
 import { PITCH_WIDTH } from '../config/pitch';
+import { BALL_TEMPO, RUN_TEMPO } from './tempo';
 
 /**
  * キーパーAI関連の定数。すべて仮値 (要プレイテスト調整)。
@@ -16,7 +17,7 @@ export const GOAL_CENTER_X_FIXED: Fixed = toFixed(PITCH_WIDTH / 2);
 export const GK_COVERAGE_RADIUS_FIXED: Fixed = toFixed(45);
 
 /** 自動モードでのキーパー移動速度 (px/tick, 仮値)。PLAYER_SPEED(3.0)よりやや遅く「反応速度」を表現する。 */
-export const GK_AUTO_SPEED_FIXED: Fixed = toFixed(2.2);
+export const GK_AUTO_SPEED_FIXED: Fixed = toFixed(2.2 * RUN_TEMPO);
 
 /** ボールがこの範囲に入ると Team A GK へ自動的に手動操作が移る (px, 仮値)。 */
 export const GK_AUTO_TAKEOVER_RADIUS_FIXED: Fixed = toFixed(120);
@@ -48,7 +49,7 @@ export const CATCH_RANGE_SQ_FIXED: Fixed = fixedMul(CATCH_RANGE_FIXED, CATCH_RAN
  * - 至近距離からの強シュートや、カーブ/シフトで速度が乗ったボール → 弾く
  * という「ギリギリなら弾く」設計本来の読み合いが実際に発生する。
  */
-export const CATCH_MAX_SPEED_FIXED: Fixed = toFixed(9.5);
+export const CATCH_MAX_SPEED_FIXED: Fixed = toFixed(9.5 * BALL_TEMPO);
 
 /**
  * パンチング (B) が届く範囲 (px。キャッチより長い)。この範囲=セーブ文脈に入る外縁でもある。
@@ -71,7 +72,7 @@ export const GK_SAVE_RANGE_SQ_FIXED: Fixed = PUNCH_RANGE_SQ_FIXED;
  * ドリブルタッチ速度(3.6)より上・強シュート(9)より下の4.5に設定し、
  * 「飛んでくるボールにはセーブ、収めたボールにはキック」を自然に切り分ける。
  */
-export const SAVE_CONTEXT_MIN_BALL_SPEED_FIXED: Fixed = toFixed(4.5);
+export const SAVE_CONTEXT_MIN_BALL_SPEED_FIXED: Fixed = toFixed(4.5 * BALL_TEMPO);
 export const SAVE_CONTEXT_MIN_BALL_SPEED_SQ_FIXED: Fixed = fixedMul(
   SAVE_CONTEXT_MIN_BALL_SPEED_FIXED,
   SAVE_CONTEXT_MIN_BALL_SPEED_FIXED,

@@ -74,8 +74,10 @@ export const CAMERA_SMOOTHING = 0.12;
  */
 export const LOOK_AHEAD_MAX = 75;
 
-/** 先読みが上限に達するボール速度 (px/tick)。 */
-export const LOOK_AHEAD_VEL_REF = 3;
+/** 先読みが上限に達するボール速度 (px/tick)。
+ * テンポ変更(24周目サイクル①): 3×BALL_TEMPO(0.3)=0.9。強キック(2.7)で確実に飽和し、
+ * ドリブル速度(0.63)では部分的、という旧比率を保存する。 */
+export const LOOK_AHEAD_VEL_REF = 0.9;
 
 /**
  * ★横追従★ カメラのワールドXがボールを追う際の、ピッチ幅に対するクランプ範囲。

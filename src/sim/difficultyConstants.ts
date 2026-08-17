@@ -25,8 +25,12 @@ function sq(f: Fixed): Fixed {
   return fixedMul(f, f);
 }
 
+// ★テンポ変更(24周目サイクル①)★ 冒頭コメントの導出式のまま物理だけ差し替え:
+// 強キックのグラウンダーは初速 2.7px/tick・摩擦 0.968/tick なので総到達距離は
+// 2.7×0.968/(1-0.968) ≈ 82px。旧の到達距離(225px)比 0.36 で射程・横ずれ・ノイズを縮めた
+// (「絶対に届かないシュートを打たない」という元の設計判断を保存するための連動調整)。
 export const DIFFICULTY_TIERS: Readonly<Record<Difficulty, DifficultyTier>> = {
-  easy: { shootRangeSq: sq(toFixed(140)), shootMaxLateral: toFixed(100), aimNoiseRange: 60 },
-  medium: { shootRangeSq: sq(toFixed(170)), shootMaxLateral: toFixed(130), aimNoiseRange: 25 },
-  hard: { shootRangeSq: sq(toFixed(200)), shootMaxLateral: toFixed(160), aimNoiseRange: 0 },
+  easy: { shootRangeSq: sq(toFixed(50)), shootMaxLateral: toFixed(36), aimNoiseRange: 22 },
+  medium: { shootRangeSq: sq(toFixed(61)), shootMaxLateral: toFixed(47), aimNoiseRange: 9 },
+  hard: { shootRangeSq: sq(toFixed(72)), shootMaxLateral: toFixed(58), aimNoiseRange: 0 },
 };

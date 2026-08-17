@@ -1,5 +1,6 @@
 import { fixedMul, toFixed } from '../core/fixed';
 import type { Fixed } from '../core/types';
+import { RUN_TEMPO } from './tempo';
 
 /**
  * 非操作選手AIの重み付きベクトル合成に使う定数。すべて仮値 (要プレイテスト調整)。
@@ -92,7 +93,9 @@ export const LINE_FOLLOW_GRID_FIXED: Fixed = toFixed(32);
  * (観戦シミュレーターのpostShotRetreat測定で発覚)。追跡権(プレス)は即応のまま、
  * ライン(陣形)だけを遅らせる、という応答速度の分離。
  */
-export const LINE_POSSESSION_SWITCH_TICKS = 90;
+// テンポ変更(24周目サイクル①): 1.5秒→5秒。瞬間的な保持の入れ替わり(GKパンチング・こぼれ球)
+// 自体がテンポ低下で長引くようになったため、ヒステリシスも 1/BALL_TEMPO 倍で追随させる。
+export const LINE_POSSESSION_SWITCH_TICKS = 300;
 
 /**
  * ライン調整後のホームポジションを相手オフサイドラインの手前に留めるマージン (px、仮値)。
@@ -312,7 +315,9 @@ export const KICKOFF_GRACE_TICKS = 15;
  * 邪魔されずに済ませられる。スローイン/コーナーはこの押し出しルール自体が無いため
  * (goal-kick専用)、同じ猶予tick数を流用する — 妥当性は要プレイテスト確認。
  */
-export const RESTART_GRACE_TICKS = 63;
+// テンポ変更(24周目サイクル①): 上記の導出式のまま速度だけ差し替え:
+// 190px / PLAYER_SPEED(0.525px/tick) ≈ 362tick。
+export const RESTART_GRACE_TICKS = 362;
 
 // ============================================================================
 // ライン操作 (続編仕様④、GameState.manualLineOffset、STARTボタン) 用の定数。
@@ -330,9 +335,9 @@ export const MANUAL_LINE_OFFSET_MAX_FIXED: Fixed = toFixed(150);
  * STARTを押している間、1tickあたりオフセットが変化する量 (px/tick、仮値)。
  * PLAYER_SPEED_FIXED(3px/tick)と同程度にし、選手の実際の移動速度で追随できる範囲にした。
  */
-export const MANUAL_LINE_OFFSET_STEP_FIXED: Fixed = toFixed(3);
+export const MANUAL_LINE_OFFSET_STEP_FIXED: Fixed = toFixed(3 * RUN_TEMPO);
 /**
  * STARTを押していない間、1tickあたりオフセットが中立(0)へ戻る量 (px/tick、仮値)。
  * STEPよりやや遅くし、「離した瞬間に一瞬で元に戻る」不自然さを避けた。
  */
-export const MANUAL_LINE_OFFSET_DECAY_FIXED: Fixed = toFixed(2);
+export const MANUAL_LINE_OFFSET_DECAY_FIXED: Fixed = toFixed(2 * RUN_TEMPO);

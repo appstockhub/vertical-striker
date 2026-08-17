@@ -1,5 +1,6 @@
 import { fixedMul, toFixed } from '../core/fixed';
 import type { Fixed } from '../core/types';
+import { RUN_TEMPO, runTicks } from './tempo';
 
 /**
  * スライディングタックル関連の定数。すべて仮値 (要プレイテスト調整)。
@@ -7,12 +8,14 @@ import type { Fixed } from '../core/types';
  * (ボール保持中はチャージキック、非保持+ジオメトリ条件成立時はタックル)。
  */
 
+// テンポ変更(24周目サイクル①): 速度が RUN_TEMPO 倍になったため、時間を 1/RUN_TEMPO 倍にして
+// スライドの移動距離・相手に対する相対的な隙の大きさを保存する (tempo.ts の方針)。
 /** 溜め(構え)フレーム数。この間ほぼ動けない。 */
-export const TACKLE_WINDUP_FRAMES = 6;
+export const TACKLE_WINDUP_FRAMES = runTicks(6);
 /** 判定が有効なフレーム数。この間、毎tick成功判定を再評価する。 */
-export const TACKLE_ACTIVE_FRAMES = 10;
+export const TACKLE_ACTIVE_FRAMES = runTicks(10);
 /** 隙 (成功/失敗問わず発生)。この間は鈍足になる。 */
-export const TACKLE_RECOVERY_FRAMES = 20;
+export const TACKLE_RECOVERY_FRAMES = runTicks(20);
 
 /**
  * 発動/成功に必要な間合い (px、二乗も保存)。
@@ -37,11 +40,12 @@ export const TACKLE_CONE_COS_THRESHOLD_SQ_FIXED: Fixed = toFixed(0.2);
  * 逃げる相手に追いつけなかった (上記TACKLE_RANGE_FIXEDのコメント参照)。
  * 滑り込みは走るより明確に速い、という実感が出る6.0にする。
  */
-export const TACKLE_SLIDE_SPEED_FIXED: Fixed = toFixed(6.0);
+export const TACKLE_SLIDE_SPEED_FIXED: Fixed = toFixed(6.0 * RUN_TEMPO);
 /** Recovery中の移動速度 (px/tick, 仮値。通常よりかなり遅い「鈍足」)。 */
-export const TACKLE_RECOVERY_SPEED_FIXED: Fixed = toFixed(1.2);
-/** 成功時にボールへ与える速度 (px/tick, 仮値)。ドリブルタッチと同じ「上書き」方式で奪う。 */
-export const TACKLE_WIN_SPEED_FIXED: Fixed = toFixed(3.8);
+export const TACKLE_RECOVERY_SPEED_FIXED: Fixed = toFixed(1.2 * RUN_TEMPO);
+/** 成功時にボールへ与える速度 (px/tick, 仮値)。ドリブルタッチと同じ「上書き」方式で奪う。
+ * 選手が体で押し出すボールなので RUN_TEMPO 系 (tempo.ts の基準)。 */
+export const TACKLE_WIN_SPEED_FIXED: Fixed = toFixed(3.8 * RUN_TEMPO);
 
 // ============================================================================
 // ショルダーチャージ (続編仕様、Y または X)。実プレイ報告「チャージもない」への対応で新設。
@@ -63,7 +67,7 @@ export const CHARGE_RANGE_FIXED: Fixed = toFixed(30);
 export const CHARGE_RANGE_SQ_FIXED: Fixed = fixedMul(CHARGE_RANGE_FIXED, CHARGE_RANGE_FIXED);
 
 /** チャージ成功時にボールへ与える速度 (px/tick)。押し出す動作なのでスライディングより弱め。 */
-export const CHARGE_WIN_SPEED_FIXED: Fixed = toFixed(3.0);
+export const CHARGE_WIN_SPEED_FIXED: Fixed = toFixed(3.0 * RUN_TEMPO);
 
 /** チャージ後の隙 (フレーム)。スライディングの隙(20f)よりずっと短い = 連打はできるが低リターン。 */
-export const CHARGE_RECOVERY_FRAMES = 8;
+export const CHARGE_RECOVERY_FRAMES = runTicks(8);

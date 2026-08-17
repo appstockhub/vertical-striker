@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { toFixed, ZERO_FIXED } from '../../src/core/fixed';
+import { toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
+import { STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
 import { Direction8 } from '../../src/input/types';
 import { createInitialState, TeamId, type GameState } from '../../src/sim/state';
 import { humanCarrying, humanCarryingWithReceiver, runScript, step } from './harness';
@@ -59,9 +60,11 @@ describe('シナリオ: スルーパス', () => {
       step(1, Direction8.None, { Y: true }),
       step(3, Direction8.None),
     ]);
-    // Yを押した直後にボールがパス速度で飛び出していること
+    // Yを押した直後にボールがパス速度で飛び出していること (しきい値はキック定数由来 =
+    // テンポ変更に自動追従する。パス初速はKICK_MIN_CHARGE時の強キック速度)
+    const passSpeed = toFloat(STRONG_KICK_SPEED_FIXED) * 0.8;
     const maxSpeed = Math.max(...trace.map((t) => t.ballSpeed));
-    expect(maxSpeed, 'Yを押してもパスが出ない').toBeGreaterThan(5);
+    expect(maxSpeed, 'Yを押してもパスが出ない').toBeGreaterThan(passSpeed);
   });
 
   /** 受け手が明確に射程内(前方100px)に居る無菌状態ならYパスが出る (現行でも成立する下限ゲート)。 */
@@ -71,7 +74,8 @@ describe('シナリオ: スルーパス', () => {
       step(1, Direction8.None, { Y: true }),
       step(3, Direction8.None),
     ]);
+    const passSpeed = toFloat(STRONG_KICK_SPEED_FIXED) * 0.8;
     const maxSpeed = Math.max(...trace.map((t) => t.ballSpeed));
-    expect(maxSpeed, '無菌状態ですらYパスが出ない').toBeGreaterThan(5);
+    expect(maxSpeed, '無菌状態ですらYパスが出ない').toBeGreaterThan(passSpeed);
   });
 });

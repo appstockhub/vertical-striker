@@ -68,4 +68,7 @@ export const KICKOFF_KICKER_STANDOFF_FIXED: Fixed = toFixed(9);
  * (tests/sim/restartTaken.test.ts)。キッカー配置を実装した今でも、人間側の再開で
  * プレイヤーが操作しない場合は同じ停止が起き得るため、上限を設けて必ず試合を再開させる。
  */
-export const SET_PIECE_LOCK_MAX_TICKS = 180;
+// テンポ変更(24周目サイクル①): 3秒→18秒。この上限は「AIキッカーがボールへ歩いて到達し
+// 蹴るまで」の安全網であり、選手速度が1/5.7になったぶん引き伸ばす (180/RUN_TEMPO≒1030を
+// 丸めた)。通常の再開はキッカー配置により数十tickで完了するので、体感には影響しない。
+export const SET_PIECE_LOCK_MAX_TICKS = 1030;

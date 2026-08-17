@@ -72,7 +72,9 @@ export function classifyDrillEvent(
   const prevZ = toFloat(prev.ball.zVel);
 
   // 「蹴った」= 水平速度が跳ねたか、垂直初速が新たに立ち上がったか。
-  const kicked = speed - prevSpeed > KICK_SPEED_JUMP || (zVel > 0.4 && prevZ <= 0.4);
+  // zVelしきい値もテンポ追従: 0.4×BALL_TEMPO=0.12 (バウンド最小速度0.15の下、リフト0.9の上…
+  // ではなく下に置く旧比率(0.4 vs BOUNCE_MIN 0.5)を保存)。
+  const kicked = speed - prevSpeed > KICK_SPEED_JUMP || (zVel > 0.12 && prevZ <= 0.12);
   if (!kicked) return null;
 
   const held = inputs?.buttons;
@@ -92,7 +94,7 @@ export function classifyDrillEvent(
   // リフティングは「ターンアクション中に蹴り上げる」動作なので、溜めキックとは別物。
   // ★charge === 0 の条件が無いと、B長押しでふかした球 (高く上がって水平速度が落ちる) を
   //   リフティングと誤表示する★ 23周目の実機確認で発覚した。
-  if (stillMine && zVel > 0.4 && speed < 5 && charge === 0) {
+  if (stillMine && zVel > 0.12 && speed < 1.5 && charge === 0) {
     name = 'リフティング';
   } else if (held?.Y) {
     name = justReceived ? `ワンツー (Y カーソルパス)${shift}` : `Y カーソルパス${shift}`;
@@ -104,7 +106,7 @@ export function classifyDrillEvent(
     const long = charge >= KICK_MAX_CHARGE_FRAMES * 0.6;
     // 続編仕様「Bは強く蹴ると高い弾道になりバーを越えることがある」の可視化。
     // 弾道が立った時に明示しないと「弱くなった」と誤解される (実際は威力が上へ逃げている)。
-    const lofted = zVel > 2 ? ' ※弾道が高い(ふかし)' : '';
+    const lofted = zVel > 0.6 ? ' ※弾道が高い(ふかし)' : ''; // 2×BALL_TEMPO (テンポ追従)
     name = `B ${long ? '長押し' : '短押し'}シュート${shift}${lofted}`;
   } else {
     name = `キック${shift}`;
@@ -151,7 +153,8 @@ export function classifyLineShift(prev: GameState, next: GameState): DrillEvent 
 }
 
 /** これ以上の速度の跳ね上がりがあれば「蹴った」とみなす (ドリブルタッチは3.6程度)。 */
-const KICK_SPEED_JUMP = 2.0;
+// テンポ変更(24周目サイクル①): 2.0×BALL_TEMPO(0.3)=0.6 (PitchSceneのフラッシュと同じ理由)。
+const KICK_SPEED_JUMP = 0.6;
 
 /** 押されているボタンと方向の1行表示。 */
 export function formatInputLine(inputs: InputFrame | null): string {

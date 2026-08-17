@@ -3,6 +3,7 @@ import { distSqFixed, toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed'
 import { Direction8, emptyButtonState } from '../../src/input/types';
 import { createInitialState, TeamId, type GameState } from '../../src/sim/state';
 import { simulate } from '../../src/sim/update';
+import { BALL_TEMPO } from '../../src/sim/tempo';
 
 /**
  * ★キーパーがボールを確保している間の保護 (競技規則 第12条)★
@@ -35,7 +36,10 @@ function gkSecuredWithAttackerClose(): GameState {
       return { ...p, pos: { x: toFixed(30 + (i % 4) * 40), y: toFixed(i < 11 ? 1500 : 400) } };
     }),
     // ゆっくりGKへ向かうボール = キャッチ可能 (速いボールは弾く仕様)。
-    ball: { pos: shot, vel: { x: ZERO_FIXED, y: toFixed(-3) }, height: ZERO_FIXED, zVel: ZERO_FIXED },
+    // テンポ変更追従: キック系速度は BALL_TEMPO 倍。旧値の -3 のままだと今の
+    // CATCH_MAX_SPEED (9.5×0.3=2.85) を超えてしまい「弾く」側に化けるため、
+    // 同率でスケールする (-4×0.3=-1.2。実測: 7tick目にキャッチ成立)。
+    ball: { pos: shot, vel: { x: ZERO_FIXED, y: toFixed(-4 * BALL_TEMPO) }, height: ZERO_FIXED, zVel: ZERO_FIXED },
     lastTouchTeam: TeamId.A,
     lastTouchPlayerIndex: attacker,
     setPieceLock: null,

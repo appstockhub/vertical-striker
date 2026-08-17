@@ -1,5 +1,6 @@
 import { fixedMul, toFixed } from '../core/fixed';
 import type { Fixed } from '../core/types';
+import { BALL_TEMPO, BALL_TEMPO_SQ, RUN_TEMPO, ballTicks } from './tempo';
 
 /**
  * Phase 1 のボール物理・ドリブル・キック関連の定数。
@@ -55,13 +56,13 @@ export const DRIBBLE_CONTACT_RADIUS_SQ_FIXED: Fixed = fixedMul(
  * 距離で速度を variable にする本方式なら、ボールは常に押され続けるのでAIは追い続けられ、
  * かつ人間のボールは足元から離れない。
  */
-export const DRIBBLE_KEEP_SPEED_FIXED: Fixed = toFixed(2.8);
+export const DRIBBLE_KEEP_SPEED_FIXED: Fixed = toFixed(2.8 * RUN_TEMPO);
 
 /** これ以下の高さのボールのみドリブルタッチの対象とする (px, 仮値)。浮き球はキックのみで触れる。 */
 export const DRIBBLE_TOUCH_MAX_HEIGHT_FIXED: Fixed = toFixed(2.0);
 
 /** ドリブルタッチ時にボールへ与える速度 (px/tick, 仮値)。PLAYER_SPEED(3.0)よりわずかに速い。 */
-export const DRIBBLE_TOUCH_SPEED_FIXED: Fixed = toFixed(3.6);
+export const DRIBBLE_TOUCH_SPEED_FIXED: Fixed = toFixed(3.6 * RUN_TEMPO);
 
 /**
  * ★18周目: ドリブル中の追従モデル★
@@ -82,7 +83,7 @@ export const DRIBBLE_FOLLOW_DISTANCE_FIXED: Fixed = toFixed(9);
  * 選手速度(3.0)より速くしないと永久に追いつけないが、速すぎるとボールが足に吸い付いて
  * 見えるため、catch-upとして自然な範囲に留める。
  */
-export const DRIBBLE_FOLLOW_MAX_SPEED_FIXED: Fixed = toFixed(5.0);
+export const DRIBBLE_FOLLOW_MAX_SPEED_FIXED: Fixed = toFixed(5.0 * RUN_TEMPO);
 /**
  * 蹴り出しドリブル時の追従上限 (px/tick)。選手速度 (LONG_DRIBBLE_PLAYER_SPEED = 4.2) を
  * わずかに上回るだけにする。上回りすぎるとボールが選手より速く前進し続け、
@@ -90,9 +91,9 @@ export const DRIBBLE_FOLLOW_MAX_SPEED_FIXED: Fixed = toFixed(5.0);
  * (実ブラウザで上限5.0のとき平均467px・最大1725px 離れるのを実測した。
  *  単体テストでは初期条件が穏やかなため8.2pxに収まり、この破綻を見逃していた)。
  */
-export const KICK_DRIBBLE_FOLLOW_MAX_SPEED_FIXED: Fixed = toFixed(4.6);
+export const KICK_DRIBBLE_FOLLOW_MAX_SPEED_FIXED: Fixed = toFixed(4.6 * RUN_TEMPO);
 /** 目標点までの距離に掛ける追従ゲイン (0..1)。1に近いほど1tickで目標へ届く=吸着的。 */
-export const DRIBBLE_FOLLOW_GAIN_FIXED: Fixed = toFixed(0.55);
+export const DRIBBLE_FOLLOW_GAIN_FIXED: Fixed = toFixed(0.55 * RUN_TEMPO);
 /**
  * 蹴り出しドリブル (L+R) の目標点までの距離 (px)。通常ドリブル(9px)より大きく取り、
  * 「大きく前へ蹴り出して自分で追いかける」動作にする。速度ではなく目標点で制御するので、
@@ -110,13 +111,13 @@ export const KICK_DRIBBLE_FOLLOW_DISTANCE_FIXED: Fixed = toFixed(16);
  * 追従の最大速度(5.0)より上、最も弱いキック(6.2)より下に置くことで、
  * 「追従で与えた速度は毎tick制御し直せる/キックはそのまま飛ばす」を両立させる。
  */
-export const DRIBBLE_HANDS_OFF_SPEED_FIXED: Fixed = toFixed(5.6);
+export const DRIBBLE_HANDS_OFF_SPEED_FIXED: Fixed = toFixed(5.6 * RUN_TEMPO);
 
 /** ロングドリブル(L/R押し続け)時のプレイヤー速度 (px/tick, 仮値。通常の約1.4倍、要実機検証)。 */
-export const LONG_DRIBBLE_PLAYER_SPEED_FIXED: Fixed = toFixed(4.2);
+export const LONG_DRIBBLE_PLAYER_SPEED_FIXED: Fixed = toFixed(4.2 * RUN_TEMPO);
 
 /** ロングドリブル時にボールへ与える速度 (px/tick, 仮値。ドリブル半径外まで蹴り出す想定、要実機検証)。 */
-export const LONG_DRIBBLE_TOUCH_SPEED_FIXED: Fixed = toFixed(6.0);
+export const LONG_DRIBBLE_TOUCH_SPEED_FIXED: Fixed = toFixed(6.0 * RUN_TEMPO);
 
 /**
  * X (ロングフィード/センタリング/ロビング) が使う溜め相当のフレーム数。
@@ -137,7 +138,7 @@ export const KICK_MAX_CHARGE_FRAMES = 30;
  * 判明した。方向を入れない=狙いを定めていないので強キックより弱いのは仕様として残すが、
  * 「クリア/軽い蹴り出し」として成立する速度まで上げる。
  */
-export const WEAK_KICK_SPEED_FIXED: Fixed = toFixed(6.2);
+export const WEAK_KICK_SPEED_FIXED: Fixed = toFixed(6.2 * BALL_TEMPO);
 
 /**
  * キックが届く距離 (px)。touch-priority (ドリブル半径20px) より広くする。
@@ -160,13 +161,13 @@ export const KICK_REACH_FIXED: Fixed = toFixed(30);
  * (計測: 60px手前で押すと射程30pxに入るまで10tick)。長すぎると意図しない暴発になるため、
  * 実際の追走距離から決めたこの値を上限とする。
  */
-export const KICK_INPUT_BUFFER_TICKS = 12;
+export const KICK_INPUT_BUFFER_TICKS = 48;
 /** 強キック (方向入力ありで解放) の基準速度 (px/tick, 仮値)。 */
-export const STRONG_KICK_SPEED_FIXED: Fixed = toFixed(9.0);
+export const STRONG_KICK_SPEED_FIXED: Fixed = toFixed(9.0 * BALL_TEMPO);
 
 /** 弾道軸: 溜め時間0→最大 で zVel をこの範囲に線形補間する (仮値)。 */
 export const KICK_Z_VEL_MIN_FIXED: Fixed = toFixed(0);
-export const KICK_Z_VEL_MAX_FIXED: Fixed = toFixed(6.0);
+export const KICK_Z_VEL_MAX_FIXED: Fixed = toFixed(6.0 * BALL_TEMPO);
 
 /**
  * 最大溜め時に水平速度へ掛かる係数 (仮値)。高弾道シュートほど球速が落ちる表現。
@@ -186,11 +187,11 @@ export const KICK_Z_VEL_MAX_FIXED: Fixed = toFixed(6.0);
 export const HIGH_ARC_SPEED_MULTIPLIER_FIXED: Fixed = toFixed(0.7);
 
 /** 重力加速度 (px/tick^2, 仮値)。 */
-export const GRAVITY_FIXED: Fixed = toFixed(0.35);
+export const GRAVITY_FIXED: Fixed = toFixed(0.35 * BALL_TEMPO_SQ);
 /** バウンド時に残る垂直速度の割合 (仮値)。 */
 export const BOUNCE_DAMPING_FIXED: Fixed = toFixed(0.5);
 /** これ未満の着地速度はバウンドさせず静止させる (px/tick, 仮値)。無限微小バウンド防止。 */
-export const BOUNCE_MIN_VEL_FIXED: Fixed = toFixed(0.5);
+export const BOUNCE_MIN_VEL_FIXED: Fixed = toFixed(0.5 * BALL_TEMPO);
 /**
  * 接地中、毎tick水平速度に掛ける減衰係数。
  *
@@ -206,7 +207,7 @@ export const BOUNCE_MIN_VEL_FIXED: Fixed = toFixed(0.5);
  * (ドリブル制御への影響は DRIBBLE_CONTACT_RADIUS_FIXED 側で吸収済み:
  *  接触半径12pxから押し出されたボールは約16pxで選手に追いつかれ、20pxを越えない)
  */
-export const ROLLING_FRICTION_FIXED: Fixed = toFixed(0.985);
+export const ROLLING_FRICTION_FIXED: Fixed = toFixed(0.968);
 
 /**
  * カーブ(続編仕様③)関連の定数。すべて仮値(実機データ無し、プレイフィールで調整する対象。
@@ -218,22 +219,36 @@ export const ROLLING_FRICTION_FIXED: Fixed = toFixed(0.985);
  * tickの直後から始まる短いウィンドウ」で近似する。初代CLAUDE.mdが計画していた
  * 「キック後Nフレーム(仮値20f)」より大幅に短くしてある(「同時」に近づける意図)。
  */
-export const CURVE_INPUT_WINDOW_TICKS = 6;
-/** カーブが実際に効いている持続tick数 (仮値)。 */
-export const CURVE_DURATION_TICKS = 24;
+export const CURVE_INPUT_WINDOW_TICKS = 12;
+/** カーブが実際に効いている持続tick数 (仮値)。テンポ変更に伴い 1/BALL_TEMPO 倍 (軌道形状保存)。 */
+export const CURVE_DURATION_TICKS = ballTicks(24);
 /**
- * カーブによる毎tickの側方加速度 (px/tick、仮値)。CURVE_DURATION_TICKS(24)分
- * 累積すると側方速度が最大で約2.4px/tick増える計算 (STRONG_KICK_SPEED=9.0の
- * 約27%相当)。軌道を明確に曲げつつ直進性を完全には殺さない、上限側の初期値として
- * 選んだ(要プレイテスト調整。初期実装値0.35は最大8.4px/tickまで積み上がり
- * ショットを完全に横へねじ曲げてしまい、観戦シミュレーターで新規の振動を誘発したため
- * 大幅に下げた)。
+ * ★24周目サイクル①で方式変更: 側方加速度の加算 → 速度ベクトルの微小回転★
+ *
+ * 旧方式 (毎tick `vel += 方向 × CURVE_ACCEL`) はテンポ変更で死んだ:
+ * 0.04×BALL_TEMPO²=0.0036px/tick² は固定小数点の量子化下限 (1/256=0.0039) を下回り、
+ * さらに斜め方向は fixedMul の切り捨てで完全にゼロになる (実測: 全飛程で横ずれ0.31px)。
+ * 「小さな定数を加算する」方式は低テンポ×固定小数点と本質的に相性が悪い。
+ *
+ * 新方式は毎tick速度ベクトルを微小角回転させる:
+ *   vx' = vx - vy×k×s / vy' = vy + vx×k×s (s=曲げ方向の符号)
+ * 乗算の相手が速度そのもの (数百raw) なので量子化に強く、曲がる角度が速度に比例して
+ * 保存される (速いボールほど大きく曲がって見える=原作らしい)。摩擦は回転後の
+ * ベクトル全体に掛かるため、側方成分だけが選択的に減衰することもない。
+ *
+ * さらに量子化対策として「毎tick最小量子(1/256rad)を回す」のではなく
+ * 「CURVE_ROTATION_INTERVAL(4)tickごとに4倍角(4/256rad)を回す」。毎tick1/256だと
+ * fixedMulの切り捨て(trunc)で実効ゲインが半分以下に減り、摩擦との均衡で側方速度が
+ * 9raw(0.035px/tick)で停滞することを実測した。4tickまとめ適用なら切り捨て損失は1割未満。
+ * 合計回転角は 80/4回 × 4/256rad = 0.3125rad ≈ **17.9°** = 旧設計の狙い
+ * (最大側方2.4px/tick ÷ 強キック9.0 ≈ 15°) とほぼ同じ曲げ角。
  */
-export const CURVE_ACCEL_FIXED: Fixed = toFixed(0.04);
+export const CURVE_ROTATION_STEP_FIXED: Fixed = toFixed(4 / 256);
+export const CURVE_ROTATION_INTERVAL = 4;
 
 /**
  * リフティング(続編仕様⑥)で頭上へ蹴り上げる際の垂直初速 (px/tick、仮値)。
  * KICK_Z_VEL_MAX_FIXED(6.0、キック弾道軸の最大)の約半分にし、「強いキックの浮き球」
  * ではなく「軽く浮かせて保持を継続する」動作であることを表現した。
  */
-export const LIFT_Z_VEL_FIXED: Fixed = toFixed(3.0);
+export const LIFT_Z_VEL_FIXED: Fixed = toFixed(3.0 * BALL_TEMPO);

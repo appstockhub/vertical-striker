@@ -141,17 +141,23 @@ export interface MatchStats {
   events: string[];
 }
 
-const KICK_DETECT_SPEED = 6.5; // px/tick
+// テンポ変更(24周目サイクル①): 旧6.5×BALL_TEMPO(0.3)=1.95。設計意図は不変:
+// 蹴り出しドリブル(1.05)を除外しつつ、強キック/CPUシュート(2.7)を拾い、
+// チャージ強キック最大溜め(2.7×0.7=1.89)は旧同様わずかに下回る。
+const KICK_DETECT_SPEED = 1.95; // px/tick
 const SHOT_MAX_RANGE = 600; // ゴールラインからの距離
 const SHOT_AIM_HALF_WIDTH = 100;
 const ON_TARGET_HALF_WIDTH = 44;
 const BOX_DEPTH = 150;
 const BOX_HALF_WIDTH = 130;
 const DANGO_RADIUS_PX = 150;
-const OSC_WINDOW = 90;
+// テンポ変更(24周目サイクル①): 振動検出は空間条件(移動量120px/箱24px)を保存し、
+// 窓だけ選手速度に合わせて 1/RUN_TEMPO 倍 (90→514tick)。窓を据え置くと最大移動量が
+// 90×0.525=47px<120px となり検出器が原理的に発火不能になる。RETREAT_WINDOWも同様。
+const OSC_WINDOW = 514;
 const OSC_MIN_PATH = 120;
 const OSC_MAX_BBOX = 24;
-const RETREAT_WINDOW = 90;
+const RETREAT_WINDOW = 514;
 const PRESS_DEPTH_THRESHOLD = (PITCH_HEIGHT / 3) * 2; // 自陣ゴールからこの深さより先=敵陣側1/3
 const GOAL_CENTER_X = PITCH_WIDTH / 2;
 /** サポートラン測定: ボール深度からこのpx以上前方にいる選手を「前方の受け手」と数える。 */
@@ -172,7 +178,7 @@ const NEAR_SUPPORT_BALL_DEPTH_MAX = 1400;
 /** レストディフェンス測定: ボール深度よりこのpx以上後方を「保険の位置」と数える。 */
 const REST_DEFENDER_BEHIND_PX = 300;
 /** リスタート保護測定: 再開からこのtick以内の最初のタッチを判定対象にする。 */
-const RESTART_FIRST_TOUCH_WINDOW = 600;
+const RESTART_FIRST_TOUCH_WINDOW = 600; // テンポ変更後も据え置き (十分長い絶対窓)
 /** ゴール側遮蔽測定: ボールが自ゴールからこの深度以上にある時のみサンプルする (ゴール際の幾何的制約を除外)。 */
 const GOAL_SIDE_MIN_BALL_DEPTH = 400;
 /** 縦レーン過密測定: ピッチをこの本数の縦レーンに等分する。 */
@@ -281,11 +287,12 @@ export function createHumanScript(pattern: HumanPattern, scriptSeed: number): (s
       const ballVelX = toFloat(state.ball.vel.x);
       const ballVelY = toFloat(state.ball.vel.y);
       const ballSpeed = Math.hypot(ballVelX, ballVelY);
-      if (distToBall < 32 && ballSpeed > 4.5 && !prevB) {
+      // 1.35 = SAVE_CONTEXT_MIN_BALL_SPEED (テンポ変更で4.5×0.3)。セーブ文脈と同じ境界。
+      if (distToBall < 32 && ballSpeed > 1.35 && !prevB) {
         buttons.B = true; // 速いボールにはパンチング試行 (エッジ)
         return finish();
       }
-      if (isCarrier && ballSpeed <= 4.5) {
+      if (isCarrier && ballSpeed <= 1.35) {
         if (nearestOppDist < 50) {
           // プレスが目前: 立ち止まって溜めると奪われるので、まず離れる方向へ運ぶ
           direction = attackUp

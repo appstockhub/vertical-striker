@@ -2,6 +2,7 @@ import { toFixed, ZERO_FIXED } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8 } from '../input/types';
 import { PITCH_HEIGHT, PITCH_WIDTH } from '../config/pitch';
+import { RUN_TEMPO } from './tempo';
 
 /**
  * 8方向の単位ベクトル (Fixed スケール = 1.0 は FIXED_ONE=256 に相当)。
@@ -21,7 +22,7 @@ export const DIRECTION_VECTORS: Readonly<Record<Direction8, Vec2Fixed>> = {
 };
 
 /** プレイヤーの移動速度 (px/tick, 仮値)。60fpsで秒速約3px*60=180px/secに相当。 */
-export const PLAYER_SPEED_FIXED: Fixed = toFixed(3.0);
+export const PLAYER_SPEED_FIXED: Fixed = toFixed(3.0 * RUN_TEMPO);
 
 /** プレイヤーの当たり半径 (px, 仮値。ピッチ境界クランプの余白に使う)。ボール用は ballConstants.ts 参照。 */
 export const PLAYER_RADIUS_FIXED: Fixed = toFixed(10);

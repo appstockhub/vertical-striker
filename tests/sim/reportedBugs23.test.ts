@@ -3,6 +3,17 @@ import { toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
 import { Direction8, emptyButtonState, type ButtonState } from '../../src/input/types';
 import { createInitialState, TeamId, type GameState } from '../../src/sim/state';
 import { simulate } from '../../src/sim/update';
+import {
+  HIGH_ARC_SPEED_MULTIPLIER_FIXED,
+  KICK_Z_VEL_MAX_FIXED,
+  STRONG_KICK_SPEED_FIXED,
+} from '../../src/sim/ballConstants';
+
+// テンポ変更 (24周目サイクル①) 追従: 「強く飛んだ」のしきい値を定数からの相対値にする。
+// 溜め無しB = 強キック基準、最大溜めB = HIGH_ARC_SPEED_MULTIPLIER(0.7)倍まで水平が落ちる仕様。
+const KICK_FIRED = toFloat(STRONG_KICK_SPEED_FIXED) * 0.8;
+const CHARGED_FIRED =
+  toFloat(STRONG_KICK_SPEED_FIXED) * toFloat(HIGH_ARC_SPEED_MULTIPLIER_FIXED) * 0.9;
 
 /**
  * ★23周目: ユーザーが実機(操作確認モード/練習モード)で報告した不具合の再現テスト★
@@ -58,19 +69,21 @@ describe('23周目 実機報告の再現', () => {
   describe('【報告3】B長押しのシュートが飛ばない / 浮かない', () => {
     it('溜め無しのBは前方へ飛ぶ（対照。ここが緑でないと以降の比較が成立しない）', () => {
       const after = chargeAndRelease(carryingInFormation(), 1, Direction8.Up);
-      expect(ballSpeed(after)).toBeGreaterThan(4);
+      expect(ballSpeed(after)).toBeGreaterThan(KICK_FIRED);
     });
 
     it('Bを長押ししたら、離した時にボールが強く飛ぶこと', () => {
       const after = chargeAndRelease(carryingInFormation(), 30, Direction8.Up);
-      expect(ballSpeed(after)).toBeGreaterThan(4);
+      expect(ballSpeed(after)).toBeGreaterThan(CHARGED_FIRED);
     });
 
     it('Bの長押しは弾道が立ち、実際に高さが出ること（続編仕様「強く蹴るとふかす」）', () => {
       let s = chargeAndRelease(carryingInFormation(), 30, Direction8.Up);
-      expect(toFloat(s.ball.zVel)).toBeGreaterThan(2);
+      // 最大溜めの垂直初速は KICK_Z_VEL_MAX (テンポ変更で 6.0→1.8)。その9割以上出ていること。
+      expect(toFloat(s.ball.zVel)).toBeGreaterThan(toFloat(KICK_Z_VEL_MAX_FIXED) * 0.9);
       let maxHeight = 0;
-      for (let i = 0; i < 40; i++) {
+      // 重力が BALL_TEMPO² 倍になり滞空時間は 1/0.3 倍。頂点(約57tick後)まで追う。
+      for (let i = 0; i < 80; i++) {
         s = simulate(s, inp(Direction8.None));
         maxHeight = Math.max(maxHeight, toFloat(s.ball.height));
       }
@@ -95,7 +108,7 @@ describe('23周目 実機報告の再現', () => {
       s = simulate(s, inp(Direction8.Up));
 
       expect(chargeAtRelease).toBeGreaterThan(20);
-      expect(ballSpeed(s)).toBeGreaterThan(4);
+      expect(ballSpeed(s)).toBeGreaterThan(CHARGED_FIRED);
     });
 
     it('ドリブルで走りながら撃ったBの長押しも、弾道が立って高さが出ること', () => {
@@ -104,7 +117,7 @@ describe('23周目 実機報告の再現', () => {
       for (let i = 0; i < 30; i++) s = simulate(s, inp(Direction8.Up, { B: true }));
       s = simulate(s, inp(Direction8.Up));
       let maxHeight = 0;
-      for (let i = 0; i < 40; i++) {
+      for (let i = 0; i < 80; i++) {
         s = simulate(s, inp(Direction8.None));
         maxHeight = Math.max(maxHeight, toFloat(s.ball.height));
       }
@@ -117,7 +130,7 @@ describe('23周目 実機報告の再現', () => {
       for (let i = 0; i < 30; i++) s = simulate(s, inp(Direction8.Up, { B: true }));
       s = simulate(s, inp(Direction8.Up));
       expect(s.setPieceLock?.kind ?? null).toBeNull();
-      expect(ballSpeed(s)).toBeGreaterThan(4);
+      expect(ballSpeed(s)).toBeGreaterThan(CHARGED_FIRED);
     });
 
     it('溜めている間、溜めフレームが実際に積み上がること', () => {

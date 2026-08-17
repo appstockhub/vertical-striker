@@ -42,16 +42,19 @@ function mine(state: GameState): GameState {
 
 describe('操作確認モードの発動判定', () => {
   it('溜め無しで浮かせたら「リフティング」', () => {
+    // テンポ変更(24周目サイクル①): 実機相当値をテンポ追従 (旧3.6/2.65 → 水平×RUN_TEMPO、
+    // 垂直×BALL_TEMPO)。リフティングの水平速度はドリブルタッチ速度(0.63)になった。
     const prev = mine(withCharge(base, 0));
-    const next = mine(withBall(withCharge(base, 0), 3.6, 0, 2.65, 1));
+    const next = mine(withBall(withCharge(base, 0), 0.63, 0, 0.8, 1));
     expect(classifyDrillEvent(prev, next, heldInput(LogicalButton.B))?.name).toBe('リフティング');
   });
 
   it('B長押しでふかした球はリフティングではなく「長押しシュート(ふかし)」', () => {
     // 実機の実測値: 溜め30 → 初速4.33 / 弾道5.65。速度が5未満まで落ちるため、
     // 溜めを見ないとリフティングと区別できない (この取り違えが実際に起きた)。
+    // テンポ追従: 旧4.33/5.65 × BALL_TEMPO(0.3) = 1.3/1.7 (最大溜めの強キック相当)。
     const prev = mine(withCharge(base, 30));
-    const next = mine(withBall(withCharge(base, 0), 4.33, 0, 5.65, 1));
+    const next = mine(withBall(withCharge(base, 0), 1.3, 0, 1.7, 1));
     const name = classifyDrillEvent(prev, next, heldInput())?.name ?? '';
     expect(name).toContain('B 長押しシュート');
     expect(name).toContain('ふかし');
@@ -60,7 +63,7 @@ describe('操作確認モードの発動判定', () => {
 
   it('溜めが浅ければ「短押し」', () => {
     const prev = withCharge(base, 3);
-    const next = withBall(withCharge(base, 0), 8.82, 0);
+    const next = withBall(withCharge(base, 0), 2.65, 0);
     expect(classifyDrillEvent(prev, next, heldInput())?.name).toContain('B 短押しシュート');
   });
 
@@ -69,7 +72,7 @@ describe('操作確認モードの発動判定', () => {
     [LogicalButton.R, '+Rシフト'],
   ])('L/R を押しながらのキックは「シフトキック」と分かる (%s)', (button, expected) => {
     const prev = withCharge(base, 3);
-    const next = withBall(withCharge(base, 0), 8.82, 0);
+    const next = withBall(withCharge(base, 0), 2.65, 0);
     expect(classifyDrillEvent(prev, next, heldInput(button))?.name).toContain(expected);
   });
 

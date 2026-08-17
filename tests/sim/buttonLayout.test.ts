@@ -3,6 +3,12 @@ import { toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
 import { Direction8, emptyButtonState, type ButtonState } from '../../src/input/types';
 import { createInitialState, TacklePhase, TeamId, type GameState } from '../../src/sim/state';
 import { simulate } from '../../src/sim/update';
+import { STRONG_KICK_SPEED_FIXED, WEAK_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
+
+// テンポ変更 (24周目サイクル①) 追従: 「キック/パスが出た」のしきい値を定数からの相対値に。
+// 強キック基準 (B) と、それより弱くてよいパス/フィード基準 (Y/A/X) の2段。
+const KICK_FIRED = toFloat(STRONG_KICK_SPEED_FIXED) * 0.8;
+const PASS_FIRED = toFloat(WEAK_KICK_SPEED_FIXED) * 0.85;
 
 /**
  * ★ボタン表そのものを固定するゲート (CLAUDE.md「続編仕様: ボタン配置」)★
@@ -143,32 +149,33 @@ describe('ボタン表: 相手ボール時', () => {
 describe('ボタン表: ボールキープ時', () => {
   it('B でシュート (+字方向へ鋭いキック)', () => {
     const next = press(keeping(), 'B');
-    expect(ballSpeed(next), 'Bでシュートが出ない').toBeGreaterThan(5);
+    expect(ballSpeed(next), 'Bでシュートが出ない').toBeGreaterThan(KICK_FIRED);
   });
 
   it('Y でパスカーソル先へパス', () => {
     const next = press(keeping(), 'Y');
-    expect(ballSpeed(next), 'Yでパスが出ない').toBeGreaterThan(3);
+    expect(ballSpeed(next), 'Yでパスが出ない').toBeGreaterThan(PASS_FIRED);
   });
 
   it('★A で進行方向へのパスが出る', () => {
     const next = press(keeping(), 'A', Direction8.Right);
-    expect(ballSpeed(next), 'Aでパスが出ない').toBeGreaterThan(3);
+    expect(ballSpeed(next), 'Aでパスが出ない').toBeGreaterThan(PASS_FIRED);
     // 進行方向 = 入力した方向 (右) へ飛ぶ
-    expect(toFloat(next.ball.vel.x), 'Aのパスが入力方向へ飛んでいない').toBeGreaterThan(1);
+    expect(toFloat(next.ball.vel.x), 'Aのパスが入力方向へ飛んでいない').toBeGreaterThan(PASS_FIRED);
   });
 
   it('★X でロングフィード (高い弾道) が出る', () => {
     const next = press(keeping(), 'X');
-    expect(ballSpeed(next), 'Xでロングフィードが出ない').toBeGreaterThan(3);
-    expect(toFloat(next.ball.zVel), 'Xのフィードが高い弾道になっていない').toBeGreaterThan(1);
+    expect(ballSpeed(next), 'Xでロングフィードが出ない').toBeGreaterThan(PASS_FIRED);
+    // 垂直初速もテンポ (BALL_TEMPO) でスケールするため、弱キック基準の相対値で見る。
+    expect(toFloat(next.ball.zVel), 'Xのフィードが高い弾道になっていない').toBeGreaterThan(PASS_FIRED * 0.5);
   });
 });
 
 describe('ボタン表: ルーズボール時', () => {
   it('B でクリア (鋭いキック)', () => {
     const next = press(loose(), 'B');
-    expect(ballSpeed(next), 'Bでクリアが出ない').toBeGreaterThan(5);
+    expect(ballSpeed(next), 'Bでクリアが出ない').toBeGreaterThan(KICK_FIRED);
   });
 
   it('★X でロビング (高い弾道) が出る', () => {

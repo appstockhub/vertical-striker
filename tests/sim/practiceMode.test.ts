@@ -3,6 +3,8 @@ import { toFixed, toFloat, distSqFixed, ZERO_FIXED } from '../../src/core/fixed'
 import { Direction8, emptyButtonState } from '../../src/input/types';
 import { createInitialState, TeamId, type GameState } from '../../src/sim/state';
 import { simulate } from '../../src/sim/update';
+import { STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
+import { PLAYER_SPEED_FIXED } from '../../src/sim/constants';
 
 /**
  * ★練習モード (GameState.cpuHandsOff)★
@@ -62,12 +64,17 @@ describe('練習モード: CPUがボールに関与しない', () => {
     let state = contested(true);
     const human = state.controlledPlayerIndex;
     const startY = toFloat(state.players[human]!.pos.y);
+    // テンポ変更追従: 前進距離のしきい値を選手速度定数から導出する (30tick × 0.525 × 8割)。
     for (let i = 0; i < 30; i++) state = simulate(state, inp(Direction8.Up));
-    expect(toFloat(state.players[human]!.pos.y), 'ドリブルで前進できない').toBeLessThan(startY - 20);
+    expect(toFloat(state.players[human]!.pos.y), 'ドリブルで前進できない').toBeLessThan(
+      startY - toFloat(PLAYER_SPEED_FIXED) * 30 * 0.8,
+    );
 
     state = simulate(state, inp(Direction8.Up, { B: true }));
     state = simulate(state, inp(Direction8.Up));
-    expect(Math.hypot(toFloat(state.ball.vel.x), toFloat(state.ball.vel.y)), 'キックが出ない').toBeGreaterThan(5);
+    expect(Math.hypot(toFloat(state.ball.vel.x), toFloat(state.ball.vel.y)), 'キックが出ない').toBeGreaterThan(
+      toFloat(STRONG_KICK_SPEED_FIXED) * 0.8,
+    );
   });
 
   it('ON でもCPUは陣形を保つ (棒立ちで消えたりしない)', () => {

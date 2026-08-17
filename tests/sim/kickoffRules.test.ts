@@ -6,6 +6,7 @@ import { simulate } from '../../src/sim/update';
 import { PITCH_HEIGHT, PITCH_WIDTH } from '../../src/config/pitch';
 import { depthFromOwnGoal } from '../../src/sim/formations';
 import { KICKOFF_CIRCLE_RADIUS_FIXED } from '../../src/sim/boundsConstants';
+import { STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
 
 /**
  * ★キックオフのルール (サッカー競技規則 第8条) の実装テスト★
@@ -128,7 +129,8 @@ describe('キックオフ: 得点されたチームがボールを持って再�
     state = simulate(state, { direction: Direction8.Up, buttons: emptyButtonState() });
 
     const speed = Math.hypot(toFloat(state.ball.vel.x), toFloat(state.ball.vel.y));
-    expect(speed, 'キックオフを蹴れない').toBeGreaterThan(3);
+    // テンポ変更追従: 強キック 9.0→2.7px/tick。裸の3ではなく定数からの相対値で判定する。
+    expect(speed, 'キックオフを蹴れない').toBeGreaterThan(toFloat(STRONG_KICK_SPEED_FIXED) * 0.8);
     expect(state.setPieceLock, '蹴ったのにロックが解除されない').toBeNull();
   });
 });

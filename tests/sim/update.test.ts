@@ -6,7 +6,8 @@ import { Direction8, emptyButtonState, LogicalButton, type ButtonState } from '.
 import { FULL_MATCH_DURATION_FRAMES, HALF_DURATION_FRAMES } from '../../src/sim/matchClock';
 import { PITCH_HEIGHT, PITCH_WIDTH } from '../../src/config/pitch';
 import { CURVE_DURATION_TICKS, CURVE_INPUT_WINDOW_TICKS, STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
-import { MANUAL_LINE_OFFSET_MAX_FIXED } from '../../src/sim/teamAIConstants';
+import { MANUAL_LINE_OFFSET_MAX_FIXED, MANUAL_LINE_OFFSET_STEP_FIXED } from '../../src/sim/teamAIConstants';
+import { runTicks } from '../../src/sim/tempo';
 
 function inputs(direction: Direction8) {
   return { direction, buttons: emptyButtonState() };
@@ -102,8 +103,11 @@ describe('simulate (pure state transition)', () => {
     const upRightDy = Math.abs(controlled(state).pos.y - controlled(upRight).pos.y);
     const upRightDist = Math.sqrt(upRightDx ** 2 + upRightDy ** 2);
 
-    // 事前正規化された対角ベクトルにより、誤差1程度で速度が一致する
-    expect(Math.abs(upDist - upRightDist)).toBeLessThanOrEqual(1);
+    // 事前正規化された対角ベクトルにより、微小な丸め誤差の範囲で速度が一致する。
+    // テンポ変更追従: 選手速度が0.525px/tick (=134raw) になり、対角成分の丸め
+    // (round(134×0.7071)=95raw) の相対誤差が旧値より大きく出るため、許容を
+    // 2raw (=1/128px、サブピクセル) に緩める。速度の一致という意味は変えていない。
+    expect(Math.abs(upDist - upRightDist)).toBeLessThanOrEqual(2);
   });
 
   it('increments the frame counter each tick', () => {
@@ -677,7 +681,9 @@ describe('simulate — Phase 3: team line push/retreat fixes "Team B doesn\'t at
     const startY = toFloat(state.ball.pos.y);
     let maxBallY = startY;
     let scored = false;
-    for (let i = 0; i < 150; i++) {
+    // テンポ変更追従: 選手速度1/5.7・キック飛距離1/2.7のため、同じ150pxの前進に必要な
+    // 時間を runTicks で引き伸ばす (実測: 150px前進は291tick時点)。
+    for (let i = 0; i < runTicks(150); i++) {
       state = simulate(state, inputs(Direction8.None));
       const y = toFloat(state.ball.pos.y);
       if (y > maxBallY) maxBallY = y;
@@ -697,7 +703,9 @@ describe('simulate — Phase 3: team line push/retreat fixes "Team B doesn\'t at
   it('Team B reaches the penalty box and scores from a realistic attacking-third position, with no human input (regression for both the team-line-push fix and the goal-line dead-zone bug)', () => {
     let state = withOpenCounterAttack(1550); // ゴールまで250px、攻撃サードからのブレイクアウェイ
     let scored = false;
-    for (let i = 0; i < 300; i++) {
+    // テンポ変更追従: 実測で得点は1869tick時点 (旧テンポの約6倍遅い) のため、
+    // 監視窓を runTicks(450)=2571tick に延長する。
+    for (let i = 0; i < runTicks(450); i++) {
       state = simulate(state, inputs(Direction8.None));
       if (state.score[1] > 0) {
         scored = true;
@@ -760,7 +768,11 @@ describe('simulate — 続編仕様④: ライン操作 (STARTボタン)', () =>
 
   it('MANUAL_LINE_OFFSET_MAX_FIXEDでクランプされる(押し続けても際限なく増えない)', () => {
     let state = stateWithPossession(TeamId.B);
-    for (let i = 0; i < 200; i++) {
+    // テンポ変更追従: STEP が RUN_TEMPO 倍 (0.525px/tick) になったため、上限へ届く
+    // tick数を定数から導出する (150px ÷ 0.525 ≈ 287tick)。
+    const ticksToMax =
+      Math.ceil((MANUAL_LINE_OFFSET_MAX_FIXED as number) / (MANUAL_LINE_OFFSET_STEP_FIXED as number)) + 10;
+    for (let i = 0; i < ticksToMax; i++) {
       state = simulate(state, inputsWithButtons(Direction8.None, { Start: true }));
     }
     expect(state.manualLineOffset).toBe(MANUAL_LINE_OFFSET_MAX_FIXED);

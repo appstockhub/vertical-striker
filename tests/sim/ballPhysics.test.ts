@@ -52,11 +52,18 @@ describe('stepBallPhysics', () => {
   });
 
   it('settles without bouncing when impact speed is below the threshold', () => {
-    // height が小さく、1tick分の重力だけでは閾値を超えないケース
-    const b = ball({ height: toFixed(0.05), zVel: ZERO_FIXED });
-    const next = stepBallPhysics(b);
-    expect(next.height).toBe(ZERO_FIXED);
-    expect(next.zVel).toBe(ZERO_FIXED);
+    // height が小さく、落下時の速度が閾値を超えないケース。
+    // テンポ変更追従: 重力が BALL_TEMPO² 倍 (0.35→0.0315) になり、1tickでは地面に
+    // 届かなくなったため、着地まで数tick進める。「一度もバウンドせずに静止する」
+    // (zVelが正に反転しない) という検証の意味は変えない。
+    let state = ball({ height: toFixed(0.05), zVel: ZERO_FIXED });
+    for (let i = 0; i < 5; i++) {
+      state = stepBallPhysics(state);
+      expect(toFloat(state.zVel), `t${i}: バウンドしてしまった`).toBeLessThanOrEqual(0);
+      if (state.height === ZERO_FIXED) break;
+    }
+    expect(state.height).toBe(ZERO_FIXED);
+    expect(state.zVel).toBe(ZERO_FIXED);
   });
 
   it('converges to exactly zero height/zVel after many bounces', () => {
@@ -112,33 +119,36 @@ describe('stepBallPhysicsDetailed: curve (続編仕様③)', () => {
     expect(next.vel.y).toBe(ZERO_FIXED);
   });
 
-  it('bends the trajectory sideways each tick while curveTicksLeft > 0', () => {
-    const b = ball({
+  // ★24周目サイクル①: カーブは「毎tick加算」から「CURVE_ROTATION_INTERVAL(4)tickごとの
+  // 速度ベクトル回転」へ方式変更 (量子化対策、ballConstants.ts参照)。契約を新方式に合わせた:
+  // 「INTERVAL tick以内に必ず曲がり始め、回転の適用ごとに単調に曲がっていく」。
+  it('bends the trajectory sideways within one rotation interval while curveTicksLeft > 0', () => {
+    let state = ball({
       vel: { x: toFixed(5), y: ZERO_FIXED },
       height: toFixed(10),
       curveDirection: Direction8.Down,
-      curveTicksLeft: 3,
+      curveTicksLeft: CURVE_DURATION_TICKS,
     });
-    const next = stepBallPhysicsDetailed(b).ball;
-    expect(toFloat(next.vel.y)).toBeGreaterThan(0); // Down方向のカーブでy成分が正に
-    expect(next.curveTicksLeft).toBe(2);
-    expect(next.curveDirection).toBe(Direction8.Down);
+    for (let i = 0; i < 4; i++) state = stepBallPhysicsDetailed(state).ball;
+    expect(toFloat(state.vel.y)).toBeGreaterThan(0); // Down方向のカーブでy成分が正に
+    expect(state.curveTicksLeft).toBe(CURVE_DURATION_TICKS - 4);
+    expect(state.curveDirection).toBe(Direction8.Down);
   });
 
-  it('curve accumulates each tick, bending the path further over time', () => {
+  it('curve accumulates over rotation intervals, bending the path further over time', () => {
     let state = ball({
       vel: { x: toFixed(5), y: ZERO_FIXED },
       height: toFixed(50),
       curveDirection: Direction8.Down,
       curveTicksLeft: CURVE_DURATION_TICKS,
     });
-    const yVelAfter: number[] = [];
-    for (let i = 0; i < 5; i++) {
-      state = stepBallPhysicsDetailed(state).ball;
-      yVelAfter.push(toFloat(state.vel.y));
+    const yVelAtInterval: number[] = [];
+    for (let block = 0; block < 5; block++) {
+      for (let i = 0; i < 4; i++) state = stepBallPhysicsDetailed(state).ball;
+      yVelAtInterval.push(toFloat(state.vel.y));
     }
-    for (let i = 1; i < yVelAfter.length; i++) {
-      expect(yVelAfter[i]!).toBeGreaterThan(yVelAfter[i - 1]!);
+    for (let i = 1; i < yVelAtInterval.length; i++) {
+      expect(yVelAtInterval[i]!).toBeGreaterThan(yVelAtInterval[i - 1]!);
     }
   });
 

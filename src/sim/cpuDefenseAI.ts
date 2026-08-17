@@ -27,12 +27,17 @@ import { TacklePhase, type Difficulty, type PlayerState } from './state';
  *     (決定論のため。複数人が同tickにチャージするとボール速度が上書きし合う)。
  */
 
-/** 難易度ごとの、密着時に1tickでチャレンジを仕掛ける確率 (%)。 */
+/** 難易度ごとの、密着時に1tickでチャレンジを仕掛ける確率 (%)。
+ *
+ * ★テンポ変更(24周目サイクル①)★ 選手速度が RUN_TEMPO 倍に落ち、密着状態の持続時間が
+ * 1/RUN_TEMPO 倍(約5.7倍)に伸びたため、per-tick確率を据え置くと「密着1回あたりの
+ * チャレンジ期待回数」が5.7倍に膨らむ。1%刻みの整数rollのまま近似的に補正する
+ * (旧4/8/14 × 0.175 ≈ 0.7/1.4/2.5 → 1/2/3%。easyは切り上げで最低1%を保証、
+ *  0%にすると「チャレンジが来ないと試合が止まる」の但し書きが破綻するため)。 */
 const CHALLENGE_CHANCE_PERCENT: Readonly<Record<Difficulty, number>> = {
-  // easy でも必ずチャレンジは来る (来ないと試合が止まる) が、人間がボールを運ぶ猶予は長い。
-  easy: 4,
-  medium: 8,
-  hard: 14,
+  easy: 1,
+  medium: 2,
+  hard: 3,
 };
 
 export interface CpuDefenseDecision {

@@ -7,7 +7,8 @@ import {
   BALL_RADIUS_FIXED,
   BOUNCE_DAMPING_FIXED,
   BOUNCE_MIN_VEL_FIXED,
-  CURVE_ACCEL_FIXED,
+  CURVE_ROTATION_INTERVAL,
+  CURVE_ROTATION_STEP_FIXED,
   GRAVITY_FIXED,
   ROLLING_FRICTION_FIXED,
 } from './ballConstants';
@@ -54,13 +55,29 @@ export function stepBallPhysicsDetailed(ball: BallState): BallPhysicsStep {
   const grounded = (height as number) <= (ZERO_FIXED as number);
   let vel: Vec2Fixed = grounded ? vScaleFixed(ball.vel, ROLLING_FRICTION_FIXED) : ball.vel; // 空中は摩擦なし
 
-  // カーブ (続編仕様③): curveTicksLeftが残っている間、毎tick側方加速度を加え続ける。
-  // トリガー判定(方向入力受付ウィンドウの消費)はupdate.ts側の責務、ここでは
-  // 「既に設定されたカーブを毎tick適用し、持続時間を減衰させる」だけを行う。
+  // カーブ (続編仕様③): curveTicksLeftが残っている間、毎tick速度ベクトルを入力方向側へ
+  // 微小角回転させる (24周目サイクル①で加算方式から変更。理由は ballConstants.ts の
+  // CURVE_ROTATION_PER_TICK_FIXED のコメント参照)。トリガー判定(方向入力受付ウィンドウの
+  // 消費)はupdate.ts側の責務、ここでは「既に設定されたカーブを毎tick適用し、持続時間を
+  // 減衰させる」だけを行う。
   const curveDirectionIn = ball.curveDirection ?? Direction8.None;
   let curveTicksLeft = ball.curveTicksLeft ?? 0;
   if (curveTicksLeft > 0 && curveDirectionIn !== Direction8.None) {
-    vel = vAdd(vel, vScaleFixed(DIRECTION_VECTORS[curveDirectionIn], CURVE_ACCEL_FIXED));
+    // 回転の向き = 速度ベクトルから見て入力方向がどちら側か (外積の符号)。
+    // 入力方向が速度と平行/反平行 (cross=0) なら曲げようがないので何もしない。
+    const target = DIRECTION_VECTORS[curveDirectionIn];
+    const cross = (fixedMul(vel.x, target.y) as number) - (fixedMul(vel.y, target.x) as number);
+    // 量子化対策: INTERVALごとにまとめて回す (ballConstants.tsのコメント参照)
+    if (cross !== 0 && curveTicksLeft % CURVE_ROTATION_INTERVAL === 0) {
+      const k = CURVE_ROTATION_STEP_FIXED;
+      const dx = fixedMul(vel.y, k) as number;
+      const dy = fixedMul(vel.x, k) as number;
+      // cross>0 = 入力方向は速度の時計回り側 (画面座標系はy下向き) → その向きへ回す
+      vel =
+        cross > 0
+          ? { x: fixedSub(vel.x, dx as Fixed), y: fixedAdd(vel.y, dy as Fixed) }
+          : { x: fixedAdd(vel.x, dx as Fixed), y: fixedSub(vel.y, dy as Fixed) };
+    }
     curveTicksLeft -= 1;
   }
   const curveDirection = curveTicksLeft > 0 ? curveDirectionIn : Direction8.None;
