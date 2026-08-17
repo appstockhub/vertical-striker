@@ -12,6 +12,7 @@ import {
 } from '../../src/sim/ballConstants';
 import { SET_PIECE_LOCK_MAX_TICKS } from '../../src/sim/boundsConstants';
 import { runTicks } from '../../src/sim/tempo';
+import { PLAYER_SPEED_FIXED } from '../../src/sim/constants';
 
 // テンポ変更 (24周目サイクル①) 追従: 「キックが出た」の判定しきい値。
 // 裸の数字 (旧: >5) ではなく、キック速度定数からの相対値で判定する。
@@ -309,6 +310,65 @@ describe('プレイアビリティ 1: ドリブルでボールが足元から逃
       maxDist = Math.max(maxDist, distPx(state, human));
     }
     expect(maxDist).toBeLessThan(20);
+  });
+
+  /**
+   * ★24周目・実プレイ報告「ドリブルが小刻みすぎて遅い。蹴って追う推進感が無い」への対応★
+   *
+   * 従来の検証は「タッチ周期(D2)」「ボール〜足元距離(D1)」という**離散タッチの構造**しか
+   * 見ておらず、「その結果として全体が前へ進んでいるか」という**体験に直結する量**を
+   * 一度も検証していなかった。数値パリティ(D1/D2)が合格していても体験としては
+   * 「小刻みに前後するだけ」に見えうる = 指標のハック(CRITIC.md参照)。
+   *
+   * ここでは2つの直接的な保証を機械判定する:
+   *   (a) 単調前進: ドリブル中、ボールが**後退した tick が一度もない**こと
+   *       (離散タッチの物理: タッチ速度→摩擦減衰は速度の符号を変えない設計だが、
+   *       これまで一度も直接検証していなかった)
+   *   (b) 3秒間の実前進量: 原作実測 T1 (走速・ボール保持中 med 2.15身長/s、
+   *       IQR 1.40〜3.09) から導出した「3秒間で何身長ぶん進むか」の範囲に収まること。
+   *       身長1=14.68px、3秒=180tick。med 2.15×3=6.45身長、IQR 1.40〜3.09×3=4.2〜9.27身長。
+   *       実測(ライブブラウザプレイのトレース、24周目カメラ揺れ修正後): 3.9秒間で
+   *       119px=8.1身長前進(=6.23身長/3秒換算)、後退tickゼロ。この実測値を裏付けとして
+   *       同じ基準をシミュレーション側でも固定する。
+   */
+  it('★推進感★ ドリブル中、ボールは一度も後退せず、3秒で原作相当の距離を進む', () => {
+    let state = humanCarrying();
+    const human = state.controlledPlayerIndex;
+    const PLAYER_HEIGHT_PX = 14.68;
+    const startBallY = toFloat(state.ball.pos.y);
+    let prevBallY = startBallY;
+    let backwardTicks = 0;
+    const TICKS = 180; // 3秒 (60fps)
+    for (let i = 0; i < TICKS; i++) {
+      state = simulate(state, inputs(Direction8.Up));
+      const y = toFloat(state.ball.pos.y);
+      // 攻撃方向 = -y (北)。「後退」= 前tickよりyが増えた(南へ戻った)tick。
+      if (y > prevBallY + 0.001) backwardTicks++;
+      prevBallY = y;
+    }
+    const forwardPx = startBallY - toFloat(state.ball.pos.y);
+    const forwardBodyLengths = forwardPx / PLAYER_HEIGHT_PX;
+    expect(backwardTicks, `ボールが後退したtick数 (推進感が「前後する」ように見える直接原因)`).toBe(0);
+    expect(forwardBodyLengths, `3秒間の前進量=${forwardBodyLengths.toFixed(2)}身長 (原作許容 4.2〜9.27身長)`)
+      .toBeGreaterThanOrEqual(4.2);
+    expect(forwardBodyLengths, `3秒間の前進量=${forwardBodyLengths.toFixed(2)}身長 (原作許容 4.2〜9.27身長)`)
+      .toBeLessThanOrEqual(9.27);
+  });
+
+  /**
+   * 「ドリブルは素の走行より遅くならない」という anti-regression。ボールを持つと逆に
+   * 遅くなる実装は、CLAUDE.mdの「原作は蹴って追うことで通常より速く進む感覚がある」
+   * という体験目標と正面から矛盾する。少なくとも同等以上であることを固定する。
+   */
+  it('★推進感★ ドリブル中の前進速度が、ボール無しの素の走行速度を下回らない', () => {
+    let state = humanCarrying();
+    const human = state.controlledPlayerIndex;
+    const startY = toFloat(state.players[human]!.pos.y);
+    for (let i = 0; i < 180; i++) state = simulate(state, inputs(Direction8.Up));
+    const dribbleForward = startY - toFloat(state.players[human]!.pos.y);
+    const bareForward = toFloat(PLAYER_SPEED_FIXED) * 180; // 障害物なしの理論値
+    expect(dribbleForward, `ドリブル中の前進=${dribbleForward.toFixed(1)}px / 素の走行理論値=${bareForward.toFixed(1)}px`)
+      .toBeGreaterThanOrEqual(bareForward * 0.95); // タッチ待ちの1フレーム分程度の誤差は許容
   });
 });
 
