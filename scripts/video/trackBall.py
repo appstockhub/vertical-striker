@@ -38,7 +38,7 @@ TEMPLATE_PATHS = ('scratchpad/frames/ball-template.png', 'scratchpad/frames/ball
 # しきい値は2段構え (ヒステリシス)。単一しきい値では「動いてブラーした本物(0.5台)」と
 # 「スコアボード等の偽物(0.55前後)」が同じ帯に重なって分離できない (実測で確認)。
 # → 新規獲得は高スコアのみ / 追跡継続中は前回位置の近傍に限り低スコアも受理する。
-SCORE_ACQUIRE = 0.68   # 新規獲得 (全画面探索) に要求するスコア
+SCORE_ACQUIRE = 0.62   # 新規獲得 (全画面探索) に要求するスコア
 SCORE_FOLLOW = 0.50    # 追跡継続 (近傍探索) に要求するスコア
 FOLLOW_MAX_JUMP = 70.0 # 追跡継続とみなす、予測位置からの最大距離 (動画px)
 # 見失っても直前位置を「古いアンカー」として保持する最大フレーム数。
@@ -159,22 +159,38 @@ def cmd_track(video: str, start: float, dur: float, step: int, markers: bool) ->
     stale = 999  # 最後にヒットしてからのフレーム数 (最初は「完全に見失った」扱い)
     cam_x = cam_y = 0.0  # カメラの累積移動 (ワールド復元用)
     n_hit = 0
+    n_dup = 0
     with open(out_path, 'w', encoding='utf-8') as fh:
         for k in range(count):
             ok, frame = cap.read()
             if not ok:
                 break
+            # VFR対応 (24周目): 画面収録はタイムベースが60fpsと限らない (実測75Hz+重複)。
+            # フレーム番号ではなく提示タイムスタンプを真の時間軸として記録する。
+            t_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
             if step > 1 and k % step:
                 continue
             crop = frame[geo.y0 : geo.y1 + 1, geo.x0 : geo.x1 + 1]
             gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
 
-            dx = dy = 0.0
+            # 重複フレーム検出 (24周目): 画面収録は同一内容のフレームを含む (75Hzで60Hz
+            # コンテンツを取るため約1/5が重複)。重複は「新情報ゼロ」なので dup=true を
+            # 付けて metrics 側で欠測扱いにする (速度0の偽サンプルを作らないため)。
+            dup = False
             if prev_gray is not None:
+                dup = bool(np.abs(gray.astype(np.int16) - prev_gray.astype(np.int16)).mean() < 0.5)
+
+            dx = dy = 0.0
+            if prev_gray is not None and not dup:
                 dx, dy = estimate_camera_shift(prev_gray, gray)
                 cam_x += dx
                 cam_y += dy
             prev_gray = gray
+            if dup:
+                # 重複は追跡状態 (stale等) を進めずに記録だけ残す
+                n_dup += 1
+                fh.write(json.dumps({'f': first + k, 't': round(t_ms / 1000, 5), 'dup': True, 'hit': False}) + '\n')
+                continue
 
             hit = False
             score, bx, by = 0.0, -1.0, -1.0
@@ -206,6 +222,7 @@ def cmd_track(video: str, start: float, dur: float, step: int, markers: bool) ->
             player = find_player_near(crop, bx, by) if hit else None
             rec = {
                 'f': first + k,
+                't': round(t_ms / 1000, 5),
                 'hit': hit,
                 'score': round(score, 3),
                 # 画面座標 (SNESドット) と、カメラ累積移動を足し戻したワールド座標
@@ -231,19 +248,23 @@ def cmd_track(video: str, start: float, dur: float, step: int, markers: bool) ->
                 cv2.imwrite(os.path.join(marker_dir, f'm{first + k:05d}.png'), vis)
 
     cap.release()
-    print(f'検出 {n_hit}/{count} ({100 * n_hit / max(1, count):.0f}%) -> {out_path}')
+    print(f'検出 {n_hit}/{count} ({100 * n_hit / max(1, count):.0f}%)、重複 {n_dup} -> {out_path}')
 
 
-def cmd_cut(video: str, frame: int, x0: int, y0: int, x1: int, y1: int) -> None:
+def cmd_cut(video: str, frame: int, x0: int, y0: int, x1: int, y1: int, slot: int = 0) -> None:
+    # 24周目修正: 旧実装は存在しない定数 TEMPLATE_PATH を参照しており NameError で
+    # 落ちていた (23周目はこの関数を直接使わず手元コードで切っていたと思われる)。
+    # slot で TEMPLATE_PATHS のどれに書くかを選ぶ。
     cap = cv2.VideoCapture(video)
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame)
     ok, f = cap.read()
     cap.release()
     if not ok:
         raise SystemExit('frame read failed')
-    os.makedirs(os.path.dirname(TEMPLATE_PATH), exist_ok=True)
-    cv2.imwrite(TEMPLATE_PATH, f[y0:y1, x0:x1])
-    print(f'template <- frame {frame} [{x0},{y0}..{x1},{y1}]')
+    path = TEMPLATE_PATHS[slot]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cv2.imwrite(path, f[y0:y1, x0:x1])
+    print(f'template[{slot}] <- frame {frame} [{x0},{y0}..{x1},{y1}] -> {path}')
 
 
 def main() -> None:
@@ -254,6 +275,7 @@ def main() -> None:
         c.add_argument(a)
     for a in ('frame', 'x0', 'y0', 'x1', 'y1'):
         c.add_argument(a, type=int)
+    c.add_argument('--slot', type=int, default=0)
     t = sub.add_parser('track')
     t.add_argument('video')
     t.add_argument('--start', type=float, default=0.0)
@@ -262,7 +284,7 @@ def main() -> None:
     t.add_argument('--markers', action='store_true')
     args = ap.parse_args()
     if args.cmd == 'cut':
-        cmd_cut(args.video, args.frame, args.x0, args.y0, args.x1, args.y1)
+        cmd_cut(args.video, args.frame, args.x0, args.y0, args.x1, args.y1, args.slot)
     else:
         cmd_track(args.video, args.start, args.dur, args.step, args.markers)
 

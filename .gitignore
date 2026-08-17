@@ -51,6 +51,7 @@ Thumbs.db
 scratchpad/*.mp4
 scratchpad/*.mov
 scratchpad/*.mkv
+scratchpad/reference/
 scratchpad/frames/
 scratchpad/tracked/
 .analysis/
