@@ -43,3 +43,17 @@ coverage/
 .DS_Store
 Thumbs.db
 .shots/
+
+# 原作の参照動画と、そこから起こした解析用フレーム。
+# ★分析専用の参照資料であり、配布物・リポジトリには一切含めない★
+# (CLAUDE.md「原作および他の商用ゲームの素材は一切使用しない」。
+#  ここで取り出すのは挙動の数値だけで、画像そのものは成果物に持ち込まない)
+scratchpad/*.mp4
+scratchpad/*.mov
+scratchpad/*.mkv
+scratchpad/frames/
+scratchpad/tracked/
+.analysis/
+
+# Python分析ツールのキャッシュ
+__pycache__/
