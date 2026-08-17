@@ -89,6 +89,8 @@ describe('setPieceLock: goal kick (Y軸ライン除外、B-5(b)からの踏襲)'
       northEnd: true,
       // 経過tick: 試合停止バグの安全網 (SET_PIECE_LOCK_MAX_TICKS) 用のカウンタ。
       elapsedTicks: 0,
+      // 24周目サイクル②: 再開キッカー (ロック中は待機し、CPUなら90tick後に自分で蹴る)。
+      kickerIndex: 11,
     });
   });
 

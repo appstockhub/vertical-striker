@@ -39,7 +39,10 @@ function gkSecuredWithAttackerClose(): GameState {
     // テンポ変更追従: キック系速度は BALL_TEMPO 倍。旧値の -3 のままだと今の
     // CATCH_MAX_SPEED (9.5×0.3=2.85) を超えてしまい「弾く」側に化けるため、
     // 同率でスケールする (-4×0.3=-1.2。実測: 7tick目にキャッチ成立)。
-    ball: { pos: shot, vel: { x: ZERO_FIXED, y: toFixed(-4 * BALL_TEMPO) }, height: ZERO_FIXED, zVel: ZERO_FIXED },
+    // サイクル②追従: 低速減衰帯(<1.25px/tick)の導入で、1.2のボールは数pxで沈んでGKに
+    // 届かなくなった。セーブ文脈(≥1.35)・キャッチ上限(≤2.85)・減衰帯(>1.25)をすべて
+    // 満たす2.0で「キャッチすべきシュート」を作る。
+    ball: { pos: shot, vel: { x: ZERO_FIXED, y: toFixed(-2.0) }, height: ZERO_FIXED, zVel: ZERO_FIXED },
     lastTouchTeam: TeamId.A,
     lastTouchPlayerIndex: attacker,
     setPieceLock: null,

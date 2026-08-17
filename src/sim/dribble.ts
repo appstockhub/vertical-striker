@@ -1,23 +1,38 @@
-import { dotFixed, fixedAdd, fixedMul, fixedSub, toFixed, vAdd, vScaleFixed, vSub, ZERO_FIXED } from '../core/fixed';
-import type { Fixed, Vec2Fixed } from '../core/types';
+import { dotFixed, fixedAdd, fixedMul, fixedSub, vScaleFixed } from '../core/fixed';
+import type { Vec2Fixed } from '../core/types';
 import { Direction8, type ButtonState } from '../input/types';
 import type { BallState } from './state';
 import { DIRECTION_VECTORS } from './constants';
-import { quantizeToDirection8 } from './steering';
 import {
   DRIBBLE_CONTACT_RADIUS_SQ_FIXED,
-  DRIBBLE_KEEP_SPEED_FIXED,
   DRIBBLE_RADIUS_SQ_FIXED,
   DRIBBLE_TOUCH_MAX_HEIGHT_FIXED,
-  DRIBBLE_FOLLOW_DISTANCE_FIXED,
-  DRIBBLE_FOLLOW_GAIN_FIXED,
-  DRIBBLE_FOLLOW_MAX_SPEED_FIXED,
-  DRIBBLE_HANDS_OFF_SPEED_FIXED,
   DRIBBLE_TOUCH_SPEED_FIXED,
-  KICK_DRIBBLE_FOLLOW_DISTANCE_FIXED,
-  KICK_DRIBBLE_FOLLOW_MAX_SPEED_FIXED,
-  LONG_DRIBBLE_TOUCH_SPEED_FIXED,
+  DRIBBLE_TRAP_DAMPING_FIXED,
+  DRIBBLE_TRAP_MAX_SPEED_FIXED,
+  KICKOUT_IMPULSE_SPEED_FIXED,
 } from './ballConstants';
+
+/**
+ * ★24周目サイクル②: ドリブルの離散タッチ化★
+ *
+ * 原作実測 (docs/parity-targets.md D1/D2) に基づき、18周目の追従サーボモデル
+ * (毎tick「足元の少し前」の目標点へボールを引き寄せる) を廃止し、原作と同じ
+ * 「蹴る→追う→蹴る」の離散リズムに再設計した。
+ *
+ * 新モデルの規則 (applyDribbleTouch):
+ *  1. 接触半径 (7px) に入ったtickだけ、入力方向へ押し出す (それが「タッチ」)
+ *  2. 触れていない間はボールに一切干渉しない — ボールは自由に転がり、
+ *     転がり摩擦 (低速域は強い減衰、ballPhysics.ts) だけで沈んでいく
+ *  3. ニュートラル入力では、足元の遅いボールに「トラップ」の減衰を掛けて殺す
+ *     (立ち止まる=ボールを止める。不具合#7の恒久対策)
+ *  4. 蹴り出しドリブル (L+R) 中の接触は KICKOUT_IMPULSE の大きな押し出しになる
+ *     (不具合#6の修正。旧実装ではこの分岐がデッドコードだった)
+ *
+ * 方向転換の意味が変わることに注意: サーボと違い、ボールは選手についてこない。
+ * 転がるボールの先へ自分が回り込み、次のタッチで新しい方向へ押し出すのが
+ * 原作準拠の操作 (「操作しているのは選手であってボールではない」)。
+ */
 
 /**
  * プレイヤーがそのボールを「プレーできる」間合いにあるかどうか (tick開始時点の位置で判定)。
@@ -30,11 +45,7 @@ export function isNearBall(playerPos: Vec2Fixed, ballPos: Vec2Fixed): boolean {
   return (distSq as number) <= (DRIBBLE_RADIUS_SQ_FIXED as number);
 }
 
-/**
- * 実際に足が当たって蹴り出す接触距離にあるか (プレー可能な間合いより内側)。
- * この2段構えが「ボールが永久に逃げ続ける」バグの構造的な修正
- * (経緯は ballConstants.ts の DRIBBLE_CONTACT_RADIUS_FIXED のコメント参照)。
- */
+/** 実際に足が当たってタッチが発火する接触距離にあるか (プレー可能な間合いより内側)。 */
 export function isInDribbleContact(playerPos: Vec2Fixed, ballPos: Vec2Fixed): boolean {
   const dx = fixedSub(ballPos.x, playerPos.x);
   const dy = fixedSub(ballPos.y, playerPos.y);
@@ -60,20 +71,16 @@ export function computeKickDribbleState(prevActive: boolean, near: boolean, butt
   return false; // 両方離した、またはそもそも未トリガー
 }
 
+export interface DribbleTouchResult {
+  readonly ball: BallState;
+  /** このtickに通常タッチ/蹴り出しが発火したか (呼び出し側がクールダウンを設定する)。 */
+  readonly touched: boolean;
+}
+
 /**
- * ドリブルタッチ (ボールを足元に吸着させず、触れると少し前に転がす)。
- * `inContact` (= isInDribbleContact、プレー可能な間合いより内側の接触距離) かつ接地に
- * 近いボールにのみ作用する。プレイヤーが移動中なら ball.vel を「上書き」する (加算ではない)
- * — 毎tick再適用されても速度が際限なく積み上がらない。
- * プレイヤーが停止中は何もしない (既存の転がり摩擦で自然に減衰し、足元に張り付かず
- * 近くで止まる)。蹴り出しドリブル中(kickDribbleActive)はより速い値で押し出す
- * (呼び出し側でcomputeKickDribbleStateにより判定済みの値を渡すこと。ここでは
- * L/Rボタンそのものは見ない — 単発のL/R押しと「モードとして継続中」を区別する
- * 責務はcomputeKickDribbleStateに一本化してある)。
- *
- * 第2引数に「プレー可能な間合い(20px)」ではなく「接触距離(12px)」を渡すことが必須。
- * 20pxを渡すと、ボール速度(3.6)>選手速度(3.0)のため毎tick再加速され続けてボールが
- * 永久に逃げ続ける (実プレイの「キックが反応しない」の主因、ballConstants.ts参照)。
+ * ドリブルタッチ (離散タッチ方式、冒頭のモデル解説参照)。
+ * `near` = プレー可能な間合い(20px)、`inContact` = 接触距離(7px)、
+ * `cooldownActive` = 前回のタッチからDRIBBLE_TOUCH_COOLDOWN_TICKS経っていない。
  */
 export function applyDribbleTouch(
   ball: BallState,
@@ -81,100 +88,46 @@ export function applyDribbleTouch(
   inContact: boolean,
   direction: Direction8,
   kickDribbleActive: boolean,
-  /**
-   * ★18周目★ 追従モデル用の選手位置。渡すと「足元の少し前へ引き寄せる」制御になり、
-   * 方向転換してもボールが置き去りにならない (ユーザー指示「ドリブル中は足から離れない
-   * ようにして。LR同時押以外」)。省略時は従来の速度上書き方式のまま (既存テスト互換)。
-   */
-  playerPos?: Vec2Fixed,
-): BallState {
-  if (!near) return ball;
-  if ((ball.height as number) > (DRIBBLE_TOUCH_MAX_HEIGHT_FIXED as number)) return ball; // 浮き球はキックのみ
-  if (direction === Direction8.None) return ball; // 停止中は何もしない
+  cooldownActive = false,
+): DribbleTouchResult {
+  if (!near) return { ball, touched: false };
+  if ((ball.height as number) > (DRIBBLE_TOUCH_MAX_HEIGHT_FIXED as number)) return { ball, touched: false }; // 浮き球はキックのみ
 
-  if (playerPos) {
-    /**
-     * --- 追従モデル (18周目) ---
-     * 「足元の少し前」を目標点にしてボールを引き寄せる。通常ドリブルと蹴り出しドリブル
-     * (L+R) の違いは**目標点の距離だけ**にする。速度を直接与える旧方式は、転がり摩擦が
-     * 0.985 と非常に小さい (= 一度速度を与えると v/(1-0.985) ≒ 67倍の距離を転がる) ため
-     * 制御不能で、実測でも通常ドリブルで最大302px、L+Rで平均831px も離れていた。
-     * 目標点で制御すれば、摩擦がいくつでもボールは必ずその点に収束する。
-     */
-    const followDistance = kickDribbleActive
-      ? KICK_DRIBBLE_FOLLOW_DISTANCE_FIXED
-      : DRIBBLE_FOLLOW_DISTANCE_FIXED;
-    const target = vAdd(playerPos, vScaleFixed(DIRECTION_VECTORS[direction], followDistance));
-    const toTarget = vSub(target, ball.pos);
-    const distSq = dotFixed(toTarget, toTarget) as number;
-    // 目標点にほぼ乗っているなら何もしない (微小な押し合いでボールが震えるのを防ぐ)。
-    if (distSq <= (fixedMul(toFixed(1), toFixed(1)) as number)) return ball;
+  const speedSq = dotFixed(ball.vel, ball.vel) as number;
 
-    /**
-     * すでに速く転がっているボールには触れない = キック/パス/こぼれ球を殺さないためのガード。
-     * しきい値は追従の最大速度より上・最も弱いキック(6.2)より下に置く。
-     * 「追従で与えた速度」は毎tick制御し直せる (= 収束する) が、キックはそのまま飛ばす。
-     */
-    if ((dotFixed(ball.vel, ball.vel) as number) >= (fixedMul(DRIBBLE_HANDS_OFF_SPEED_FIXED, DRIBBLE_HANDS_OFF_SPEED_FIXED) as number)) {
-      return ball;
+  if (direction === Direction8.None) {
+    // トラップ: 立ち止まったら、足元の遅いボールを減衰させて殺す。
+    // キック直後の速いボール (>TRAP_MAX) には触れない = キック/パスを殺さない。
+    const trapMaxSq = fixedMul(DRIBBLE_TRAP_MAX_SPEED_FIXED, DRIBBLE_TRAP_MAX_SPEED_FIXED) as number;
+    if (speedSq > 0 && speedSq < trapMaxSq) {
+      return { ball: { ...ball, vel: vScaleFixed(ball.vel, DRIBBLE_TRAP_DAMPING_FIXED) }, touched: false };
     }
-
-    // 速度 = 目標までの距離 × ゲイン (上限あり)。距離が大きいほど速く追いつく。
-    //
-    // 決定論について: Math.sqrt は IEEE754 で「正確に丸められる」ことが規格で要求されており、
-    // 準拠環境なら常にビット単位で同一の結果になる (Math.sin/cos/atan2 と違い実装依存の
-    // 近似ではない) ため使用してよい。ただし戻り値は非整数になり得るので、必ず floor して
-    // Fixed(1/256px単位の整数) の不変条件を壊さないようにする。
-    // 注意: dotFixed は Fixed の乗算なので既に 1/256 されている (単位は px^2 * 256)。
-    // そのまま sqrt すると px*16 になり、Fixed(px*256) より16倍小さい値になる
-    // (最初の実装でこれを踏み、ボールが選手の1/17の速さでしか追従せず置き去りになった)。
-    // 256 を掛けてから sqrt することで正しく Fixed スケールの距離になる。
-    const dist = Math.floor(Math.sqrt(distSq * 256)) as Fixed;
-    const maxSpeed = kickDribbleActive
-      ? KICK_DRIBBLE_FOLLOW_MAX_SPEED_FIXED
-      : DRIBBLE_FOLLOW_MAX_SPEED_FIXED;
-    const speed = Math.min(fixedMul(dist, DRIBBLE_FOLLOW_GAIN_FIXED) as number, maxSpeed as number) as Fixed;
-    // 方向は8方向に量子化する (sim全体の方針。ボールの追従では見た目に影響しない)。
-    const dir = quantizeToDirection8(toTarget, ZERO_FIXED);
-    if (dir === Direction8.None) return ball;
-    return { ...ball, vel: vScaleFixed(DIRECTION_VECTORS[dir], speed) };
+    return { ball, touched: false };
   }
+
+  // 離散タッチの核: 接触していないtickはボールに一切干渉しない。
+  if (!inContact) return { ball, touched: false };
 
   if (kickDribbleActive) {
-    if (!inContact) return ball;
-    return { ...ball, vel: vScaleFixed(DIRECTION_VECTORS[direction], LONG_DRIBBLE_TOUCH_SPEED_FIXED) };
+    // 蹴り出しドリブル: 大きなインパルスで前方へ蹴り出す (不具合#6の修正)。
+    // クールダウンの対象外 (接触は長い追走の後にしか起きないため実質影響しないが、
+    // 「触れたら必ず蹴り出す」という公式記述を優先する)。
+    return {
+      ball: { ...ball, vel: vScaleFixed(DIRECTION_VECTORS[direction], KICKOUT_IMPULSE_SPEED_FIXED) },
+      touched: true,
+    };
   }
 
-  // 距離によって押し出す強さを変えるのが要点 (ballConstants.ts の
-  // DRIBBLE_KEEP_SPEED_FIXED のコメントに設計理由の全体像あり):
-  //   足元 (<12px)     → 3.6 で前へ転がす (「吸着させない」ドリブルの手触り)
-  //   離れかけ (12-20px) → 2.8 に落として選手 (3.0) が必ず追いつけるようにする
-  // 蹴り出しドリブル (L+R) は「大きく前へ蹴り出してタックルに晒す」のが仕様なので、
-  // 距離に関わらず常に速い値のままにして、意図的にボールを足元から離す。
-  const touchSpeed: Fixed = kickDribbleActive
-    ? LONG_DRIBBLE_TOUCH_SPEED_FIXED
-    : inContact
-      ? DRIBBLE_TOUCH_SPEED_FIXED
-      : DRIBBLE_KEEP_SPEED_FIXED;
+  // 通常タッチ: クールダウン中は蹴り足が出ない (リズムの実体)。
+  if (cooldownActive) return { ball, touched: false };
 
-  /**
-   * ★実ブラウザで発見した最重要バグの修正 (17周目)★
-   *
-   * ドリブルタッチは「速度を上書きする」実装なので、**蹴った直後のボールまで掴み直して
-   * 減速させていた**。実測トレース: キックtickで8.86 → 次tickで2.75 → 2.75 → 2.75、
-   * ボールは17.8pxのまま足元から離れない。つまり「蹴っても飛ばない」。
-   * これが実プレイの「キックの反応が弱い」の正体だった
-   * (キックtickの球速しか見ていなかったため、テストは全部greenのまま)。
-   *
-   * 修正: すでにタッチ速度以上で転がっているボールには触れない。
-   * 物理的にも「自分が押し出せる速さより速いボールは足で止められない」であり、
-   * ドリブル (遅いボールを押し出す) の役割はそのまま維持される。
-   */
-  const speedSq = dotFixed(ball.vel, ball.vel) as number;
-  const touchSpeedSq = fixedMul(touchSpeed, touchSpeed) as number;
-  if (speedSq >= touchSpeedSq) return ball;
+  // すでにタッチ速度以上で転がっているボールには触れない
+  // (17周目の教訓: 蹴った直後のボールを掴み直して殺さないためのガード)。
+  const touchSpeedSq = fixedMul(DRIBBLE_TOUCH_SPEED_FIXED, DRIBBLE_TOUCH_SPEED_FIXED) as number;
+  if (speedSq >= touchSpeedSq) return { ball, touched: false };
 
-  const vel = vScaleFixed(DIRECTION_VECTORS[direction], touchSpeed);
-
-  return { ...ball, vel };
+  return {
+    ball: { ...ball, vel: vScaleFixed(DIRECTION_VECTORS[direction], DRIBBLE_TOUCH_SPEED_FIXED) },
+    touched: true,
+  };
 }

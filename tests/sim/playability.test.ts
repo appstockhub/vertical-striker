@@ -417,7 +417,10 @@ describe('プレイアビリティ 4: キーパーがちゃんと止める', () 
   });
 
   it('遅めのボールはキーパーが「キャッチ」して確保する (弾くだけで終わらない)', () => {
-    let state = shotAtGoal(5.5);
+    // サイクル②追従: 「遅め=キャッチできる速度域」を明示する。2.5 は CATCH_MAX(2.85) 未満で
+    // 「キャッチすべきボール」。旧値5.5は旧テンポの名残でCATCH_MAXを超えており、低速減衰帯の
+    // 導入後は弾かれたボールがGK近傍に留まらず、テストの前提ごと崩れていた。
+    let state = shotAtGoal(2.5, 90);
     let secured = false;
     for (let i = 0; i < 80 && !secured; i++) {
       state = simulate(state, inputs(Direction8.None));

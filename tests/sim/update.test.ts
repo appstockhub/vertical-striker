@@ -6,6 +6,7 @@ import { Direction8, emptyButtonState, LogicalButton, type ButtonState } from '.
 import { FULL_MATCH_DURATION_FRAMES, HALF_DURATION_FRAMES } from '../../src/sim/matchClock';
 import { PITCH_HEIGHT, PITCH_WIDTH } from '../../src/config/pitch';
 import { CURVE_DURATION_TICKS, CURVE_INPUT_WINDOW_TICKS, STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
+import { SET_PIECE_LOCK_MAX_TICKS } from '../../src/sim/boundsConstants';
 import { MANUAL_LINE_OFFSET_MAX_FIXED, MANUAL_LINE_OFFSET_STEP_FIXED } from '../../src/sim/teamAIConstants';
 import { runTicks } from '../../src/sim/tempo';
 
@@ -705,7 +706,10 @@ describe('simulate — Phase 3: team line push/retreat fixes "Team B doesn\'t at
     let scored = false;
     // テンポ変更追従: 実測で得点は1869tick時点 (旧テンポの約6倍遅い) のため、
     // 監視窓を runTicks(450)=2571tick に延長する。
-    for (let i = 0; i < runTicks(450); i++) {
+    // サイクル②追従: 得点前にBのシュートが外れると Team A のゴールキックになるが、
+    // 無入力の人間(A)は蹴らず SET_PIECE_LOCK_MAX_TICKS(1030) の安全網でしか解除されない。
+    // この停滞は本テストの検証対象 (Bの攻撃能力) ではないため、停滞2回ぶんを窓に足す。
+    for (let i = 0; i < runTicks(450) + SET_PIECE_LOCK_MAX_TICKS * 2; i++) {
       state = simulate(state, inputs(Direction8.None));
       if (state.score[1] > 0) {
         scored = true;

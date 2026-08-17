@@ -32,6 +32,7 @@ import { computeMarkHomePosition } from './marking';
 import { computeSupportHomePosition, isSupportRunner } from './supportRun';
 import {
   AI_BALL_DEADZONE_PRIMARY_SQ_FIXED,
+  PRIMARY_PURE_CHASE_RADIUS_SQ_FIXED,
   AI_BALL_DEADZONE_SQ_FIXED,
   AI_FINAL_DEADZONE_SQ_FIXED,
   AI_HOME_DEADZONE_SQ_FIXED,
@@ -385,6 +386,12 @@ export function computeNonControlledDirection(
    */
   if (chaseRole === 'primary' && ballDir === Direction8.None) {
     return Direction8.None;
+  }
+
+  // ★24周目サイクル②★ primaryがボールの至近 (48px) に居るなら純粋にボールへ向かう。
+  // 理由と実測は PRIMARY_PURE_CHASE_RADIUS_SQ_FIXED (teamAIConstants.ts) のコメント参照。
+  if (chaseRole === 'primary' && (dotFixed(ballDiff, ballDiff) as number) <= (PRIMARY_PURE_CHASE_RADIUS_SQ_FIXED as number)) {
+    return ballDir;
   }
 
   // near半径以内は0、far半径以遠は1、間は距離の二乗に対して線形に遷移する比率

@@ -178,7 +178,21 @@ export const AI_BALL_DEADZONE_SQ_FIXED: Fixed = fixedMul(toFixed(4), toFixed(4))
  * 往復する振動が実プレイ相当のテストで発覚した (Phase 5、リスタート猶予導入のバタフライ効果で
  * 新たに踏んだ経路)。1tick移動量の約3倍(9px)にマージンを広げ、cover/非追跡権には影響させない
  * (デッドゾーンを全体で広げるとdango等の全体挙動に副作用が出ることを確認済みのため)。 */
-export const AI_BALL_DEADZONE_PRIMARY_SQ_FIXED: Fixed = fixedMul(toFixed(9), toFixed(9));
+// ★24周目サイクル②で 9 → 6★ 離散タッチドリブルの接触半径が 7px になったため、
+// primaryのデッドゾーン(足を止める距離)はその内側でなければならない (9のままだとAIが
+// 7px圏に入れず永久にタッチできない = 「CPUがボールを運べない」20周目の崩壊が再発する)。
+// 原則「デッドゾーンは1tick移動量より大きく」は維持 (6px ≫ 0.525px/tick、テンポ変更後は
+// 11倍のマージンがあり、旧9px/3px=3倍より安全側)。
+export const AI_BALL_DEADZONE_PRIMARY_SQ_FIXED: Fixed = fixedMul(toFixed(6), toFixed(6));
+/**
+ * ★24周目サイクル②★ primary追跡者がこの距離以内のボールへは、重み合成を捨てて
+ * 純粋にボールへ向かう (px、二乗)。合成ステアリングはホーム復元とボール引力が
+ * 均衡して「フリーボールの20px手前で静止する」膠着を起こし得る (無入力ブレイク
+ * アウェイのテストで3600tickの静止を実測。離散タッチ化でボールが止まりやすくなり
+ * 顕在化した)。至近のボール担当にホームは関係ない (17周目の deadzone 内停止の
+ * 修正と同じ考え方の拡張)。48px = 追跡権バケットの量子化単位に合わせた。
+ */
+export const PRIMARY_PURE_CHASE_RADIUS_SQ_FIXED: Fixed = fixedMul(toFixed(48), toFixed(48));
 /**
  * 合成後ベクトルの最終量子化デッドゾーン (仮値、二乗)。
  *

@@ -34,6 +34,13 @@ export interface PlayerState {
    * (省略時は`?? false`として扱う)。
    */
   readonly kickDribbleActive?: boolean;
+  /**
+   * ★24周目サイクル②★ 離散タッチドリブルのクールダウン (残りtick)。タッチが発火したら
+   * DRIBBLE_TOUCH_COOLDOWN_TICKS を設定し、0になるまで次のタッチを発火させない
+   * (「蹴る→追う→蹴る」の歩幅=リズムの実体。無いと接触半径内で毎数tick再タッチされ、
+   * 実質サーボに戻ってしまう)。テスト互換のためoptional (省略時は`?? 0`)。
+   */
+  readonly dribbleTouchCooldown?: number;
 }
 
 export interface BallState {
@@ -234,6 +241,12 @@ export interface SetPieceLock {
    * — キッカーは必ず人間の操作選手になるため、無操作だと試合が永久停止してしまうため。
    */
   readonly elapsedTicks: number;
+  /**
+   * ★24周目サイクル②★ このロックの再開キッカー (players[] index)。ロック中は
+   * ボール脇で待機し (歩き去らない)、CPUなら CPU_RESTART_DELAY_TICKS 経過後に蹴る。
+   * 旧実装ではドリブルサーボの副作用で偶然再開が成立していた (boundsConstants.ts参照)。
+   */
+  readonly kickerIndex?: number;
 }
 
 /** キック入力のバッファ (GameState.pendingKick)。 */

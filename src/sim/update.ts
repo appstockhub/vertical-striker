@@ -25,6 +25,7 @@ import {
   CURVE_INPUT_WINDOW_TICKS,
   DRIBBLE_TOUCH_MAX_HEIGHT_FIXED,
   DRIBBLE_TOUCH_SPEED_FIXED,
+  DRIBBLE_TOUCH_COOLDOWN_TICKS,
   KICK_INPUT_BUFFER_TICKS,
   KICK_MIN_CHARGE_FRAMES,
   KICK_REACH_FIXED,
@@ -54,6 +55,7 @@ import {
   SAVE_CONTEXT_MIN_BALL_SPEED_SQ_FIXED,
 } from './goalkeeperConstants';
 import {
+  CPU_RESTART_DELAY_TICKS,
   GOAL_KICK_EXCLUSION_DEPTH_FIXED,
   KICKOFF_CIRCLE_RADIUS_FIXED,
   KICKOFF_KICKER_STANDOFF_FIXED,
@@ -192,7 +194,14 @@ function applySetPieceExclusion(moved: PlayerState, lock: SetPieceLock): PlayerS
  * 機構をそのまま使う。押し出しは行わない (相手はその場に居てよい)。
  */
 function createGoalkeeperHoldLock(gkTeam: TeamId, ballPos: Vec2Fixed): SetPieceLock {
-  return { kind: 'gkHold', restartTeam: gkTeam, pos: ballPos, northEnd: false, elapsedTicks: 0 };
+  return {
+    kind: 'gkHold',
+    restartTeam: gkTeam,
+    pos: ballPos,
+    northEnd: false,
+    elapsedTicks: 0,
+    kickerIndex: gkTeam * PLAYERS_PER_TEAM, // 配球するのは確保したGK自身
+  };
 }
 
 function createKickoffLock(kickoffTeam: TeamId, ballPos: Vec2Fixed): SetPieceLock {
@@ -202,6 +211,7 @@ function createKickoffLock(kickoffTeam: TeamId, ballPos: Vec2Fixed): SetPieceLoc
     pos: ballPos,
     northEnd: false, // kickoff では未使用 (円形除外のため)
     elapsedTicks: 0,
+    kickerIndex: kickoffTeam * PLAYERS_PER_TEAM + KICKOFF_TAKER_SLOT_INDEX,
   };
 }
 
@@ -511,7 +521,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // ドリルモードではCPUの攻撃判断も一切走らせない (「相手なし」の無菌室にするため)。
   const cpuDecision =
     !state.drillMode && touchPriorityIndex !== null && touchPlayerForCpu && !isTeamAInPossession(touchPriorityIndex)
-      ? decideCpuAttack(touchPriorityIndex, state.players, half, state.difficulty, state.rngState, prevTouchPlayerIndex)
+      ? decideCpuAttack(touchPriorityIndex, state.players, half, state.difficulty, state.rngState, prevTouchPlayerIndex, state.ball.pos)
       : null;
   let rngState = cpuDecision ? cpuDecision.rngState : state.rngState;
 
@@ -643,6 +653,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // 蹴り出しドリブル(続編仕様①②)。保持者(touch-priority)のみが対象で、他の選手は
   // players.map内で強制的にfalseへリセットする(過去に保持していた時の値が残らないように)。
   let kickDribbleCarrier: { index: number; active: boolean } | null = null;
+  /** このtickに離散ドリブルタッチが発火した選手 (クールダウン設定用、24周目サイクル②)。 */
+  let dribbleTouchFiredIndex: number | null = null;
 
   // ================================================================================
   // 非操作GKの自動セーブ。**ドリブルタッチより先に**評価するのが必須。
@@ -683,6 +695,44 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         lastEvent = { kind: 'gkCatch', team: gk.team, atFrame: nextFrame };
         setPieceLock = createGoalkeeperHoldLock(gk.team, ball.pos);
       }
+    }
+  }
+
+  // ================================================================================
+  // ★24周目サイクル②: CPU側のセットプレー再開・GK配球・キックオフを明示的に蹴る★
+  //
+  // 経緯 (重要): これまでCPUの再開は「ボール脇に置かれたキッカーがホームへ歩き出した瞬間、
+  // 旧ドリブルサーボがボールを吸着して動かし、ロックが解除される」というサーボモデルの
+  // **副作用**で偶然成立していた。離散タッチ化でサーボが消えた途端、CPUはコーナーを
+  // 1030tick(安全網上限)まで誰も蹴らなくなった (実測)。再開は創発に頼らず明示的に行う。
+  // 「間」(CPU_RESTART_DELAY_TICKS=90) は原作実測 S1 (GK確保→配球まで約1.5秒) に合わせた。
+  // 人間の操作選手がキッカーの場合は蹴らない (本人の入力に委ね、無操作は従来どおり
+  // SET_PIECE_LOCK_MAX_TICKS の安全網で解除する)。
+  // ================================================================================
+  if (setPieceLock && setPieceLock.elapsedTicks >= CPU_RESTART_DELAY_TICKS && !gkSavedThisTick) {
+    let kickerIndex: number | null = null;
+    let kickerDistSq = Infinity;
+    const reachSq = fixedMul(KICK_REACH_FIXED, KICK_REACH_FIXED) as number;
+    for (let i = 0; i < state.players.length; i++) {
+      const p = state.players[i]!;
+      if (p.team !== setPieceLock.restartTeam) continue;
+      const d = distSqFixed(p.pos, ball.pos) as number;
+      if (d <= reachSq && d < kickerDistSq) {
+        kickerDistSq = d;
+        kickerIndex = i;
+      }
+    }
+    if (kickerIndex !== null && kickerIndex !== controlledPlayerIndex) {
+      const kicker = state.players[kickerIndex]!;
+      const targetIndex = selectPassTarget(kickerIndex, state.players);
+      const target = targetIndex !== null ? state.players[targetIndex] : undefined;
+      const direction = target
+        ? quantizeToDirection8(vSub(target.pos, kicker.pos), ZERO_FIXED)
+        : attackingIsUpward(kicker.team, half)
+          ? Direction8.Up
+          : Direction8.Down;
+      ball = applyKick(ball, kicker, KICK_MIN_CHARGE_FRAMES, direction);
+      lastTouchTeam = kicker.team;
     }
   }
 
@@ -731,27 +781,33 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // gkSavedThisTick / inSaveRange のときはドリブルタッチを行わない。セーブしたボールを
   // 同じtickで「ドリブル」して弾き飛ばしてしまうと、キャッチが成立しないため
   // (上記の自動セーブブロックのコメント参照。人間GKも同じ理由で除外する)。
-  if (!oneTwoFired && !gkSavedThisTick && !inSaveRange && touchInputs && touchPriorityIndex !== null) {
+  // ★24周目サイクル②★ セットプレー/GK保持ロック中は、非操作選手のドリブルタッチを行わない。
+  // 行うと、キッカー(CPU)の攻撃AIの向きにボールが押されて「ボールが動いた=ロック解除」が
+  // 即座に成立し、GKの確保が1タッチで無防備になる (実測: 保持テストがt14で奪取された)。
+  // CPUの再開は上の明示キック (CPU_RESTART_DELAY_TICKS) が担い、人間のキッカー
+  // (controlledPlayerIndex) は従来どおり自分のタッチ/キックで再開できる。
+  const touchBlockedByLock = setPieceLock !== null && touchPriorityIndex !== controlledPlayerIndex;
+  if (!oneTwoFired && !gkSavedThisTick && !inSaveRange && !touchBlockedByLock && touchInputs && touchPriorityIndex !== null) {
     const touchPlayer = state.players[touchPriorityIndex];
     const prevKickDribbleActive = touchPlayer?.kickDribbleActive ?? false;
     const kickDribbleActive = computeKickDribbleState(prevKickDribbleActive, true, touchInputs.buttons);
     kickDribbleCarrier = { index: touchPriorityIndex, active: kickDribbleActive };
-    // ★重要★ 蹴り出しは「プレー可能な間合い(20px)」ではなく「接触距離(12px)」でのみ行う。
-    // ここに true (=常に接触) を渡していたのが、ボールが永久に逃げ続けて
-    // 「走りながらキックできない」実プレイ不具合の直接原因だった (ballConstants.ts参照)。
+    // ★重要★ タッチは「プレー可能な間合い(20px)」ではなく「接触距離(7px)」でのみ発火する
+    // (24周目サイクル②の離散タッチ方式。モデルの全体像は dribble.ts 冒頭参照)。
     const inContact = !!touchPlayer && isInDribbleContact(touchPlayer.pos, ball.pos);
-    // 第6引数に選手位置を渡すと「足元の少し前へ引き寄せる」追従モデルになる
-    // (18周目、ユーザー指示「ドリブル中は足から離れないようにして。LR同時押以外」)。
-    ball = applyDribbleTouch(
+    const cooldownActive = (touchPlayer?.dribbleTouchCooldown ?? 0) > 0;
+    const touchResult = applyDribbleTouch(
       ball,
       true,
       inContact,
       touchInputs.direction,
       kickDribbleActive,
-      touchPlayer?.pos,
+      cooldownActive,
     );
+    ball = touchResult.ball;
+    if (touchResult.touched) dribbleTouchFiredIndex = touchPriorityIndex;
     // 接触距離の内外に関わらず、プレー可能な間合いで実際にボールを動かしたなら「触れた」。
-    // inContact だけで判定すると、12〜20px で押している選手が lastTouchTeam に反映されず、
+    // inContact だけで判定すると、接触外で押している選手が lastTouchTeam に反映されず、
     // 支配率・スローイン相手判定・ライン押し引きがすべてズレる。
     if (touchPlayer) lastTouchTeam = touchPlayer.team;
   }
@@ -1091,6 +1147,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       pos: ball.pos,
       northEnd: (ball.pos.y as number) < (toFixed(PITCH_HEIGHT / 2) as number),
       elapsedTicks: 0,
+      // FK/PKのキッカーは placeFreeKick/placePenaltyKick が配置した選手 (24周目サイクル②)
+      kickerIndex: foulPlacement.kickerIndex,
     };
     // 反則した側はその場で規定距離まで下がる (第13条「9.15m」)。以後のtickは通常の
     // applySetPieceExclusion が毎tick押し戻すが、笛が鳴ったtickにも適用しておかないと
@@ -1169,17 +1227,18 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     // (旧実装はゴールキックのみだったため、スローイン/コーナーは相手が即座に触れられる
     // 不具合があった — CLAUDE.md「実装ギャップ」1を参照)。時間切れは無く、
     // 「ボールが再開スポットから動く」ことで解除する (下記参照)。
+    // キッカーを決めてボール脇へ配置し、攻撃方向を向かせる。
+    // ボールだけをテレポートしてキッカーの到着をAI任せにしていた旧実装は、再開チームの誰も
+    // 近くに居ない時にボールが置き去りのまま試合が停止した (resolveSetPieceKicker のコメント参照)。
+    restartKickerOverride = resolveSetPieceKicker(state.players, boundaryEvent, half);
     setPieceLock = {
       kind: boundaryEvent.type,
       restartTeam: boundaryEvent.restartTeam,
       pos: boundaryEvent.pos,
       northEnd: (boundaryEvent.pos.y as number) < (toFixed(PITCH_HEIGHT / 2) as number),
       elapsedTicks: 0,
+      ...(restartKickerOverride ? { kickerIndex: restartKickerOverride.index } : {}),
     };
-    // キッカーを決めてボール脇へ配置し、攻撃方向を向かせる。
-    // ボールだけをテレポートしてキッカーの到着をAI任せにしていた旧実装は、再開チームの誰も
-    // 近くに居ない時にボールが置き去りのまま試合が停止した (resolveSetPieceKicker のコメント参照)。
-    restartKickerOverride = resolveSetPieceKicker(state.players, boundaryEvent, half);
     // リスタート猶予 (Phase 5): この再開チームの相手の追跡権をRESTART_GRACE_TICKSの間ゼロにする
     // (上記setPieceLockと併用、後退させない)。同じtickで上の通常減衰(restartGraceTicksLeft--)を
     // 上書きする — 新しいリスタートが最優先。
@@ -1224,6 +1283,13 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     let effectiveDirection = playerInputs.direction;
     let speedOverride = isAutoGoalkeeper ? GK_AUTO_SPEED_FIXED : undefined;
 
+    // ★24周目サイクル②★ 再開キッカーはロック中ボール脇で待機する (人間操作選手を除く)。
+    // これが無いとAI(追跡権はロック中ゼロ)がホームへ歩き去り、CPUの再開が誰にも
+    // 蹴られなくなる (SetPieceLock.kickerIndex のコメント参照)。
+    if (setPieceLock && setPieceLock.kickerIndex === index && index !== controlledPlayerIndex) {
+      effectiveDirection = Direction8.None;
+    }
+
     if (index === controlledPlayerIndex && tackleAdvance.tacklePhase !== TacklePhase.None) {
       const movementOverride = getTackleMovementOverride(tackleAdvance.tacklePhase, tackleAdvance.tackleDirection);
       if (movementOverride.direction !== undefined) effectiveDirection = movementOverride.direction;
@@ -1231,7 +1297,12 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     }
 
     let moved = updatePlayer(player, effectiveDirection, kickDribbleActive, speedOverride);
-    moved = { ...moved, kickDribbleActive };
+    // 離散タッチのクールダウン (24周目サイクル②): タッチが発火した選手に設定し、毎tick減らす。
+    const nextCooldown =
+      dribbleTouchFiredIndex === index
+        ? DRIBBLE_TOUCH_COOLDOWN_TICKS
+        : Math.max(0, (player.dribbleTouchCooldown ?? 0) - 1);
+    moved = { ...moved, kickDribbleActive, dribbleTouchCooldown: nextCooldown };
 
     // セットプレー再開ロック中の相手押し出し (観戦シミュレーターで発覚した「リスタート・
     // キャンプ」問題の修正、CLAUDE.md「実装ギャップ」1でスローイン/コーナーにも拡大)。

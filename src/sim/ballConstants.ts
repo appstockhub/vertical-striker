@@ -34,90 +34,70 @@ export const DRIBBLE_RADIUS_SQ_FIXED: Fixed = fixedMul(DRIBBLE_RADIUS_FIXED, DRI
  * という実際のドリブルのサイクルになり、ボールは 12〜16px の範囲で往復して 20px を越えない。
  * CLAUDE.md「ボールが足元に吸着しすぎない。触れると少し前に転がる」も満たす。
  */
-export const DRIBBLE_CONTACT_RADIUS_FIXED: Fixed = toFixed(12);
+// ★24周目サイクル② (離散タッチ化) で 12 → 7★ 原作実測 D1 (ボール〜足元距離 med 0.51身長
+// ≈ 7.5px) に合わせ、タッチが発火する距離を縮めた。ボールはこの半径のすぐ外
+// (7〜13px ≈ 0.5〜0.9身長) を転がって往復する。
+// 制約: AI_BALL_DEADZONE_PRIMARY (6px) より大きいこと。AIはデッドゾーンで足を止めるため、
+// これを下回るとAIが永久にタッチできず「CPUがボールを運べない」20周目の崩壊が再発する。
+export const DRIBBLE_CONTACT_RADIUS_FIXED: Fixed = toFixed(7);
 export const DRIBBLE_CONTACT_RADIUS_SQ_FIXED: Fixed = fixedMul(
   DRIBBLE_CONTACT_RADIUS_FIXED,
   DRIBBLE_CONTACT_RADIUS_FIXED,
 );
 
 /**
- * 接触距離より外・プレー可能な間合いの内 (12〜20px) でボールに触れた時に与える速度 (px/tick)。
+ * ★24周目サイクル②: ドリブルを「離散タッチ」方式へ全面再設計★
+ * (旧: 18周目の追従サーボモデル。ユーザー指示と原作実測 D2「原作は蹴る→追う→蹴るの
+ *  離散リズム、自作は毎tickサーボで質的に別物」を受けて置き換えた)
  *
- * PLAYER_SPEED_FIXED(3.0) より意図的に「わずかに遅く」する。これが
- * 「ボールが永久に逃げる」バグの本質的な修正:
- *   - 足元 (<12px) では 3.6 で前へ転がる → CLAUDE.md「触れると少し前に転がる」を満たす
- *   - 離れかけ (12〜20px) では 2.8 に落ちる → 選手 (3.0) が必ず追いつき、20px を越えない
- * 結果、ボールは 12〜15px の帯を往復し、touch-priority を失わない。
+ * 新モデル:
+ *  1. 接触半径 (7px) に入った時だけ、入力方向へ DRIBBLE_TOUCH_SPEED で押し出す
+ *  2. 触れていない間はボールに一切干渉しない (転がり摩擦だけが効く)
+ *  3. ニュートラル入力では足元の遅いボールを「トラップ」して殺す (DRIBBLE_TRAP_DAMPING)
+ *  4. L+R蹴り出しは接触時に KICKOUT_IMPULSE_SPEED のインパルス (不具合#6の修正)
  *
- * 「12px以内でしか触れない」方式(初回の修正案)にしなかった理由: AI選手は
- * AI_BALL_DEADZONE_PRIMARY (9px) で足を止めるため、12px以内に入らないまま静止して
- * **AIがボールを運べなくなり、CPUのシュートが 34本→2本 に崩壊した** (観戦シミュレーターで計測)。
- * 旧実装の「ボールが逃げ続ける」挙動が、皮肉にもAIの推進力として機能していた。
- * 距離で速度を variable にする本方式なら、ボールは常に押され続けるのでAIは追い続けられ、
- * かつ人間のボールは足元から離れない。
+ * 設計値の導出 (60fps、選手0.525px/tick、低速域減衰0.85):
+ *  - 成立条件: クールダウン(9tick)中にボールが進む距離 ≥ 選手の移動量(4.7px)。
+ *    これを割ると選手がボールを追い越して置き去りにする (タッチ1.0以下で実測した失敗)
+ *  - タッチ速度1.2 + 減衰0.85 → プローブ実測: ギャップmed 6.1px(0.42身長)・周期10tick。
+ *    原作実測 D1 (med 0.51、IQR 0.29〜0.78) / D2 (8〜12tick) と整合
  */
-export const DRIBBLE_KEEP_SPEED_FIXED: Fixed = toFixed(2.8 * RUN_TEMPO);
+/**
+ * タッチとタッチの間の最小間隔 (tick)。「蹴る→追う→蹴る」のリズムの実体で、
+ * 原作実測 D2 (タッチ周期 med 9.6tick、IQR 6.4〜11.2) に合わせた。これが無いと、
+ * 接触半径内に留まるボールが数tickごとに再タッチされて実質サーボに戻る (実測で確認)。
+ * 選手の「歩幅」(次の蹴り足が出るまでの時間) の近似。
+ */
+export const DRIBBLE_TOUCH_COOLDOWN_TICKS = 9;
+
+export const DRIBBLE_TRAP_DAMPING_FIXED: Fixed = toFixed(0.85);
+/** トラップが作用するボール速度の上限 (px/tick)。キック直後の速いボールは殺さない。 */
+export const DRIBBLE_TRAP_MAX_SPEED_FIXED: Fixed = toFixed(1.0);
 
 /** これ以下の高さのボールのみドリブルタッチの対象とする (px, 仮値)。浮き球はキックのみで触れる。 */
 export const DRIBBLE_TOUCH_MAX_HEIGHT_FIXED: Fixed = toFixed(2.0);
 
-/** ドリブルタッチ時にボールへ与える速度 (px/tick, 仮値)。PLAYER_SPEED(3.0)よりわずかに速い。 */
-export const DRIBBLE_TOUCH_SPEED_FIXED: Fixed = toFixed(3.6 * RUN_TEMPO);
+/** ドリブルタッチ時にボールへ与える速度 (px/tick)。選手(0.525)の約2.3倍で蹴り出し、
+ * 低速減衰帯(<1.25、0.85/tick)が数tickで殺す = 「蹴る→追う」の離散リズム。
+ * 値のスイープ実測: 1.0では置き去り発生 / 1.2でギャップmed0.42身長・周期10tick /
+ * 1.4は周期22tickに伸びすぎ → 1.2 を採用。 */
+export const DRIBBLE_TOUCH_SPEED_FIXED: Fixed = toFixed(1.2);
 
-/**
- * ★18周目: ドリブル中の追従モデル★
- * ユーザー指示「基本的にドリブルしているときは足から離れないようにして。LR同時押以外」。
- *
- * 旧実装は「接触距離なら3.6で前へ転がす / 離れかけなら2.8」という速度の上書きだけで、
- * 進行方向が変わるとボールは古い方向へ転がり続けて置き去りになっていた
- * (実測: 直進時は最大15pxだが、**方向転換を繰り返すと最大95.6px** 離れる)。
- *
- * 新実装は「足元の少し前 (DRIBBLE_FOLLOW_DISTANCE) にボールの目標点を置き、そこへ
- * 引き寄せる」追従モデルにする。方向転換しても目標点が選手について回るため、
- * ボールが足元から離れない。目標点を選手の中心ではなく少し前方に置くことで、
- * CLAUDE.mdの「ボールが足元に吸着しすぎない。触れると少し前に転がる」も両立する。
- */
-export const DRIBBLE_FOLLOW_DISTANCE_FIXED: Fixed = toFixed(9);
-/**
- * 追従の追いつき速度の上限 (px/tick)。方向転換で置き去りになったボールを引き戻す速さ。
- * 選手速度(3.0)より速くしないと永久に追いつけないが、速すぎるとボールが足に吸い付いて
- * 見えるため、catch-upとして自然な範囲に留める。
- */
-export const DRIBBLE_FOLLOW_MAX_SPEED_FIXED: Fixed = toFixed(5.0 * RUN_TEMPO);
-/**
- * 蹴り出しドリブル時の追従上限 (px/tick)。選手速度 (LONG_DRIBBLE_PLAYER_SPEED = 4.2) を
- * わずかに上回るだけにする。上回りすぎるとボールが選手より速く前進し続け、
- * touch-priority の半径 (20px) を抜けた瞬間に制御を失って転がり去る
- * (実ブラウザで上限5.0のとき平均467px・最大1725px 離れるのを実測した。
- *  単体テストでは初期条件が穏やかなため8.2pxに収まり、この破綻を見逃していた)。
- */
-export const KICK_DRIBBLE_FOLLOW_MAX_SPEED_FIXED: Fixed = toFixed(4.6 * RUN_TEMPO);
-/** 目標点までの距離に掛ける追従ゲイン (0..1)。1に近いほど1tickで目標へ届く=吸着的。 */
-export const DRIBBLE_FOLLOW_GAIN_FIXED: Fixed = toFixed(0.55 * RUN_TEMPO);
-/**
- * 蹴り出しドリブル (L+R) の目標点までの距離 (px)。通常ドリブル(9px)より大きく取り、
- * 「大きく前へ蹴り出して自分で追いかける」動作にする。速度ではなく目標点で制御するので、
- * ボールは必ずこの距離に収束する (旧実装は毎tick速度6.0を与え続けて平均831px離れていた)。
- *
- * 値は touch-priority の半径 (DRIBBLE_RADIUS = 20px) より内側にする必要がある:
- * それを超えるとボールの保持者判定が外れて追従制御自体が止まり、ボールが
- * そのまま転がって行方不明になる (46pxで試したところ平均810px離れた、実測)。
- * 「相手のスライディングをかわせる」という仕様上の役割は、通常ドリブル(9px)の
- * 倍近い16pxまで足元から離すことで果たす。
- */
-export const KICK_DRIBBLE_FOLLOW_DISTANCE_FIXED: Fixed = toFixed(16);
-/**
- * この速度以上で転がっているボールにはドリブルタッチが触れない (px/tick)。
- * 追従の最大速度(5.0)より上、最も弱いキック(6.2)より下に置くことで、
- * 「追従で与えた速度は毎tick制御し直せる/キックはそのまま飛ばす」を両立させる。
- */
-export const DRIBBLE_HANDS_OFF_SPEED_FIXED: Fixed = toFixed(5.6 * RUN_TEMPO);
-
-/** ロングドリブル(L/R押し続け)時のプレイヤー速度 (px/tick, 仮値。通常の約1.4倍、要実機検証)。 */
+/** 蹴り出しドリブル(L/R)時のプレイヤー速度 (px/tick)。通常の1.4倍。
+ * 「走力の高い選手は通常ドリブルより速くボールを運べる」(続編公式) の速度アップ側。 */
 export const LONG_DRIBBLE_PLAYER_SPEED_FIXED: Fixed = toFixed(4.2 * RUN_TEMPO);
 
-/** ロングドリブル時にボールへ与える速度 (px/tick, 仮値。ドリブル半径外まで蹴り出す想定、要実機検証)。 */
-export const LONG_DRIBBLE_TOUCH_SPEED_FIXED: Fixed = toFixed(6.0 * RUN_TEMPO);
+/**
+ * ★24周目サイクル②: 蹴り出しドリブル (L+R) のインパルス速度 (px/tick)★ 不具合#6の修正。
+ * 旧実装の蹴り出しコードは追従モデルの分岐が必ず先にreturnするデッドコードだった。
+ * 新実装は接触時に1回のインパルスとして発火する (dribble.ts)。
+ *
+ * 値の導出 (原作実測 D3: 押し出し0.8〜1.8身長=12〜26px / D4: 追いつき18〜54tick):
+ * 2.0px/tick + 摩擦0.968/低速帯0.85 + 追走速度0.735(LONG_DRIBBLE) のプローブ実測で
+ * 最大ギャップ19.7px・追いつき19tick。どちらもゲート範囲内。
+ * L/Rを押し続けている間は接触のたびに再蹴り出しされる (公式の「繰り返し」記述どおり)。
+ */
+export const KICKOUT_IMPULSE_SPEED_FIXED: Fixed = toFixed(2.0);
 
 /**
  * X (ロングフィード/センタリング/ロビング) が使う溜め相当のフレーム数。
@@ -208,6 +188,20 @@ export const BOUNCE_MIN_VEL_FIXED: Fixed = toFixed(0.5 * BALL_TEMPO);
  *  接触半径12pxから押し出されたボールは約16pxで選手に追いつかれ、20pxを越えない)
  */
 export const ROLLING_FRICTION_FIXED: Fixed = toFixed(0.968);
+
+/**
+ * ★24周目サイクル②: 低速域の強い転がり減衰★
+ * この速度未満 (px/tick) のボールには ROLLING_FRICTION の代わりに ROLL_SLOW_FRICTION を
+ * 掛ける。「速いボールはよく滑り、遅いボールは芝に沈んで早く止まる」の近似。
+ *
+ * 導入理由: 離散タッチドリブルの成立条件。ドリブルタッチ(1.2px/tick)がこの帯で
+ * 数tickのうちに沈む = 「蹴る→少し転がって止まりかける→追いつく→また蹴る」のリズムが
+ * 物理から生まれる。しきい値はタッチ速度(1.2)より上・最弱キック(1.86)より下に置く。
+ * キック/パスへの影響は「終端の惰性の30px程度が消える」だけで、速度が出ている区間の
+ * 挙動・GKの判定・T4ゲート (キック直後の減衰率0.968) には影響しない。
+ */
+export const ROLL_SLOW_SPEED_FIXED: Fixed = toFixed(1.25);
+export const ROLL_SLOW_FRICTION_FIXED: Fixed = toFixed(0.85);
 
 /**
  * カーブ(続編仕様③)関連の定数。すべて仮値(実機データ無し、プレイフィールで調整する対象。

@@ -10,6 +10,7 @@ import { quantizeToDirection8 } from './steering';
 import { selectPassTarget } from './cursor';
 import { GOAL_CENTER_X_FIXED, GOAL_HALF_WIDTH_FIXED } from './goalkeeperConstants';
 import { DIFFICULTY_TIERS } from './difficultyConstants';
+import { DRIBBLE_CONTACT_RADIUS_SQ_FIXED } from './ballConstants';
 
 export type CpuAttackAction = 'shoot' | 'pass' | 'dribble';
 
@@ -56,10 +57,36 @@ export function decideCpuAttack(
   difficulty: Difficulty,
   rngState: RngState,
   prevTouchPlayerIndex: number | null = null,
+  ballPos: Vec2Fixed | null = null,
 ): CpuAttackDecision {
   const carrier = players[carrierIndex];
   if (!carrier) {
     return { action: 'dribble', direction: Direction8.None, passTargetIndex: null, rngState };
+  }
+
+  // ★24周目サイクル②★ ボールが「足元」(接触半径7px) に無いなら、まず回収に向かう
+  // (キック判断もしない)。touch-priority (20px) はプレー権であって足元保持ではない。
+  // 旧サーボモデルはボールを常に9px先へ吸着させていたため「holder=足元にある」の仮定が
+  // 成立していたが、離散タッチ化でボールが最大20px先を転がるようになると、この仮定のまま
+  // 「ゴールへ向かって歩く」ことが追跡権AIの「ボールへ向かう」と2tick周期で衝突し、
+  // フリーボールの20px手前で3600tick静止するデッドロックを起こした (実測)。
+  //
+  // 回収の境界は必ず DRIBBLE_CONTACT_RADIUS (タッチが発火する距離) に一致させること。
+  // 初版は9px(接触7pxの少し外)にしていたが、7〜9pxに「触れられないのに攻撃方向へ歩き出す」
+  // デッドリングが生まれ、ボールが進行方向に無い局面でキャリアが輪の上を毎tick往復する
+  // 系統的な振動 (全セル×全シードで osc=[16] 等) を起こした。
+  // さらにタッチのクールダウン中は接触していても蹴り足が出ないため、ボールの上で
+  // 静止して次のタッチを待つ (これも往復の芽を摘む)。
+  if (ballPos) {
+    const toBall = vSub(ballPos, carrier.pos);
+    const ballDistSq = fixedAdd(fixedMul(toBall.x, toBall.x), fixedMul(toBall.y, toBall.y)) as number;
+    if (ballDistSq > (DRIBBLE_CONTACT_RADIUS_SQ_FIXED as number)) {
+      const direction = quantizeToDirection8(toBall, CPU_STEER_DEADZONE_SQ);
+      return { action: 'dribble', direction, passTargetIndex: null, rngState };
+    }
+    if ((carrier.dribbleTouchCooldown ?? 0) > 0) {
+      return { action: 'dribble', direction: Direction8.None, passTargetIndex: null, rngState };
+    }
   }
 
   const attacksUp = attackingIsUpward(carrier.team, half);

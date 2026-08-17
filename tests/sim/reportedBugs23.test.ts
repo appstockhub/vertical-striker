@@ -97,10 +97,15 @@ describe('23周目 実機報告の再現', () => {
      */
     it('ドリブルで走りながらBを長押しして離しても、ボールが飛ぶこと', () => {
       let s = carryingInFormation();
-      // まず30tick 素でドリブルして、ボールが転がっている状態を作る
-      for (let i = 0; i < 30; i++) s = simulate(s, inp(Direction8.Up));
-      const dribbling = ballSpeed(s);
-      expect(dribbling).toBeGreaterThan(0.5); // 前提: 実際に転がっている
+      // まず30tick 素でドリブルして、ボールが転がっている状態を作る。
+      // サイクル②追従: 離散タッチではボール速度が「タッチ(1.2)→減衰」を周期的に繰り返す
+      // ため、特定tickの瞬時値ではなく窓内の最大値で「転がっている」ことを確認する。
+      let dribblingPeak = 0;
+      for (let i = 0; i < 30; i++) {
+        s = simulate(s, inp(Direction8.Up));
+        dribblingPeak = Math.max(dribblingPeak, ballSpeed(s));
+      }
+      expect(dribblingPeak).toBeGreaterThan(0.5); // 前提: 実際に転がっている
 
       // 走ったまま B を30tick溜めて離す
       for (let i = 0; i < 30; i++) s = simulate(s, inp(Direction8.Up, { B: true }));

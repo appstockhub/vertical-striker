@@ -1,4 +1,4 @@
-import { clampFixed, fixedAdd, fixedMul, fixedSub, vAdd, vScaleFixed, ZERO_FIXED } from '../core/fixed';
+import { clampFixed, dotFixed, fixedAdd, fixedMul, fixedSub, vAdd, vScaleFixed, ZERO_FIXED } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import type { BallState } from './state';
 import { Direction8 } from '../input/types';
@@ -11,6 +11,8 @@ import {
   CURVE_ROTATION_STEP_FIXED,
   GRAVITY_FIXED,
   ROLLING_FRICTION_FIXED,
+  ROLL_SLOW_FRICTION_FIXED,
+  ROLL_SLOW_SPEED_FIXED,
 } from './ballConstants';
 
 /** stepBallPhysicsDetailed() の戻り値。tentativePos はピッチ境界クランプ「前」の位置。 */
@@ -53,7 +55,12 @@ export function stepBallPhysicsDetailed(ball: BallState): BallPhysicsStep {
   }
 
   const grounded = (height as number) <= (ZERO_FIXED as number);
-  let vel: Vec2Fixed = grounded ? vScaleFixed(ball.vel, ROLLING_FRICTION_FIXED) : ball.vel; // 空中は摩擦なし
+  // 転がり摩擦: 低速域 (ROLL_SLOW_SPEED未満) は強い減衰へ切り替える
+  // (24周目サイクル②、離散タッチドリブルの成立条件。ballConstants.ts参照)。
+  const slowSq = fixedMul(ROLL_SLOW_SPEED_FIXED, ROLL_SLOW_SPEED_FIXED) as number;
+  const friction =
+    (dotFixed(ball.vel, ball.vel) as number) < slowSq ? ROLL_SLOW_FRICTION_FIXED : ROLLING_FRICTION_FIXED;
+  let vel: Vec2Fixed = grounded ? vScaleFixed(ball.vel, friction) : ball.vel; // 空中は摩擦なし
 
   // カーブ (続編仕様③): curveTicksLeftが残っている間、毎tick速度ベクトルを入力方向側へ
   // 微小角回転させる (24周目サイクル①で加算方式から変更。理由は ballConstants.ts の
