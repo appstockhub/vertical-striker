@@ -15,9 +15,26 @@ import { TeamId } from '../sim/formations';
  * UI要素(カーソルリング/パスマーカー)はチーム色とも緑のピッチとも被らないシアン/マゼンタに
  * して、「どちらのチームの選手にも埋没しない」ことを優先する。
  */
-export const TEAM_COLORS: Readonly<Record<TeamId, { outfield: number; goalkeeper: number }>> = {
-  [TeamId.A]: { outfield: 0xffb020, goalkeeper: 0xffe0a0 },
-  [TeamId.B]: { outfield: 0x1c3fae, goalkeeper: 0x9fb8f0 },
+export interface TeamKit {
+  /** フィールドプレイヤーのシャツ。チームの識別はこの色が担う (最も面積が大きい)。 */
+  readonly outfield: number;
+  /** GKのシャツ (チーム色の高明度版。フィールドプレイヤーと即座に区別するため)。 */
+  readonly goalkeeper: number;
+  /** 短パン。シャツと明度差をつけて「上下が別物」と読めるようにする。 */
+  readonly shorts: number;
+  /** ソックス。両チームとも芝の緑に対して最も目立つ白系で、脚の動き＝走行を読ませる。 */
+  readonly socks: number;
+}
+
+/**
+ * 23周目 (1-C) にユニフォームの色分けを4パーツへ拡張した。それ以前はシャツだけがチーム色で、
+ * 短パンは両チーム共通の濃灰・ソックスは白の固定値だった。「サッカーの装いに見えない」という
+ * 指摘に対し、シャツ/短パン/ソックス/スパイクが**それぞれ別色の帯**として読めるようにする。
+ * 短パンをチームごとに変えたのは、遠方で上半身が潰れても下半身でチームを判別できるようにする保険。
+ */
+export const TEAM_COLORS: Readonly<Record<TeamId, TeamKit>> = {
+  [TeamId.A]: { outfield: 0xffb020, goalkeeper: 0xffe0a0, shorts: 0x23283a, socks: 0xf4f6fa },
+  [TeamId.B]: { outfield: 0x1c3fae, goalkeeper: 0x9fb8f0, shorts: 0xf4f6fa, socks: 0x1c3fae },
 };
 
 export const BALL_COLOR = 0xffffff;
