@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
-import { STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
+import { toFixed, ZERO_FIXED } from '../../src/core/fixed';
 import { Direction8 } from '../../src/input/types';
 import { createInitialState, TeamId, type GameState } from '../../src/sim/state';
 import { humanCarrying, humanCarryingWithReceiver, runScript, step } from './harness';
@@ -61,9 +60,11 @@ describe('シナリオ: スルーパス', () => {
       step(1, Direction8.None, { Y: true }),
       step(3, Direction8.None),
     ]);
-    // Yを押した直後にボールがパス速度で飛び出していること (しきい値はキック定数由来 =
-    // テンポ変更に自動追従する。パス初速はKICK_MIN_CHARGE時の強キック速度)
-    const passSpeed = toFloat(STRONG_KICK_SPEED_FIXED) * 0.8;
+    // Yを押した直後にボールがパス速度で飛び出していること。しきい値はパス帯の下限
+    // (PASS_MIN 1.4) とドリブルタッチ (1.2) の間 = 「パスが出た」ことだけを弁別する
+    // (サイクル③でパスは applyAimedPass の 1.4〜2.2 帯になり、強キック基準では
+    //  近距離パスを取りこぼすため)。
+    const passSpeed = 1.3;
     const maxSpeed = Math.max(...trace.map((t) => t.ballSpeed));
     expect(maxSpeed, 'Yを押してもパスが出ない').toBeGreaterThan(passSpeed);
   });
@@ -75,7 +76,7 @@ describe('シナリオ: スルーパス', () => {
       step(1, Direction8.None, { Y: true }),
       step(3, Direction8.None),
     ]);
-    const passSpeed = toFloat(STRONG_KICK_SPEED_FIXED) * 0.8;
+    const passSpeed = 1.3; // 同上 (パス帯下限1.4とドリブルタッチ1.2の間)
     const maxSpeed = Math.max(...trace.map((t) => t.ballSpeed));
     expect(maxSpeed, '無菌状態ですらYパスが出ない').toBeGreaterThan(passSpeed);
   });

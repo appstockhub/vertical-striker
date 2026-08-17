@@ -272,7 +272,8 @@ export const PASS_GROUND_MAX_DIST_FIXED: Fixed = toFixed(90);
 /** グラウンダーの距離→速度係数: v = dist×0.03 → 摩擦0.968での総転がり距離 ≈ dist×0.91+残速。 */
 export const PASS_GROUND_SPEED_PER_DIST_FIXED: Fixed = toFixed(0.03);
 export const PASS_MIN_SPEED_FIXED: Fixed = toFixed(1.4);
-export const PASS_MAX_GROUND_SPEED_FIXED: Fixed = toFixed(2.4);
+// 批評役FAIL指摘(サイクル③)で 2.4→2.2: P1ゲート上限 (9身長/s = 2.2px/tick) に揃えた。
+export const PASS_MAX_GROUND_SPEED_FIXED: Fixed = toFixed(2.2);
 /** ロビングの水平速度 (px/tick)。強キック(2.7)よりやや遅い「柔らかい」弾道。 */
 export const PASS_LOB_SPEED_FIXED: Fixed = toFixed(2.2);
 export const PASS_MIN_LOB_Z_FIXED: Fixed = toFixed(0.7);

