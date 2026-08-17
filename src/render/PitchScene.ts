@@ -23,6 +23,19 @@ import {
   resolveSpriteDirection,
   type AnimFrame,
 } from './playerSprites';
+import {
+  buildGbPlayerSpriteTextures,
+  gbPlayerSpriteKey,
+  isGbSpriteModeEnabled,
+  preloadGbPlayerSprites,
+} from './gbPlayerSprites';
+import { PauseOverlay } from '../input/pauseOverlay';
+import {
+  DEFAULT_AUDIO_SETTINGS,
+  loadAudioSettings,
+  saveAudioSettings,
+  type AudioSettings,
+} from './audioSettings';
 import { createProjection, DEFAULT_PROJECTION_CONFIG, type Projection } from './projection';
 import { drawPitchPerspective } from './pitchPerspective';
 import { CIRCLE_RADIUS, pitchLineSegments } from './pitchGeometry';
@@ -143,6 +156,11 @@ export class PitchScene extends Phaser.Scene {
   // プール化された表示オブジェクト (生成は build*() で1回だけ、render() では更新のみ)。
   private playerSprites: Phaser.GameObjects.Sprite[] = [];
   private playerSpriteKeys: string[] = [];
+  /**
+   * 【試作】`?sprites=gb` で CC0 の外部スプライト素材へ切り替える (V-2、gbPlayerSprites.ts)。
+   * 既定は false = 従来どおり手続き生成。素材の本採用が決まるまでの一時的な比較用スイッチ。
+   */
+  private readonly useGbSprites = isGbSpriteModeEnabled();
   /** 選手の頭上に浮く背番号ラベル (原作の表示を踏襲)。 */
   private playerNumbers: Phaser.GameObjects.Text[] = [];
   /** 選手の接地影 (疑似3Dでは足元の影があるだけで「立っている」感が出る)。 */
@@ -198,9 +216,20 @@ export class PitchScene extends Phaser.Scene {
 
   private matchStarted = false;
   private matchSetupOverlay: MatchSetupOverlay | null = null;
+  /** 試合中のポーズ画面 (Esc)。23周目に新設。 */
+  private pauseOverlay: PauseOverlay | null = null;
+  private audioSettings: AudioSettings = DEFAULT_AUDIO_SETTINGS;
 
   constructor() {
     super('Pitch');
+  }
+
+  /**
+   * 通常は画像アセットを一切持たない (すべて手続き生成) ので preload は空。
+   * `?sprites=gb` の試作時だけ、CC0のスプライトシートを1枚読む。
+   */
+  preload(): void {
+    if (this.useGbSprites) preloadGbPlayerSprites(this);
   }
 
   create(): void {
@@ -214,9 +243,20 @@ export class PitchScene extends Phaser.Scene {
     this.replayRecorder.start(DETERMINISTIC_SEED, this.state.difficulty, this.state.offsideEnabled);
     this.soundPlayer = new SoundPlayer();
 
+    // 音の設定は localStorage から復元し、両プレイヤーへ即座に適用する。
+    this.audioSettings = loadAudioSettings();
+    this.applyAudioSettings(this.audioSettings);
+
+    const pauseEl = document.getElementById('pause-overlay');
+    if (pauseEl) {
+      this.pauseOverlay = new PauseOverlay(pauseEl, this.audioSettings);
+      this.pauseOverlay.onSettingsChange((settings) => this.updateAudioSettings(settings));
+    }
+
     const setupEl = document.getElementById('match-setup-overlay');
     if (setupEl) {
-      this.matchSetupOverlay = new MatchSetupOverlay(setupEl);
+      this.matchSetupOverlay = new MatchSetupOverlay(setupEl, this.audioSettings);
+      this.matchSetupOverlay.onAudioSettingsChange((settings) => this.updateAudioSettings(settings));
       this.matchSetupOverlay.waitForStart(({ difficulty, offsideEnabled }) => {
         this.state = createInitialState(DETERMINISTIC_SEED, { difficulty, offsideEnabled });
         this.replayRecorder.start(DETERMINISTIC_SEED, difficulty, offsideEnabled);
@@ -234,10 +274,21 @@ export class PitchScene extends Phaser.Scene {
     window.addEventListener('keydown', (e: KeyboardEvent) => {
       this.soundPlayer.ensureStarted();
       this.musicPlayer.ensureStarted();
+
+      // ★ポーズ (Esc)★ 試合中だけ効く。ポーズ中は fixedUpdate を止め、音の設定を変えられる。
+      if (e.code === 'Escape' && this.matchStarted) {
+        this.pauseOverlay?.setVisible(!this.pauseOverlay.isVisible());
+        return;
+      }
+      // ポーズ中のキーはまずオーバーレイへ渡す (BGM/効果音の切り替えを横取りさせる)。
+      if (this.pauseOverlay?.handleKey(e.key)) return;
+      if (this.pauseOverlay?.isVisible()) return;
+
+      // ★一括ミュート (M キー)★ BGM/効果音の個別設定 (Esc のポーズ画面) とは別に、
+      // 「今すぐ全部黙らせる」ための即効トグルとして残す。
       if (e.code === 'KeyM') {
         const muted = !this.soundPlayer.isMuted();
-        this.soundPlayer.setMuted(muted);
-        this.musicPlayer.setMuted(muted);
+        this.updateAudioSettings({ bgm: !muted, sfx: !muted });
       }
       // ★練習モード (P キー)★ CPUがボールに一切関与しなくなる。動き・ボタンの効きを
       // 相手に邪魔されず確認するための開発/練習用トグル (GameState.cpuHandsOff 参照)。
@@ -288,6 +339,7 @@ export class PitchScene extends Phaser.Scene {
 
     this.buildBallTexture();
     buildPlayerSpriteTextures(this);
+    if (this.useGbSprites) buildGbPlayerSpriteTextures(this);
     this.buildBackground();
     this.buildEntities();
     this.buildRadar();
@@ -315,6 +367,13 @@ export class PitchScene extends Phaser.Scene {
         }
         return this.state.frame;
       },
+      /**
+       * 焼き込み済みテクスチャの原画を取り出す (読み取り専用)。
+       * 23周目に追加。スプライトの造形を「試合の1コマを切り出して拡大する」のではなく、
+       * 8方向×4フレームを一覧にして直接検証するために要る (人体比率・走行モーションの確認)。
+       */
+      getTextureImage: (key: string): CanvasImageSource | null =>
+        this.textures.exists(key) ? (this.textures.get(key).getSourceImage() as CanvasImageSource) : null,
       /**
        * E2E検証専用: 指定のワールドYを注視点として1フレーム描画し、canvasに絵を焼く。
        * 16周目の疑似3D化に伴い、引数の意味が「カメラのスクロールY」から
@@ -393,6 +452,14 @@ export class PitchScene extends Phaser.Scene {
     g.fillPoints(points, true);
   }
 
+  /** 選手1人ぶんのテクスチャキー。試作スイッチ (`?sprites=gb`) の唯一の分岐点。 */
+  private spriteKeyFor(player: PlayerState, frame: AnimFrame): string {
+    const dir = resolveSpriteDirection(player.facing);
+    return this.useGbSprites
+      ? gbPlayerSpriteKey(player.team, player.isGoalkeeper, dir, frame)
+      : playerSpriteKey(player.team, player.isGoalkeeper, dir, frame);
+  }
+
   private buildEntities(): void {
     this.ballShadow = this.add.ellipse(0, 0, 16, 7, 0x000000, 0.35);
 
@@ -401,7 +468,7 @@ export class PitchScene extends Phaser.Scene {
       const shadow = this.add.ellipse(0, 0, 20, 8, 0x000000, 0.3);
       this.playerShadows.push(shadow);
 
-      const key = playerSpriteKey(player.team, player.isGoalkeeper, resolveSpriteDirection(player.facing), 0);
+      const key = this.spriteKeyFor(player, 0);
       const sprite = this.add.sprite(0, 0, key);
       // 疑似3D: スプライトの足元を接地点に合わせる。
       sprite.setOrigin(0.5, 1);
@@ -678,8 +745,24 @@ export class PitchScene extends Phaser.Scene {
     return { ...this.state, drillMode: false, cpuHandsOff: false };
   }
 
+  /** BGM/効果音の設定を両プレイヤーへ反映する (保存はしない)。 */
+  private applyAudioSettings(settings: AudioSettings): void {
+    this.musicPlayer.setMuted(!settings.bgm);
+    this.soundPlayer.setMuted(!settings.sfx);
+  }
+
+  /** 設定変更の唯一の入口: 反映 + 保存 + 2つのオーバーレイの表示同期。 */
+  private updateAudioSettings(settings: AudioSettings): void {
+    this.audioSettings = settings;
+    this.applyAudioSettings(settings);
+    saveAudioSettings(settings);
+    this.pauseOverlay?.setSettings(settings);
+  }
+
   private fixedUpdate(): void {
     if (!this.matchStarted) return;
+    // ポーズ中は試合を進めない (描画は続くので画面は止まって見える)。
+    if (this.pauseOverlay?.isVisible()) return;
     const inputs = this.cachedInputs;
     if (!inputs) return;
     if (Object.values(inputs.buttons).some(Boolean)) {
@@ -794,7 +877,7 @@ export class PitchScene extends Phaser.Scene {
         speed >= WALK_ANIM_MIN_SPEED
           ? ((Math.floor(this.state.frame / WALK_ANIM_TICKS_PER_FRAME) % ANIM_FRAME_COUNT) as AnimFrame)
           : 1;
-      const key = playerSpriteKey(player.team, player.isGoalkeeper, resolveSpriteDirection(player.facing), animFrame);
+      const key = this.spriteKeyFor(player, animFrame);
       if (this.playerSpriteKeys[index] !== key) {
         this.playerSpriteKeys[index] = key;
         sprite.setTexture(key);
