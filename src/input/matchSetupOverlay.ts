@@ -1,4 +1,5 @@
 import type { Difficulty } from '../sim/state';
+import { DEFAULT_AUDIO_SETTINGS, type AudioSettings } from '../render/audioSettings';
 
 /**
  * 試合前設定UI (Phase 3 マイルストーン0、最小限)。DOM要素 (#match-setup-overlay) に描画する、
@@ -24,11 +25,14 @@ export class MatchSetupOverlay {
   private readonly el: HTMLElement;
   private difficulty: Difficulty = 'medium';
   private offsideEnabled = true;
+  private audio: AudioSettings = DEFAULT_AUDIO_SETTINGS;
   private started = false;
   private onStart: ((result: MatchSetupResult) => void) | null = null;
+  private onAudioChange: ((settings: AudioSettings) => void) | null = null;
 
-  constructor(el: HTMLElement) {
+  constructor(el: HTMLElement, audio: AudioSettings = DEFAULT_AUDIO_SETTINGS) {
     this.el = el;
+    this.audio = audio;
     this.render();
     window.addEventListener('keydown', this.onKeyDown);
   }
@@ -36,6 +40,11 @@ export class MatchSetupOverlay {
   /** 開始確定時に一度だけ呼ばれる。呼び出し側はここでGameStateを作り直す。 */
   waitForStart(onStart: (result: MatchSetupResult) => void): void {
     this.onStart = onStart;
+  }
+
+  /** BGM/効果音の切り替え時に呼ばれる (試合開始前でも即座に反映させるため)。 */
+  onAudioSettingsChange(handler: (settings: AudioSettings) => void): void {
+    this.onAudioChange = handler;
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
@@ -54,6 +63,16 @@ export class MatchSetupOverlay {
       case 'o':
       case 'O':
         this.offsideEnabled = !this.offsideEnabled;
+        break;
+      case 'b':
+      case 'B':
+        this.audio = { ...this.audio, bgm: !this.audio.bgm };
+        this.onAudioChange?.(this.audio);
+        break;
+      case 's':
+      case 'S':
+        this.audio = { ...this.audio, sfx: !this.audio.sfx };
+        this.onAudioChange?.(this.audio);
         break;
       case 'Enter':
       case ' ':
@@ -84,8 +103,15 @@ export class MatchSetupOverlay {
       <div class="row">
         <span class="btn${this.offsideEnabled ? ' selected' : ''}"><span class="glyph">O</span>オフサイド ${this.offsideEnabled ? 'ON' : 'OFF'}</span>
       </div>
+      <div class="row">
+        <span class="btn${this.audio.bgm ? ' selected' : ''}"><span class="glyph">B</span>BGM ${this.audio.bgm ? 'ON' : 'OFF'}</span>
+        <span class="btn${this.audio.sfx ? ' selected' : ''}"><span class="glyph">S</span>効果音 ${this.audio.sfx ? 'ON' : 'OFF'}</span>
+      </div>
       <div class="row hint">
         <span class="btn"><span class="glyph">⏎</span>開始</span>
+      </div>
+      <div class="row hint">
+        <span>試合中は Esc でポーズ (音の設定はそこでも変えられます)</span>
       </div>
     `;
   }

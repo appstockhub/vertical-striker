@@ -205,10 +205,63 @@ export class SoundPlayer {
     this.burst(ctx, out, { duration, gain: 0.05, type: 'bandpass', freq: 2600, q: 3, attack: 0.02 });
   }
 
+  /**
+   * 観客の歓声 (23周目に追加)。
+   *
+   * 旧実装のゴール音は 1.4秒のバンドパスノイズ1本だけで、「歓声」というより
+   * 短いノイズのパフだった。本物の歓声は (a) 数秒かけて盛り上がって長く尾を引く
+   * (b) 複数の帯域が重なる (c) 一定ではなく波打つ、の3点で成り立つので、
+   * 帯域の違う3層 + ゆっくりしたLFOのうねりで作る。
+   *
+   * ※実録の観客音 (CC0) を差し替える計画があるが、Freesoundからの取得は
+   *   アカウント作成が要るため未実施。候補は docs/asset-credits.md 参照。
+   *   合成版はそれまでの繋ぎであり、差し替え時はこの関数を置き換えればよい。
+   */
+  private crowdRoar(ctx: Ctx, out: AudioNode, duration: number, peak: number): void {
+    if (!this.noiseBuffer) return;
+    const t = ctx.currentTime;
+    // 低い「ゴォ」/ 中域の「ワァ」/ 高域の口笛混じり、の3層。
+    const layers: Array<{ freq: number; q: number; gain: number }> = [
+      { freq: 320, q: 0.5, gain: 0.36 },
+      { freq: 950, q: 0.7, gain: 0.3 },
+      { freq: 2400, q: 1.1, gain: 0.12 },
+    ];
+    for (const layer of layers) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noiseBuffer;
+      src.loop = true; // ノイズバッファは1秒しかないので繰り返して尺を稼ぐ
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = layer.freq;
+      filter.Q.value = layer.q;
+
+      // うねり: フィルタ周波数を 0.7Hz 前後でゆっくり揺らす (「波」に聞こえる要因)
+      const lfo = ctx.createOscillator();
+      lfo.type = 'sine';
+      lfo.frequency.value = 0.55 + layer.q * 0.2;
+      const lfoGain = ctx.createGain();
+      lfoGain.gain.value = layer.freq * 0.16;
+      lfo.connect(lfoGain).connect(filter.frequency);
+
+      const gain = ctx.createGain();
+      const target = layer.gain * peak;
+      const attack = duration * 0.22;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(target, t + attack);
+      gain.gain.setValueAtTime(target, t + duration * 0.42);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + duration);
+
+      src.connect(filter).connect(gain).connect(out);
+      src.start(t);
+      lfo.start(t);
+      src.stop(t + duration + 0.05);
+      lfo.stop(t + duration + 0.05);
+    }
+  }
+
   /** ゴール: 歓声のうねり + 上昇する和音。 */
   private goal(ctx: Ctx, out: AudioNode): void {
-    // 歓声 (帯域ノイズをゆっくり立ち上げて長く減衰)
-    this.burst(ctx, out, { duration: 1.4, gain: 0.3, type: 'bandpass', freq: 900, q: 0.6, attack: 0.22 });
+    this.crowdRoar(ctx, out, 3.4, 1);
     // 明るい和音を少しずつずらして鳴らす (ファンファーレ感)
     const chord: Array<[number, number]> = [
       [523.25, 0], // C5
