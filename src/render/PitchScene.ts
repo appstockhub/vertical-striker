@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { FixedTimestepLoop } from '../core/loop';
-import { createInitialState, type GameState, type PlayerState } from '../sim/state';
+import { createInitialState, TacklePhase, type GameState, type PlayerState } from '../sim/state';
 import { simulate } from '../sim/update';
 import { InputManager } from '../input/inputManager';
 import { Direction8, type InputFrame } from '../input/types';
@@ -916,6 +916,25 @@ export class PitchScene extends Phaser.Scene {
         this.playerSpriteKeys[index] = key;
         sprite.setTexture(key);
       }
+
+      // ★スライディングの可視化 (不具合#5、24周目サイクル③)★ simのtacklePhaseは以前から
+      // 正常に発動していたが、描画がどこも読んでおらず「出ていないように見える」だけだった。
+      // 足元原点(origin 0.5,1)を軸にスプライトを倒し込む: 構え(Windup)で傾き始め、
+      // 判定中(Active)は地面すれすれ、隙(Recovery)で起き上がりかけの角度に戻る。
+      // 倒す向きはスライド方向のx成分に合わせる (真上/真下スライドは右倒しに固定)。
+      const slideSign =
+        player.tackleDirection === Direction8.Left ||
+        player.tackleDirection === Direction8.UpLeft ||
+        player.tackleDirection === Direction8.DownLeft
+          ? -1
+          : 1;
+      const slideAngle =
+        player.tacklePhase === TacklePhase.Active
+          ? 82
+          : player.tacklePhase === TacklePhase.Windup || player.tacklePhase === TacklePhase.Recovery
+            ? 34
+            : 0;
+      sprite.setAngle(slideSign * slideAngle);
     });
   }
 

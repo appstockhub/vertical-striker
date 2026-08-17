@@ -14,7 +14,7 @@ import {
 } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, emptyButtonState, type ButtonState } from '../input/types';
-import type { BallState, GameState, PendingKick, PlayerState, SetPieceLock } from './state';
+import type { BallState, GameState, PendingKick, PlayerState, SetPieceLock, WindupKick } from './state';
 import { PLAYERS_PER_TEAM, TacklePhase, TeamId } from './state';
 import { attackingIsUpward, getHomePosition, opponentOf, type Half } from './formations';
 import { PITCH_HEIGHT } from '../config/pitch';
@@ -27,6 +27,8 @@ import {
   DRIBBLE_TOUCH_SPEED_FIXED,
   DRIBBLE_TOUCH_COOLDOWN_TICKS,
   KICK_INPUT_BUFFER_TICKS,
+  KICK_WINDUP_TICKS,
+  LIFT_INPUT_WINDOW_TICKS,
   KICK_MIN_CHARGE_FRAMES,
   KICK_REACH_FIXED,
   LONG_FEED_CHARGE_FRAMES,
@@ -34,7 +36,7 @@ import {
   LONG_DRIBBLE_PLAYER_SPEED_FIXED,
 } from './ballConstants';
 import { applyDribbleTouch, computeKickDribbleState, isInDribbleContact } from './dribble';
-import { applyKick, updateKickCharge } from './kick';
+import { applyAimedPass, applyKick, updateKickCharge } from './kick';
 import { clampToPitchBounds, stepBallPhysicsDetailed } from './ballPhysics';
 import { findTouchPriorityPlayer } from './ballTouch';
 import { computeChaseRightIndices, computeNonControlledDirection } from './teamAI';
@@ -543,6 +545,19 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       ? { ...state.pendingKick, ticksLeft: state.pendingKick.ticksLeft - 1 }
       : null;
 
+  // ★Bキックのワインドアップ (不具合#4、24周目サイクル③)★ 残りtickを減らし、0になった
+  // tickに下のキック処理で発射する。この間の+字入力はカーブとして吸収する (毎tick上書き =
+  // 最後に入れた方向が勝つ)。操作選手が入れ替わったら破棄 (別人の足からは発射しない)。
+  let windupKick: WindupKick | null = state.windupKick ?? null;
+  let windupFires = false;
+  if (windupKick && controlledPlayerIndex !== state.controlledPlayerIndex) {
+    windupKick = null;
+  } else if (windupKick) {
+    const curveDirection = inputs.direction !== Direction8.None ? inputs.direction : windupKick.curveDirection;
+    windupKick = { ...windupKick, ticksLeft: windupKick.ticksLeft - 1, curveDirection };
+    if (windupKick.ticksLeft <= 0) windupFires = true;
+  }
+
   // セットプレー再開ロックの持ち越し。経過tickを数え、上限を超えたら自動解除する
   // (人間側の再開でプレイヤーが操作しないと試合が永久停止するため。SET_PIECE_LOCK_MAX_TICKS
   //  のコメント参照 — 実際に1試合の74%がロック中という試合停止バグが観測されている)。
@@ -758,8 +773,8 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
           ball = offsideRestartBall(offsidePlayer);
           lastTouchTeam = opponentOf(controlledPlayer.team);
         } else {
-          const passDirection = quantizeToDirection8(vSub(receiver.pos, controlledPlayer.pos), ZERO_FIXED);
-          ball = applyKick(ball, controlledPlayer, KICK_MIN_CHARGE_FRAMES, passDirection);
+          // 実照準パス (不具合#2-③、24周目サイクル③): 8方向量子化をやめ受け手へ正確に送る。
+          ball = applyAimedPass(ball, controlledPlayer.pos, receiver.pos);
           lastTouchTeam = controlledPlayer.team;
         }
         oneTwoFired = true;
@@ -848,12 +863,46 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
           ball = offsideRestartBall(offsidePlayer);
           lastTouchTeam = opponentOf(controlledPlayer.team);
         } else {
-          // 確定パス: 溜め不要・低い弾道の速いグラウンダー。方向だけ受け手に向けて上書きする
-          // (既存applyKickの速度軸/弾道軸をそのまま再利用、新しい物理モデルは作らない)。
-          const passDirection = quantizeToDirection8(vSub(receiver.pos, controlledPlayer.pos), ZERO_FIXED);
-          ball = applyKick(ball, controlledPlayer, KICK_MIN_CHARGE_FRAMES, passDirection);
+          // 確定パス (不具合#2-③、24周目サイクル③): 受け手への実照準。近距離はグラウンダー、
+          // 遠距離は浮き球で確実に届かせる (applyAimedPass、kick.ts)。
+          ball = applyAimedPass(ball, controlledPlayer.pos, receiver.pos);
         }
       }
+    }
+
+    // ★ワインドアップの発射 (不具合#4、24周目サイクル③)★ 発射tickに射程・保持・ロックを
+    // 再確認し、満たしていれば蹴る (満たさなければ空振り=静かに破棄)。カーブ入力が
+    // あればこのキックに直接掛かる (ワインドアップ中の+字 = 続編公式の「同時押し」)。
+    if (windupFires && controlledPlayer && windupKick) {
+      const holderAtFire = touchPriorityIndex !== null ? state.players[touchPriorityIndex] : null;
+      const reachSq = fixedMul(KICK_REACH_FIXED, KICK_REACH_FIXED) as number;
+      const canFire =
+        (distSqFixed(controlledPlayer.pos, ball.pos) as number) <= reachSq &&
+        !(holderAtFire && holderAtFire.team !== controlledPlayer.team) &&
+        !(setPieceLock && setPieceLock.restartTeam !== controlledPlayer.team);
+      if (canFire) {
+        const offside = offsideActive
+          ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
+          : { offside: false, offsidePlayerIndex: null };
+        const offsidePlayer =
+          offside.offside && offside.offsidePlayerIndex !== null ? state.players[offside.offsidePlayerIndex] : undefined;
+        if (offsidePlayer) {
+          ball = offsideRestartBall(offsidePlayer);
+          lastTouchTeam = opponentOf(controlledPlayer.team);
+        } else {
+          ball = applyKick(ball, controlledPlayer, windupKick.chargeFrames, windupKick.direction, {
+            L: windupKick.shiftL,
+            R: windupKick.shiftR,
+          });
+          const curve = windupKick.curveDirection;
+          ball =
+            curve !== Direction8.None
+              ? { ...ball, curveDirection: curve, curveTicksLeft: CURVE_DURATION_TICKS, curveWindowTicksLeft: 0 }
+              : { ...ball, curveDirection: Direction8.None, curveTicksLeft: 0, curveWindowTicksLeft: CURVE_INPUT_WINDOW_TICKS };
+          lastTouchTeam = controlledPlayer.team;
+        }
+      }
+      windupKick = null;
     }
 
     if (controlledPlayer) {
@@ -882,8 +931,11 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         // 従来どおり touch-priority 保持中のみに限定する。
         const isReversal = isOppositeDirection8(inputs.direction, controlledPlayer.facing);
         const bEdge = inputs.buttons.B && !state.prevButtons.B;
+        // ★不具合#1の修正 (24周目サイクル③)★ 同一tickの反転+Bだけでなく、反転後の
+        // 受付ウィンドウ (前tickまでに開いた liftWindowTicksLeft) 内のBも受け付ける。
+        const liftWindowOpen = isReversal || (controlledPlayer.liftWindowTicksLeft ?? 0) > 0;
         const liftEligible =
-          isCarryingBall && isReversal && bEdge && (ball.height as number) <= (DRIBBLE_TOUCH_MAX_HEIGHT_FIXED as number);
+          isCarryingBall && liftWindowOpen && bEdge && (ball.height as number) <= (DRIBBLE_TOUCH_MAX_HEIGHT_FIXED as number);
 
         if (liftEligible) {
           // 水平速度は「新しい入力方向へ通常のドリブルタッチと同じ速さ」にしておく
@@ -947,26 +999,18 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
             };
             lastTouchTeam = controlledPlayer.team;
           } else if (charge.releasedFrames > 0) {
-            const offside = offsideActive
-              ? checkOffside(controlledPlayerIndex, controlledPlayer.team, state.players, half)
-              : { offside: false, offsidePlayerIndex: null };
-            const offsidePlayer =
-              offside.offside && offside.offsidePlayerIndex !== null ? state.players[offside.offsidePlayerIndex] : undefined;
-            if (offsidePlayer) {
-              ball = offsideRestartBall(offsidePlayer);
-              lastTouchTeam = opponentOf(controlledPlayer.team);
-            } else {
-              ball = applyKick(ball, controlledPlayer, charge.releasedFrames, inputs.direction, inputs.buttons);
-              // カーブ(続編仕様③)の入力受付ウィンドウを新たに開く。このキック自体には
-              // カーブは掛からない(このtickの方向入力は既にショットの照準に使われているため)。
-              // 直前に別のカーブが効いていた場合はこの新しいキックで上書きする。
-              ball = {
-                ...ball,
-                curveDirection: Direction8.None,
-                curveTicksLeft: 0,
-                curveWindowTicksLeft: CURVE_INPUT_WINDOW_TICKS,
-              };
-            }
+            // ★不具合#4 (24周目サイクル③)★ B解放で即時発射せず、ワインドアップを開始する。
+            // 発射は KICK_WINDUP_TICKS 後 (下の windupFires ブロック)。この間の+字入力が
+            // カーブになる (続編公式「キックボタンを押した瞬間に同時に+字」の忠実な近似)。
+            // オフサイド判定も発射の瞬間に行う (競技規則: ボールが蹴られた瞬間で判定)。
+            windupKick = {
+              ticksLeft: KICK_WINDUP_TICKS,
+              direction: inputs.direction,
+              shiftL: inputs.buttons.L,
+              shiftR: inputs.buttons.R,
+              chargeFrames: charge.releasedFrames,
+              curveDirection: Direction8.None,
+            };
           }
         }
         tackleAdvance = advanceTacklePhase(controlledPlayer, false, Direction8.None);
@@ -1077,6 +1121,12 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       if (offsidePlayer) {
         ball = offsideRestartBall(offsidePlayer);
         lastTouchTeam = opponentOf(carrier.team);
+      } else if (cpuDecision.action === 'pass' && cpuDecision.passTargetIndex !== null) {
+        // CPUのパスも人間のカーソルパスと同じ実照準 (不具合#2-③と同根の量子化ミスを解消)。
+        const cpuReceiver = state.players[cpuDecision.passTargetIndex];
+        ball = cpuReceiver
+          ? applyAimedPass(ball, carrier.pos, cpuReceiver.pos)
+          : applyKick(ball, carrier, KICK_MIN_CHARGE_FRAMES, cpuDecision.direction);
       } else {
         ball = applyKick(ball, carrier, KICK_MIN_CHARGE_FRAMES, cpuDecision.direction);
       }
@@ -1326,12 +1376,18 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     }
 
     if (index !== controlledPlayerIndex) return moved;
+    // リフティング受付ウィンドウ (不具合#1、24周目サイクル③): 反転入力を検出したtickに開き、
+    // 以後毎tick減衰する。判定は移動前のfacing (player.facing) に対して行う。
+    const nextLiftWindow = isOppositeDirection8(playerInputs.direction, player.facing)
+      ? LIFT_INPUT_WINDOW_TICKS
+      : Math.max(0, (player.liftWindowTicksLeft ?? 0) - 1);
     return {
       ...moved,
       kickChargeFrames: nextControlledKickChargeFrames,
       tacklePhase: tackleAdvance.tacklePhase,
       tackleFrames: tackleAdvance.tackleFrames,
       tackleDirection: tackleAdvance.tackleDirection,
+      liftWindowTicksLeft: nextLiftWindow,
     };
   });
 
@@ -1368,6 +1424,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
     cpuHandsOff: state.cpuHandsOff,
     drillMode: state.drillMode,
     pendingKick,
+    windupKick,
     restartGraceTeam,
     restartGraceTicksLeft,
     lastEvent,

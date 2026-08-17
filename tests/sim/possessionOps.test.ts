@@ -7,6 +7,7 @@ import { findTouchPriorityPlayer } from '../../src/sim/ballTouch';
 import {
   HIGH_ARC_SPEED_MULTIPLIER_FIXED,
   KICK_MAX_CHARGE_FRAMES,
+  KICK_WINDUP_TICKS,
   STRONG_KICK_SPEED_FIXED,
   WEAK_KICK_SPEED_FIXED,
 } from '../../src/sim/ballConstants';
@@ -84,10 +85,15 @@ function run(s: GameState, n: number, i: ReturnType<typeof inp>): GameState {
 }
 
 /**
- * チャージキックを「解放したちょうどそのtick」の状態で返す。
+ * チャージキックを「発射されたちょうどそのtick」の状態で返す。
+ *
+ * ワインドアップ追従 (不具合#4、24周目サイクル③): B解放は即時発射ではなく、
+ * KICK_WINDUP_TICKS 後に発射される。速度/zVelは発射tickで測る。
+ * 待ち中は方向を入れない (待ち中の+字はカーブとして発射キックに掛かる仕様のため、
+ * 「キック方向そのもの」の計測を汚さない)。
  *
  * 注意: ボールが足元にある間はドリブルタッチでも速度が出るため、「速度がしきい値を超えた
- * 最初のtick」で測ると溜め中のドリブルを誤検出する。解放tickを明示的に指定して測ること。
+ * 最初のtick」で測ると溜め中のドリブルを誤検出する。発射tickを明示的に指定して測ること。
  */
 function chargeKick(
   s: GameState,
@@ -97,7 +103,8 @@ function chargeKick(
 ): { state: GameState; speed: number; zVel: number } {
   let cur = s;
   for (let k = 0; k < hold; k++) cur = simulate(cur, inp(aim, { ...extra, B: true }));
-  cur = simulate(cur, inp(aim, extra)); // Bを離す = このtickでキックが出る
+  cur = simulate(cur, inp(aim, extra)); // Bを離す = ワインドアップ開始
+  for (let k = 0; k < KICK_WINDUP_TICKS; k++) cur = simulate(cur, inp(Direction8.None, extra));
   return { state: cur, speed: speed(cur), zVel: toFloat(cur.ball.zVel) };
 }
 
@@ -201,8 +208,8 @@ describe('段階2: ボール保持時の操作プローブ', () => {
     const longH = maxHeight(long.state);
     // 3D の総合的な「蹴りの強さ」= 水平速度と垂直初速の合成。
     const power = (r: { speed: number; zVel: number }) => Math.hypot(r.speed, r.zVel);
-    report('B 短押し(2f)', short.speed > KICK_FIRED, `解放tickで発動 水平${short.speed.toFixed(2)} zVel${short.zVel.toFixed(2)} 最高到達${shortH.toFixed(1)}px 総合${power(short).toFixed(2)}`);
-    report('B 長押し(最大)', long.speed > CHARGED_FIRED, `解放tickで発動 水平${long.speed.toFixed(2)} zVel${long.zVel.toFixed(2)} 最高到達${longH.toFixed(1)}px 総合${power(long).toFixed(2)}`);
+    report('B 短押し(2f)', short.speed > KICK_FIRED, `解放+${KICK_WINDUP_TICKS}tickの発射tickで発動 水平${short.speed.toFixed(2)} zVel${short.zVel.toFixed(2)} 最高到達${shortH.toFixed(1)}px 総合${power(short).toFixed(2)}`);
+    report('B 長押し(最大)', long.speed > CHARGED_FIRED, `解放+${KICK_WINDUP_TICKS}tickの発射tickで発動 水平${long.speed.toFixed(2)} zVel${long.zVel.toFixed(2)} 最高到達${longH.toFixed(1)}px 総合${power(long).toFixed(2)}`);
     expect(short.speed).toBeGreaterThan(KICK_FIRED);
     expect(long.speed).toBeGreaterThan(CHARGED_FIRED);
     // 弾道は有意に変わること (溜めの意味がある) — ここはゲート。

@@ -150,21 +150,19 @@ export const KICK_Z_VEL_MIN_FIXED: Fixed = toFixed(0);
 export const KICK_Z_VEL_MAX_FIXED: Fixed = toFixed(6.0 * BALL_TEMPO);
 
 /**
- * 最大溜め時に水平速度へ掛かる係数 (仮値)。高弾道シュートほど球速が落ちる表現。
+ * 最大溜め時に水平速度へ掛かる係数。
  *
- * ★段階2の計測で判明した仕様との乖離 (未修正、ユーザー判断待ち)★
- * 実測すると、溜めると「総合的な蹴りの強さ」(水平と垂直初速の合成) が 8.82 → 8.46 と
- * **下がる**。CLAUDE.md 続編仕様「基本的に押す長さがそのままボールの強さになる」とは
- * 逆方向で、溜める動機が薄い (tests/sim/possessionOps.test.ts の K1 が report-only で記録)。
- *
- * 0.85 へ上げると総合 9.52 となり仕様どおりになるが、それだけで観戦シミュレーターの
- * 正常性基準が3件落ちることを確認済み (プレス距離 155px>150 / サポートラン 0.897<0.9 /
- * 振動1人)。いずれも閾値際の揺らぎ = このプロジェクトで繰り返し起きている
- * 「物理変更が試合全体のバタフライ効果で既存AIの潜在ケースに当たる」パターン。
- * これはAIバランスの再調整と不可分なので、段階2 (操作感) では動かさず、
- * 段階4 (AI調整) で寸法変更とあわせて扱う。docs/stage2-possession-ops.md 参照。
+ * ★24周目サイクル③ (K2ゲートの修正) で 0.7 → 1.4★
+ * 旧値0.7は「溜めるほど総合的な蹴りの強さ (水平+垂直の合成初速) が下がる」という
+ * 続編公式「押す長さがそのままボールの強さになる」と逆行する欠陥だった (争点1)。
+ * 1.4 で最大溜めの合成初速はタップの約1.55倍 (K2ゲートの許容 1.5〜2.0)。
+ * 原作実測のキック初速分布 (p25 6.9 → p75 16.0 身長/s ≈ 2.3倍の広がり) とも整合し、
+ * 「強く蹴ると高い弾道になりバーを越えることがある」リスク (公式記述) は
+ * zVel が溜めに比例して上がる既存の弾道軸がそのまま担う。
+ * AIしきい値との連動: この変更はサイクル③末の統計ゲート全数スイープとセットで入れた
+ * (単独で入れると正常性基準が閾値際で落ちることを20周目に実測済みのため)。
  */
-export const HIGH_ARC_SPEED_MULTIPLIER_FIXED: Fixed = toFixed(0.7);
+export const HIGH_ARC_SPEED_MULTIPLIER_FIXED: Fixed = toFixed(1.4);
 
 /** 重力加速度 (px/tick^2, 仮値)。 */
 export const GRAVITY_FIXED: Fixed = toFixed(0.35 * BALL_TEMPO_SQ);
@@ -246,3 +244,36 @@ export const CURVE_ROTATION_INTERVAL = 4;
  * ではなく「軽く浮かせて保持を継続する」動作であることを表現した。
  */
 export const LIFT_Z_VEL_FIXED: Fixed = toFixed(3.0 * BALL_TEMPO);
+
+/**
+ * ★24周目サイクル③ (不具合#1の修正)★ リフティングの入力受付ウィンドウ (tick)。
+ * 旧実装は「反転入力」と「Bのedge」を**同一tick**に要求しており、人間には
+ * 「方向転換とまったく同じフレームにBを押し始める」ことが事実上不可能だった
+ * (機械入力のテストだけが通る空振り仕様)。反転を検出したらこのウィンドウを開き、
+ * その間のB押下をリフティングとして受け付ける。9tick=150ms は人間の「直後」の近似
+ * (公式の「ターンアクション中にキックボタン」の実装置き換え)。
+ */
+export const LIFT_INPUT_WINDOW_TICKS = 9;
+
+/**
+ * ★24周目サイクル③ (不具合#4)★ Bキックのワインドアップ長 (tick)。
+ * 原作実測 K1 (静止→最高速の proxy): p25≈3.2tick・med≈8tick → 範囲3〜8の中の
+ * 承認済み設計値 6 を採用。B解放からこのtick数の後にボールが発射され、その間の
+ * +字入力がカーブになる (state.ts WindupKick 参照)。
+ */
+export const KICK_WINDUP_TICKS = 6;
+
+/**
+ * ★24周目サイクル③ (不具合#2 / P1)★ カーソルパス (applyAimedPass、kick.ts) の物理定数。
+ * 原作実測 P1: パス初速の下側は p25 6.9身長/s ≈ 1.7px/tick。グラウンダーの帯を
+ * 1.4〜2.4px/tick に置き、届かない遠距離 (>90px) は浮き球で通す。
+ */
+export const PASS_GROUND_MAX_DIST_FIXED: Fixed = toFixed(90);
+/** グラウンダーの距離→速度係数: v = dist×0.03 → 摩擦0.968での総転がり距離 ≈ dist×0.91+残速。 */
+export const PASS_GROUND_SPEED_PER_DIST_FIXED: Fixed = toFixed(0.03);
+export const PASS_MIN_SPEED_FIXED: Fixed = toFixed(1.4);
+export const PASS_MAX_GROUND_SPEED_FIXED: Fixed = toFixed(2.4);
+/** ロビングの水平速度 (px/tick)。強キック(2.7)よりやや遅い「柔らかい」弾道。 */
+export const PASS_LOB_SPEED_FIXED: Fixed = toFixed(2.2);
+export const PASS_MIN_LOB_Z_FIXED: Fixed = toFixed(0.7);
+export const PASS_MAX_LOB_Z_FIXED: Fixed = toFixed(2.2);

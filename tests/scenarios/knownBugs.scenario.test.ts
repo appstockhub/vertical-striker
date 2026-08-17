@@ -13,13 +13,12 @@ import { humanCarrying, inputs, runScript, step } from './harness';
 
 describe('シナリオ: 既知不具合の再現', () => {
   /**
-   * ★不具合#1★ リフティングは「facingと逆方向の入力」+「Bのedge」を同一tickに要求しており、
-   * 人間には「反転入力と同フレームにBを押し始める」ことは事実上不可能。
-   * 人間の実際の操作は「反転してから数フレーム以内にB」なので、反転検出で
-   * turnActionTicksLeft を数フレーム立て、その間のB押下を受け付けるべき (承認済み設計)。
-   * 修正後に it へ昇格すること。
+   * ★不具合#1 → サイクル③で解消し昇格★ 旧実装は「facingと逆方向の入力」+「Bのedge」を
+   * 同一tickに要求しており、人間には事実上不可能だった。反転検出で受付ウィンドウ
+   * (PlayerState.liftWindowTicksLeft、LIFT_INPUT_WINDOW_TICKS=9) を開き、その間の
+   * B押下でリフティングが発動するように修正した (承認済み設計どおり)。
    */
-  it.fails('S-B1: 反転の2tick後のBでリフティングが出る (人間に可能なタイミング) [不具合#1]', () => {
+  it('S-B1: 反転の2tick後のBでリフティングが出る (人間に可能なタイミング) [不具合#1→③で解消]', () => {
     const { trace } = runScript(humanCarrying(undefined, 240, 1200), [
       step(60, Direction8.Up), // 上へドリブル (facing=Up が確定)
       step(2, Direction8.Down), // 反転 (ターンアクション)
@@ -42,26 +41,26 @@ describe('シナリオ: 既知不具合の再現', () => {
   });
 
   /**
-   * ★不具合#4★ キックにモーション(ワインドアップ)が無く、ボールが即時発射される。
-   * parity-targets.md K1: 原作は静止→最高速に3〜8tick (承認済み設計は6tickワインドアップ、
-   * その間がカーブ受付窓)。修正後に it へ昇格すること。
+   * ★不具合#4 → サイクル③で解消し昇格★ B解放は KICK_WINDUP_TICKS(6) のワインドアップの
+   * 後に発射されるようになった (GameState.windupKick)。原作実測 K1 (静止→最高速 3〜8tick)
+   * の範囲内。ワインドアップ中の+字がカーブ受付窓を兼ねる (続編公式の「同時押し」の近似)。
    */
-  it.fails('S-B4: Bキックは押してから3tick以上のワインドアップの後に発射される [不具合#4]', () => {
+  it('S-B4: Bキックは押してから3tick以上のワインドアップの後に発射される [不具合#4→③で解消]', () => {
     let state = humanCarrying(undefined, 240, 1200);
     state = simulate(state, inputs(Direction8.Up, { B: true }));
-    state = simulate(state, inputs(Direction8.Up)); // 解放 = キック開始
+    state = simulate(state, inputs(Direction8.Up)); // 解放 = ワインドアップ開始
     // 解放tickで即座に飛んでいたらワインドアップが無い
     const speedAtRelease = Math.hypot(
       (state.ball.vel.x as number) / 256,
       (state.ball.vel.y as number) / 256,
     );
     expect(speedAtRelease, 'キックが即時発射 (ワインドアップ無し)').toBeLessThan(1);
-    // その後3〜10tickの間に発射される
+    // その後3〜10tickの間に発射される (しきい値はテンポ追従の相対値: 強キック2.7の8割)
     let fired = -1;
     for (let i = 0; i < 10; i++) {
-      state = simulate(state, inputs(Direction8.Up));
+      state = simulate(state, inputs(Direction8.None));
       const sp = Math.hypot((state.ball.vel.x as number) / 256, (state.ball.vel.y as number) / 256);
-      if (sp > 5) {
+      if (sp > 2.1) {
         fired = i + 1;
         break;
       }
@@ -87,17 +86,16 @@ describe('シナリオ: 既知不具合の再現', () => {
   });
 
   /**
-   * ★不具合#5 (描画側)★ 描画/音/HUDのどこも tacklePhase を読んでおらず、スライディングが
-   * 「見えない」。描画層が tacklePhase を参照するようになったら it へ昇格すること。
-   * (シナリオテストから実描画は起動できないため、配線の静的検査で代替する。
-   *  画としての正しさはサイクル③のキャプチャ+批評役判定で確認する)
+   * ★不具合#5 (描画側) → サイクル③で解消し昇格★ スプライトの倒れ込み表現
+   * (PitchScene が TacklePhase を読んで setAngle) と効果音 (SoundEventId.Slide) を配線した。
+   * この静的検査は「配線が二度と切れない」ための回帰ゲート。画としての正しさは
+   * キャプチャ+批評役判定で確認済み。
    */
-  it.fails('S-B5b: 描画層がtacklePhaseを読んでいる (スライディングの可視化配線) [不具合#5 描画側]', () => {
-    // 注: PitchScene.ts のデバッグHUD文字列 (`tkl:`) は「見える化」に当たらないため対象外。
-    // スプライト(ポーズ)か効果音のどちらかが tacklePhase / スライドを扱っていること。
-    const spritesSrc = readFileSync('src/render/playerSprites.ts', 'utf-8');
+  it('S-B5b: 描画層がtacklePhaseを読んでいる (スライディングの可視化配線) [不具合#5→③で解消]', () => {
+    const sceneSrc = readFileSync('src/render/PitchScene.ts', 'utf-8');
     const soundSrc = readFileSync('src/render/SoundPlayer.ts', 'utf-8');
-    const wired = /tacklePhase|slide|Slide/.test(spritesSrc) || /tackle|slide|Slide/i.test(soundSrc);
-    expect(wired, 'スプライトも効果音もスライディングを表現していない (見えない・聞こえない)').toBe(true);
+    const eventsSrc = readFileSync('src/render/soundEvents.ts', 'utf-8');
+    expect(/TacklePhase\.Active/.test(sceneSrc), 'スプライトの倒れ込み表現 (TacklePhase参照) が消えた').toBe(true);
+    expect(/slide/i.test(soundSrc) && /Slide/.test(eventsSrc), 'スライディング効果音の配線が消えた').toBe(true);
   });
 });

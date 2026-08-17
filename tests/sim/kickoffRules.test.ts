@@ -6,7 +6,7 @@ import { simulate } from '../../src/sim/update';
 import { PITCH_HEIGHT, PITCH_WIDTH } from '../../src/config/pitch';
 import { depthFromOwnGoal } from '../../src/sim/formations';
 import { KICKOFF_CIRCLE_RADIUS_FIXED } from '../../src/sim/boundsConstants';
-import { STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
+import { KICK_WINDUP_TICKS, STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
 
 /**
  * ★キックオフのルール (サッカー競技規則 第8条) の実装テスト★
@@ -123,10 +123,11 @@ describe('キックオフ: 得点されたチームがボールを持って再�
     const kickerIndex = state.controlledPlayerIndex;
     expect(distToBall(state, kickerIndex), 'カーソルがキッカーに乗っていない').toBeLessThan(20);
 
-    // Bを溜めて離す = キックオフを蹴る
+    // Bを溜めて離す = キックオフを蹴る。発射はワインドアップ (KICK_WINDUP_TICKS) 後 (不具合#4)。
     state = simulate(state, { direction: Direction8.Up, buttons: { ...emptyButtonState(), B: true } });
     state = simulate(state, { direction: Direction8.Up, buttons: { ...emptyButtonState(), B: true } });
-    state = simulate(state, { direction: Direction8.Up, buttons: emptyButtonState() });
+    state = simulate(state, { direction: Direction8.Up, buttons: emptyButtonState() }); // 解放
+    for (let i = 0; i < KICK_WINDUP_TICKS; i++) state = simulate(state, NO_INPUT); // 発射tickまで待つ
 
     const speed = Math.hypot(toFloat(state.ball.vel.x), toFloat(state.ball.vel.y));
     // テンポ変更追従: 強キック 9.0→2.7px/tick。裸の3ではなく定数からの相対値で判定する。

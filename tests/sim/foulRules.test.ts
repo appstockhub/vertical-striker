@@ -90,7 +90,10 @@ describe('ファウル判定 (競技規則 第12条)', () => {
     // テンポ変更追従: 旧配置 (blocker=918、保持者の先) は、溜め34tickの間に保持者が
     // ボールをクリアして blocker がボールを追って逃げてしまい、接触が二度と起きなくなった。
     // 進路上 (890) に置けば Active 序盤に確実に接触する (実測: 46tick目にFK成立)。
-    const state = slideAndSettle(slidingSetup(240, 900, 890));
+    // サイクル③追従: 実照準パス導入でCPUキャリアが溜め中に確実にパスで逃げるようになった。
+    // このテストの対象は「人間のスライドの接触判定」なので、練習モード (cpuHandsOff、
+    // CPUのボール関与を止める既存機構) で相手を静止させて判定だけを検証する。
+    const state = slideAndSettle({ ...slidingSetup(240, 900, 890), cpuHandsOff: true });
     expect(state.setPieceLock?.kind, 'ファウルが取られない').toBe('freeKick');
     expect(state.setPieceLock?.restartTeam, 'FKが反則した側に与えられている').toBe(TeamId.B);
   });
@@ -125,7 +128,7 @@ describe('ファウル判定 (競技規則 第12条)', () => {
 describe('フリーキック (競技規則 第13条)', () => {
   it('ファウル地点にボールが置かれ、キッカーがそこに立つ', () => {
     // blocker=890: スライドの進路上に置いてファウルを成立させる (上記ファウル判定テスト参照)。
-    const state = slideAndSettle(slidingSetup(240, 900, 890));
+    const state = slideAndSettle({ ...slidingSetup(240, 900, 890), cpuHandsOff: true });
     expect(state.setPieceLock?.kind).toBe('freeKick');
     const restartTeam = state.setPieceLock!.restartTeam;
     let nearest = Infinity;
@@ -139,7 +142,7 @@ describe('フリーキック (競技規則 第13条)', () => {
   });
 
   it('相手は規定距離まで離される (9.15m相当)', () => {
-    const state = slideAndSettle(slidingSetup(240, 900, 890));
+    const state = slideAndSettle({ ...slidingSetup(240, 900, 890), cpuHandsOff: true });
     const restartTeam = state.setPieceLock!.restartTeam;
     const limit = toFloat(SET_PIECE_EXCLUSION_RADIUS_FIXED);
     state.players.forEach((p, i) => {

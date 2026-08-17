@@ -44,21 +44,23 @@ describe('シナリオ: B溜めと弾道', () => {
   });
 
   /**
-   * ★parity-targets.md K2 のゲート★ 続編仕様「押す長さがそのままボールの強さになる」。
-   * 原作実測: キック初速の分布はp25 6.9 → p75 16.0身長/s と広い = 強いキックは弱いキックの
-   * 約2倍出ている。現行実装は最大溜めで総合パワーが**下がる** (8.82→8.46、仕様と逆)。
-   * テンポ再調整(サイクル①)で直したら it へ昇格すること。
-   * 注: 20周目に「これを直すと観戦シミュレーターの正常性基準が3件落ちる」ことを実測済み。
-   * AIしきい値の連動調整とセットで直すこと (CRITIC.md 原則5の「不可分な場合」に該当)。
+   * ★parity-targets.md K2 のゲート → サイクル③で解消し昇格★ 続編公式「押す長さがそのまま
+   * ボールの強さになる」。HIGH_ARC_SPEED_MULTIPLIER 0.7→1.4 で最大溜めの合成初速は
+   * タップの約1.55倍になった (原作実測の分布 p25 6.9〜p75 16.0身長/s ≈2.3倍と整合)。
+   * 統計ゲートへの影響はサイクル③末の全数スイープで吸収した (20周目の教訓どおりセットで実施)。
    */
-  it.fails('S-K4: 最大溜めの蹴りの強さ(水平+垂直の合成初速)はタップの1.5〜2.0倍 [K2ゲート]', () => {
+  it('S-K4: 最大溜めの蹴りの強さ(水平+垂直の合成初速)はタップの1.5〜2.0倍 [K2ゲート→③で解消]', () => {
     const speedOf = (chargeTicks: number) => {
       const { trace } = kickWithCharge(chargeTicks);
-      // 解放tick直後の合成初速 (水平 + 上昇率で近似)
-      const release = trace[chargeTicks]!; // 解放tickの観測
-      const next = trace[chargeTicks + 1]!;
-      const vz = Math.max(0, next.ballHeight - release.ballHeight);
-      return Math.hypot(next.ballSpeed, vz);
+      // サイクル③追従: 発射は解放から KICK_WINDUP_TICKS(6) 後 (不具合#4)。発射直後の
+      // 合成初速 (水平 + 上昇率で近似) を発射tick近傍の最大値で取る。
+      const fire = chargeTicks + 6;
+      let best = 0;
+      for (let i = fire; i < Math.min(fire + 4, trace.length - 1); i++) {
+        const vz = Math.max(0, trace[i + 1]!.ballHeight - trace[i]!.ballHeight);
+        best = Math.max(best, Math.hypot(trace[i + 1]!.ballSpeed, vz));
+      }
+      return best;
     };
     const ratio = speedOf(30) / speedOf(2);
     expect(ratio, '溜めても蹴りが強くならない').toBeGreaterThanOrEqual(1.5);

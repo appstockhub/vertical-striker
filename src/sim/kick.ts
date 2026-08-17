@@ -1,17 +1,77 @@
-import { clampFixed, fixedDiv, fixedMul, lerpFixed, toFixed, vScaleFixed, ZERO_FIXED } from '../core/fixed';
-import type { Fixed } from '../core/types';
+import { clampFixed, fixedDiv, fixedMul, fixedSub, lerpFixed, toFixed, vScaleFixed, ZERO_FIXED } from '../core/fixed';
+import type { Fixed, Vec2Fixed } from '../core/types';
 import { Direction8, LogicalButton, type ButtonState } from '../input/types';
 import type { BallState, PlayerState } from './state';
 import { DIRECTION_VECTORS } from './constants';
 import {
+  GRAVITY_FIXED,
   HIGH_ARC_SPEED_MULTIPLIER_FIXED,
   KICK_MAX_CHARGE_FRAMES,
   KICK_MIN_CHARGE_FRAMES,
   KICK_Z_VEL_MAX_FIXED,
   KICK_Z_VEL_MIN_FIXED,
+  PASS_GROUND_MAX_DIST_FIXED,
+  PASS_GROUND_SPEED_PER_DIST_FIXED,
+  PASS_LOB_SPEED_FIXED,
+  PASS_MAX_GROUND_SPEED_FIXED,
+  PASS_MAX_LOB_Z_FIXED,
+  PASS_MIN_LOB_Z_FIXED,
+  PASS_MIN_SPEED_FIXED,
   STRONG_KICK_SPEED_FIXED,
   WEAK_KICK_SPEED_FIXED,
 } from './ballConstants';
+
+/**
+ * ★24周目サイクル③ (不具合#2-③ / P1)★ カーソルパス・CPUパスの実照準キック。
+ *
+ * 旧実装は「受け手の方向を8方向に量子化 + 強キック固定速度(2.7)」で、
+ *   - 量子化で最大22.5°ずれて受け手の脇へ逸れる
+ *   - グラウンダーの到達距離(約82px)を超える受け手には物理的に届かない
+ * という二重の理由で「Yパスが誰にも通らない」不具合の一因だった。
+ *
+ * 新実装:
+ *   - 方向は受け手への正確なベクトル (照準スキルの対象はB/シフトキック。カーソルパスは
+ *     「確実だが受け手を選べない」自動補足なので、量子化しない方が仕様に忠実)
+ *   - 近距離 (PASS_GROUND_MAX_DIST 以下) は距離連動の速度のグラウンダー
+ *     (到達時に少し勢いが残る係数。P1ゲートの帯 1.2〜2.2px/tick に概ね収まる)
+ *   - 遠距離は浮き球で通す (空中は転がり摩擦が無いため、zVel を距離から逆算して
+ *     受け手の足元に落とす。「浮かせて前線へ送る」原作のロビングの物理)
+ *
+ * 決定論: Math.sqrt はIEEE754で正確に丸められるため使用可 (dribble.ts の前例と同じ)。
+ * 戻りは必ず floor して Fixed の整数不変条件を守る。
+ */
+export function applyAimedPass(ball: BallState, from: Vec2Fixed, targetPos: Vec2Fixed): BallState {
+  const dx = fixedSub(targetPos.x, from.x);
+  const dy = fixedSub(targetPos.y, from.y);
+  const distSq = (fixedMul(dx, dx) as number) + (fixedMul(dy, dy) as number);
+  if (distSq <= 0) return ball;
+  const dist = Math.floor(Math.sqrt(distSq * 256)) as Fixed; // Fixedスケールの距離 (px*256)
+
+  if ((dist as number) <= (PASS_GROUND_MAX_DIST_FIXED as number)) {
+    // グラウンダー: v = clamp(dist × 係数)。摩擦0.968で「距離の約1.2倍」転がる係数なので、
+    // 受け手に届いた時点で拾いやすい残速になる。
+    const speed = clampFixed(
+      fixedMul(dist, PASS_GROUND_SPEED_PER_DIST_FIXED),
+      PASS_MIN_SPEED_FIXED,
+      PASS_MAX_GROUND_SPEED_FIXED,
+    );
+    const vel = { x: fixedDiv(fixedMul(dx, speed), dist), y: fixedDiv(fixedMul(dy, speed), dist) };
+    return { ...ball, vel, zVel: ZERO_FIXED };
+  }
+
+  // ロビング: 水平速度は固定 (PASS_LOB_SPEED)、滞空時間 t=2·zVel/g で dist を飛ぶよう
+  // zVel = dist·g/(2·vx) を逆算する。
+  const vel = {
+    x: fixedDiv(fixedMul(dx, PASS_LOB_SPEED_FIXED), dist),
+    y: fixedDiv(fixedMul(dy, PASS_LOB_SPEED_FIXED), dist),
+  };
+  const zVel = clampFixed(
+    fixedDiv(fixedMul(dist, GRAVITY_FIXED), fixedMul(toFixed(2), PASS_LOB_SPEED_FIXED)),
+    PASS_MIN_LOB_Z_FIXED,
+    PASS_MAX_LOB_Z_FIXED,
+  );
+  return { ...ball, vel, zVel };
+}
 
 export interface KickChargeResult {
   readonly nextFrames: number;

@@ -52,12 +52,14 @@ describe('applyKick', () => {
     expect(next.vel.y).toBe(ZERO_FIXED);
   });
 
-  it('max-charge press + direction -> high loft, reduced horizontal speed', () => {
+  it('max-charge press + direction -> high loft AND faster horizontal speed (K2: 溜め=強化)', () => {
+    // ★24周目サイクル③ (K2ゲート) で契約変更★ 続編公式「押す長さがそのままボールの強さ」。
+    // 旧契約 (溜めるほど水平速度が落ちる) は仕様と逆行する欠陥だった。
     const next = applyKick(ball(), player(), KICK_MAX_CHARGE_FRAMES, Direction8.Right);
     expect(next.zVel).toBe(KICK_Z_VEL_MAX_FIXED);
     const expectedSpeed = toFloat(STRONG_KICK_SPEED_FIXED) * toFloat(HIGH_ARC_SPEED_MULTIPLIER_FIXED);
     expect(toFloat(next.vel.x)).toBeCloseTo(expectedSpeed, 1);
-    expect(toFloat(next.vel.x)).toBeLessThan(toFloat(STRONG_KICK_SPEED_FIXED));
+    expect(toFloat(next.vel.x)).toBeGreaterThan(toFloat(STRONG_KICK_SPEED_FIXED));
   });
 
   it('release with no direction -> weak kick using player.facing', () => {
@@ -66,15 +68,16 @@ describe('applyKick', () => {
     expect(toFloat(next.vel.x)).not.toBeCloseTo(toFloat(STRONG_KICK_SPEED_FIXED), 1);
   });
 
-  it('trajectory ratio increases zVel and decreases horizontal speed monotonically with charge', () => {
+  it('trajectory ratio increases both zVel and horizontal speed monotonically with charge (K2)', () => {
     const short = applyKick(ball(), player(), 1, Direction8.Right);
     const mid = applyKick(ball(), player(), Math.round(KICK_MAX_CHARGE_FRAMES / 2), Direction8.Right);
     const long = applyKick(ball(), player(), KICK_MAX_CHARGE_FRAMES, Direction8.Right);
 
     expect(toFloat(short.zVel)).toBeLessThanOrEqual(toFloat(mid.zVel));
     expect(toFloat(mid.zVel)).toBeLessThanOrEqual(toFloat(long.zVel));
-    expect(toFloat(short.vel.x)).toBeGreaterThanOrEqual(toFloat(mid.vel.x));
-    expect(toFloat(mid.vel.x)).toBeGreaterThanOrEqual(toFloat(long.vel.x));
+    // K2 (24周目サイクル③): 溜めるほど水平速度も上がる (押す長さ=強さ)
+    expect(toFloat(short.vel.x)).toBeLessThanOrEqual(toFloat(mid.vel.x));
+    expect(toFloat(mid.vel.x)).toBeLessThanOrEqual(toFloat(long.vel.x));
   });
 });
 

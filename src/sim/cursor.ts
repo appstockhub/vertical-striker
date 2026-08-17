@@ -1,5 +1,5 @@
 import { distSqFixed, dotFixed, fixedMul, fixedSub } from '../core/fixed';
-import type { Fixed, Vec2Fixed } from '../core/types';
+import type { Vec2Fixed } from '../core/types';
 import type { ButtonState } from '../input/types';
 import { DIRECTION_VECTORS } from './constants';
 import { TacklePhase, type PlayerState } from './state';
@@ -8,9 +8,9 @@ import {
   CURSOR_HYSTERESIS_MARGIN_SQ_FIXED,
   CURSOR_SWITCH_DOMINANCE_DEN,
   CURSOR_SWITCH_DOMINANCE_NUM,
-  PASS_CONE_COS_THRESHOLD_SQ_FIXED,
   PASS_MAX_RANGE_SQ_FIXED,
 } from './cursorConstants';
+import { KICK_REACH_FIXED } from './ballConstants';
 
 /** Team A の outfield 選手の index 範囲 (0=GK は自動追従/手動切替の対象外)。 */
 const TEAM_A_OUTFIELD_START = 1;
@@ -67,13 +67,25 @@ export function selectPassTarget(
   const carrier = players[carrierIndex];
   if (!carrier) return null;
   const facingVec = DIRECTION_VECTORS[carrier.facing];
-  const facingMagSq = dotFixed(facingVec, facingVec);
 
   const teamStart = carrier.team * PLAYERS_PER_TEAM;
   const teamEnd = teamStart + PLAYERS_PER_TEAM;
 
-  let bestIndex: number | null = null;
-  let bestDistSq = 0;
+  /**
+   * ★24周目サイクル③ (不具合#2-①の修正)★ 2段選抜へ再設計。
+   *
+   * 旧実装は「facing前方±60°かつ220px以内」のみで、実戦の陣形ではフォーメーションの
+   * 選手間隔 (150〜250px) とコーンの狭さが重なって**該当者ゼロ = Yが完全に無反応**が
+   * 頻発していた (実プレイ報告)。原作のカーソルパスは常に「↓」マーカーの受け手が居る
+   * 仕様 (居ないのは仕様上ありえない) なので、候補は必ず出す:
+   *   1段目: 前方半平面 (facingとの内積 > 0) かつ射程内で最近傍 — 攻撃の流れを優先
+   *   2段目: 該当者が居なければ、向きを問わず射程内の最近傍 — 逃げ道 (バックパス) を保証
+   * GKは候補に含める (原作にバックパス制限は無い)。
+   */
+  let bestForward: number | null = null;
+  let bestForwardDistSq = 0;
+  let bestAny: number | null = null;
+  let bestAnyDistSq = 0;
   for (let i = teamStart; i < teamEnd; i++) {
     if (i === carrierIndex) continue;
     // CPUの相互パスピンポン防止用の除外 (cpuAttackAI.ts から指定される。人間のカーソルパスでは未使用)
@@ -85,19 +97,17 @@ export function selectPassTarget(
     const distSq = dotFixed(toReceiver, toReceiver) as number; // |toReceiver|^2
     if (distSq > (PASS_MAX_RANGE_SQ_FIXED as number)) continue;
 
+    if (bestAny === null || distSq < bestAnyDistSq) {
+      bestAny = i;
+      bestAnyDistSq = distSq;
+    }
     const dot = dotFixed(facingVec, toReceiver);
-    if ((dot as number) <= 0) continue; // 背後は除外
-
-    const dotSq = fixedMul(dot, dot);
-    const threshold = fixedMul(fixedMul(PASS_CONE_COS_THRESHOLD_SQ_FIXED, facingMagSq), distSq as Fixed);
-    if ((dotSq as number) < (threshold as number)) continue; // コーン角外
-
-    if (bestIndex === null || distSq < bestDistSq) {
-      bestIndex = i;
-      bestDistSq = distSq;
+    if ((dot as number) > 0 && (bestForward === null || distSq < bestForwardDistSq)) {
+      bestForward = i;
+      bestForwardDistSq = distSq;
     }
   }
-  return bestIndex;
+  return bestForward ?? bestAny;
 }
 
 export interface CursorResolution {
@@ -158,6 +168,20 @@ export function resolveCursor(
       }
     }
     return { controlledPlayerIndex: carrierIndex, passTriggered: false, passTargetIndex: null };
+  }
+
+  // ★24周目サイクル③ (不具合#2-②の修正)★ ルーズボールでも、操作選手がキック射程
+  // (KICK_REACH=30px) 内ならYパスを発火させる。旧実装はYだけ touch-priority (20px) を
+  // 要求しており、Bキック(30px)より間合いが狭い分「Bは出るのにYは無反応」の帯が
+  // 存在した (離散タッチではボールが最大13px先を転がるため、この帯を頻繁に踏む)。
+  if (touchPriorityIndex === null && currentPlayer && yEdge) {
+    const reachSq = fixedMul(KICK_REACH_FIXED, KICK_REACH_FIXED) as number;
+    if ((distSqFixed(currentPlayer.pos, ballPos) as number) <= reachSq) {
+      const passTarget = selectPassTarget(currentControlledIndex, players);
+      if (passTarget !== null) {
+        return { controlledPlayerIndex: currentControlledIndex, passTriggered: true, passTargetIndex: passTarget };
+      }
+    }
   }
 
   // Team A がボールを保持していない (守備文脈)。

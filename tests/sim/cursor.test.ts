@@ -62,11 +62,22 @@ describe('selectPassTarget', () => {
     expect(selectPassTarget(1, roster)).toBe(2);
   });
 
-  it('excludes teammates behind the carrier', () => {
+  // ★24周目サイクル③ (不具合#2-①) で契約変更★ 「背後は除外」→「前方半平面を優先し、
+  // 前方に誰も居なければ最近傍(背後でも)へフォールバック」。原作のカーソルパスは常に
+  // 受け手が居る仕様のため、候補ゼロ=Y無反応を作らない。
+  it('falls back to a behind teammate when nobody is in front (バックパスの保証)', () => {
     const carrier = makePlayer(0, 0, TeamId.A, 1, { facing: Direction8.Up });
     const behind = makePlayer(0, 50, TeamId.A, 2); // facing=Up (北)なのに南側=背後
     const roster = makeRoster({ 1: carrier, 2: behind });
-    expect(selectPassTarget(1, roster)).toBeNull();
+    expect(selectPassTarget(1, roster)).toBe(2);
+  });
+
+  it('prefers a forward teammate over a nearer behind teammate (前方半平面の優先)', () => {
+    const carrier = makePlayer(0, 0, TeamId.A, 1, { facing: Direction8.Up });
+    const behindNear = makePlayer(0, 30, TeamId.A, 2);
+    const forwardFar = makePlayer(0, -120, TeamId.A, 3);
+    const roster = makeRoster({ 1: carrier, 2: behindNear, 3: forwardFar });
+    expect(selectPassTarget(1, roster)).toBe(3);
   });
 
   it('excludes teammates outside the max range', () => {
@@ -76,12 +87,13 @@ describe('selectPassTarget', () => {
     expect(selectPassTarget(1, roster)).toBeNull();
   });
 
-  it('excludes teammates outside the forward cone even if closer', () => {
+  it('includes near-sideways teammates in the forward half-plane (±60°コーンは廃止)', () => {
+    // 24周目サイクル③: 旧仕様の前方±60°コーンでは実戦の陣形で候補ゼロが頻発した。
+    // 前方半平面 (内積>0) ならほぼ真横でも候補になる。
     const carrier = makePlayer(0, 0, TeamId.A, 1, { facing: Direction8.Up });
-    // ほぼ真横 (コーンの60°半角の外側になるよう大きくx方向にずらす)
     const sideways = makePlayer(150, -20, TeamId.A, 2);
     const roster = makeRoster({ 1: carrier, 2: sideways });
-    expect(selectPassTarget(1, roster)).toBeNull();
+    expect(selectPassTarget(1, roster)).toBe(2);
   });
 
   it('works for Team B carriers too (Phase 3 milestone 6: search range derives from carrier.team)', () => {
@@ -147,15 +159,23 @@ describe('resolveCursor', () => {
   it('★仕様変更★ 守備中のYはカーソルを切り替えない (Yはショルダータックル用に明け渡す)', () => {
     // 旧テストは「Y edgeで最寄り候補へ手動切替」を期待していたが、これはPhase 2の仮実装。
     // 公式説明書では守備時のYはショルダータックルで、ボタンによる手動の選手切替は存在しない
-    // (CLAUDE.md「実装ギャップ」4)。仮実装が残っていたため実プレイで「Yを押しても
-    // チャージが出ず操作対象が飛ぶ」不具合になっていた。切り替わらないことを回帰として固定する。
+    // (CLAUDE.md「実装ギャップ」4)。切り替わらないことを回帰として固定する。
+    // 24周目サイクル③の追記: 続編ボタン表では**ルーズボール時のYはパス**なので、ボールが
+    // キック射程(30px)内ならパスが発火するのが正しい (不具合#2-②)。「カーソルが飛ばない」
+    // ことと「射程外ではパスも出ない」ことをそれぞれ検証する。
     const controlled = makePlayer(0, 0, TeamId.A, 1);
     const nearest = makePlayer(0, 10, TeamId.A, 2);
-    const ballPos = { x: ZERO_FIXED, y: ZERO_FIXED };
     const roster = makeRoster({ 1: controlled, 2: nearest });
-    const result = resolveCursor(roster, 1, null, ballPos, buttonsY, buttonsNone);
-    expect(result.controlledPlayerIndex).toBe(1);
-    expect(result.passTriggered).toBe(false);
+
+    // ボールが足元 (射程内) のルーズボール: カーソルは飛ばず、Yはパスとして発火する
+    const nearBall = resolveCursor(roster, 1, null, { x: ZERO_FIXED, y: ZERO_FIXED }, buttonsY, buttonsNone);
+    expect(nearBall.controlledPlayerIndex).toBe(1);
+    expect(nearBall.passTriggered).toBe(true);
+
+    // ボールが遠い (真の守備文脈): カーソルも飛ばず、パスも出ない
+    const farBall = resolveCursor(roster, 1, null, { x: toFixed(300), y: toFixed(300) }, buttonsY, buttonsNone);
+    expect(farBall.controlledPlayerIndex).toBe(1);
+    expect(farBall.passTriggered).toBe(false);
   });
 
   it('does not switch or pass while the controlled player is charging a kick', () => {

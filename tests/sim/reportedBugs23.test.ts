@@ -5,6 +5,7 @@ import { createInitialState, TeamId, type GameState } from '../../src/sim/state'
 import { simulate } from '../../src/sim/update';
 import {
   HIGH_ARC_SPEED_MULTIPLIER_FIXED,
+  KICK_WINDUP_TICKS,
   KICK_Z_VEL_MAX_FIXED,
   STRONG_KICK_SPEED_FIXED,
 } from '../../src/sim/ballConstants';
@@ -58,11 +59,18 @@ function carryingInFormation(facing: Direction8 = Direction8.Up, offsideEnabled 
   };
 }
 
-/** B を hold tick 押し続けてから離す。離した「次の」tick の状態を返す。 */
+/**
+ * B を hold tick 押し続けてから離し、ワインドアップ (KICK_WINDUP_TICKS) が明けて
+ * キックが発射された tick の状態を返す (不具合#4、24周目サイクル③: B解放は即時発射ではない)。
+ * 待ち中も aim を押し続ける = 実機と同じ操作。aim はキック方向と同じなのでカーブは掛からない
+ * (カーブは速度と平行な入力では発生しない)。
+ */
 function chargeAndRelease(start: GameState, hold: number, aim: Direction8): GameState {
   let s = start;
   for (let i = 0; i < hold; i++) s = simulate(s, inp(aim, { B: true }));
-  return simulate(s, inp(aim));
+  s = simulate(s, inp(aim)); // 離す = ワインドアップ開始
+  for (let i = 0; i < KICK_WINDUP_TICKS; i++) s = simulate(s, inp(aim));
+  return s;
 }
 
 describe('23周目 実機報告の再現', () => {
@@ -107,10 +115,11 @@ describe('23周目 実機報告の再現', () => {
       }
       expect(dribblingPeak).toBeGreaterThan(0.5); // 前提: 実際に転がっている
 
-      // 走ったまま B を30tick溜めて離す
+      // 走ったまま B を30tick溜めて離す。発射はワインドアップ (KICK_WINDUP_TICKS) 後 (不具合#4)。
       for (let i = 0; i < 30; i++) s = simulate(s, inp(Direction8.Up, { B: true }));
       const chargeAtRelease = s.players[s.controlledPlayerIndex]!.kickChargeFrames;
-      s = simulate(s, inp(Direction8.Up));
+      s = simulate(s, inp(Direction8.Up)); // 離す = ワインドアップ開始
+      for (let i = 0; i < KICK_WINDUP_TICKS; i++) s = simulate(s, inp(Direction8.Up));
 
       expect(chargeAtRelease).toBeGreaterThan(20);
       expect(ballSpeed(s)).toBeGreaterThan(CHARGED_FIRED);
@@ -120,7 +129,8 @@ describe('23周目 実機報告の再現', () => {
       let s = carryingInFormation();
       for (let i = 0; i < 30; i++) s = simulate(s, inp(Direction8.Up));
       for (let i = 0; i < 30; i++) s = simulate(s, inp(Direction8.Up, { B: true }));
-      s = simulate(s, inp(Direction8.Up));
+      s = simulate(s, inp(Direction8.Up)); // 離す = ワインドアップ開始 (不具合#4)
+      for (let i = 0; i < KICK_WINDUP_TICKS; i++) s = simulate(s, inp(Direction8.Up));
       let maxHeight = 0;
       for (let i = 0; i < 80; i++) {
         s = simulate(s, inp(Direction8.None));
@@ -133,7 +143,8 @@ describe('23周目 実機報告の再現', () => {
       let s = carryingInFormation(Direction8.Up, true);
       for (let i = 0; i < 30; i++) s = simulate(s, inp(Direction8.Up));
       for (let i = 0; i < 30; i++) s = simulate(s, inp(Direction8.Up, { B: true }));
-      s = simulate(s, inp(Direction8.Up));
+      s = simulate(s, inp(Direction8.Up)); // 離す = ワインドアップ開始 (不具合#4)
+      for (let i = 0; i < KICK_WINDUP_TICKS; i++) s = simulate(s, inp(Direction8.Up));
       expect(s.setPieceLock?.kind ?? null).toBeNull();
       expect(ballSpeed(s)).toBeGreaterThan(CHARGED_FIRED);
     });

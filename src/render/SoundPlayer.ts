@@ -29,6 +29,7 @@ const MIN_INTERVAL_MS: Readonly<Record<SoundEventId, number>> = {
   [SoundEventId.FullTimeWhistle]: 800,
   [SoundEventId.RestartWhistle]: 250,
   [SoundEventId.GkCatch]: 120,
+  [SoundEventId.Slide]: 250,
 };
 
 type Ctx = AudioContext;
@@ -96,6 +97,9 @@ export class SoundPlayer {
         break;
       case SoundEventId.Goal:
         this.goal(ctx, master);
+        break;
+      case SoundEventId.Slide:
+        this.slide(ctx, master);
         break;
     }
   }
@@ -170,6 +174,12 @@ export class SoundPlayer {
   private catchThud(ctx: Ctx, out: AudioNode): void {
     this.tone(ctx, out, { type: 'sine', f0: 150, f1: 55, duration: 0.14, gain: 0.4 });
     this.burst(ctx, out, { duration: 0.07, gain: 0.14, type: 'lowpass', freq: 700 });
+  }
+
+  /** スライディング (不具合#5): 芝を滑る「シャーッ」というノイズのスウィッシュ。 */
+  private slide(ctx: Ctx, out: AudioNode): void {
+    this.burst(ctx, out, { duration: 0.28, gain: 0.2, type: 'bandpass', freq: 900, q: 0.6 });
+    this.burst(ctx, out, { duration: 0.2, gain: 0.1, type: 'highpass', freq: 2400 });
   }
 
   /** 笛: 2つの近接した高音 + ゆらぎ (実際のホイッスルのビートを模す)。 */

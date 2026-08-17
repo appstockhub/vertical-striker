@@ -32,10 +32,9 @@ describe('パリティ・プローブ (原作実測との対比値)', () => {
   });
 
   it('T2: キック初速が 9〜14 身長/s (原作 lateral med 11.2)', () => {
-    let state = humanCarrying(undefined, 240, 1400);
-    const { finalState } = { finalState: state };
-    let s = finalState;
-    s = runScript(s, [step(1, Direction8.Up, { B: true }), step(1, Direction8.Up)]).finalState;
+    // サイクル③追従: Bキックは解放から KICK_WINDUP_TICKS(6) 後に発射される (不具合#4)。
+    let s = humanCarrying(undefined, 240, 1400);
+    s = runScript(s, [step(1, Direction8.Up, { B: true }), step(1 + 6, Direction8.Up)]).finalState;
     const speed = Math.hypot(toFloat(s.ball.vel.x), toFloat(s.ball.vel.y));
     const heightsPerSec = toHeightsPerSec(speed);
     console.log(`[parity] T2 kick speed: ${speed.toFixed(3)} px/tick = ${heightsPerSec.toFixed(2)} 身長/s`);
@@ -50,7 +49,7 @@ describe('パリティ・プローブ (原作実測との対比値)', () => {
     const walkPxPerTick =
       Math.abs(span[0]!.ballY - span[span.length - 1]!.ballY) / (span.length - 1);
     let s = humanCarrying(undefined, 240, 1400);
-    s = runScript(s, [step(1, Direction8.Up, { B: true }), step(1, Direction8.Up)]).finalState;
+    s = runScript(s, [step(1, Direction8.Up, { B: true }), step(1 + 6, Direction8.Up)]).finalState;
     const kick = Math.hypot(toFloat(s.ball.vel.x), toFloat(s.ball.vel.y));
     const ratio = kick / walkPxPerTick;
     console.log(`[parity] T3 kick/run ratio: ${ratio.toFixed(2)}`);
@@ -108,10 +107,10 @@ describe('パリティ・プローブ (原作実測との対比値)', () => {
     let s = humanCarrying(undefined, 240, 1400);
     const result = runScript(s, [
       step(1, Direction8.Up, { B: true }),
-      step(1, Direction8.Up),
+      step(1 + 6, Direction8.Up), // サイクル③: ワインドアップぶん待つ
       step(40, Direction8.None),
     ]);
-    const speeds = result.trace.slice(4, 40).map((t) => t.ballSpeed).filter((v) => v > 0.2);
+    const speeds = result.trace.slice(10, 46).map((t) => t.ballSpeed).filter((v) => v > 0.2);
     const ratios: number[] = [];
     for (let i = 1; i < speeds.length; i++) ratios.push(speeds[i]! / speeds[i - 1]!);
     const median = ratios.sort((a, b) => a - b)[Math.floor(ratios.length / 2)]!;

@@ -5,7 +5,12 @@ import { simulate } from '../../src/sim/update';
 import { Direction8, emptyButtonState, LogicalButton, type ButtonState } from '../../src/input/types';
 import { FULL_MATCH_DURATION_FRAMES, HALF_DURATION_FRAMES } from '../../src/sim/matchClock';
 import { PITCH_HEIGHT, PITCH_WIDTH } from '../../src/config/pitch';
-import { CURVE_DURATION_TICKS, CURVE_INPUT_WINDOW_TICKS, STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
+import {
+  CURVE_DURATION_TICKS,
+  CURVE_INPUT_WINDOW_TICKS,
+  KICK_WINDUP_TICKS,
+  STRONG_KICK_SPEED_FIXED,
+} from '../../src/sim/ballConstants';
 import { SET_PIECE_LOCK_MAX_TICKS } from '../../src/sim/boundsConstants';
 import { MANUAL_LINE_OFFSET_MAX_FIXED, MANUAL_LINE_OFFSET_STEP_FIXED } from '../../src/sim/teamAIConstants';
 import { runTicks } from '../../src/sim/tempo';
@@ -17,6 +22,17 @@ function inputs(direction: Direction8) {
 function inputsWithButtons(direction: Direction8, held: Partial<Record<LogicalButton, boolean>>) {
   const buttons: ButtonState = { ...emptyButtonState(), ...held };
   return { direction, buttons };
+}
+
+/**
+ * ★ワインドアップ追従 (不具合#4、24周目サイクル③)★
+ * B解放は即時発射ではなく KICK_WINDUP_TICKS 後の発射になった。解放tickの後、
+ * 発射tickまで無入力で進める (待ち中の+字はカーブ入力として発射キックに掛かる仕様のため、
+ * キックそのものを検証するテストでは方向を入れない)。
+ */
+function windupFire(state: GameState): GameState {
+  for (let i = 0; i < KICK_WINDUP_TICKS; i++) state = simulate(state, inputs(Direction8.None));
+  return state;
 }
 
 /** 現在の操作選手 (Phase 2 では players[] の一要素)。テストの可読性のためのヘルパー。 */
@@ -222,8 +238,10 @@ describe('simulate — Phase 1/2: dribble + kick integration (controlled player 
     }
     expect(controlled(state).kickChargeFrames).toBe(chargeTicks);
 
-    const afterKick = simulate(state, inputsWithButtons(Direction8.Right, {}));
-    expect(controlled(afterKick).kickChargeFrames).toBe(0);
+    const released = simulate(state, inputsWithButtons(Direction8.Right, {})); // 解放 = ワインドアップ開始
+    expect(controlled(released).kickChargeFrames).toBe(0);
+
+    const afterKick = windupFire(released); // KICK_WINDUP_TICKS 後の発射tick
     expect(toFloat(afterKick.ball.zVel)).toBeGreaterThan(0);
     expect(toFloat(afterKick.ball.vel.x)).toBeGreaterThan(0);
   });
@@ -231,16 +249,21 @@ describe('simulate — Phase 1/2: dribble + kick integration (controlled player 
   it('a short tap (min charge) kick stays a grounder (near-zero zVel)', () => {
     const state = withPositions(1, { x: 100, y: 100 }, { x: 105, y: 100 });
     const charging = simulate(state, inputsWithButtons(Direction8.None, { B: true }));
-    const released = simulate(charging, inputsWithButtons(Direction8.Right, {}));
-    expect(toFloat(released.ball.zVel)).toBeCloseTo(0, 1);
-    expect(toFloat(released.ball.vel.x)).toBeGreaterThan(0);
+    const released = simulate(charging, inputsWithButtons(Direction8.Right, {})); // 解放 = ワインドアップ開始
+    const afterKick = windupFire(released); // 発射tick
+    expect(toFloat(afterKick.ball.zVel)).toBeCloseTo(0, 1);
+    expect(toFloat(afterKick.ball.vel.x)).toBeGreaterThan(0);
   });
 
   it('カーブ(続編仕様③): a direct kick opens a curve input window, consumed by the next direction press', () => {
     let state = withPositions(1, { x: 100, y: 100 }, { x: 105, y: 100 });
     state = simulate(state, inputsWithButtons(Direction8.None, { B: true }));
-    const afterKick = simulate(state, inputsWithButtons(Direction8.Right, {}));
-    // キックが開いたウィンドウ(CURVE_INPUT_WINDOW_TICKS)は、同tick内でボール物理更新が
+    // 解放 = ワインドアップ開始。待ち中に+字を入れるとそれ自体がカーブとして発射キックに
+    // 掛かる (別経路) ため、ここでは無入力で発射tickまで進め、「発射キックがウィンドウを
+    // 開く→次の方向押しで消費される」という後入力経路を検証する。
+    const released = simulate(state, inputsWithButtons(Direction8.Right, {}));
+    const afterKick = windupFire(released);
+    // キックが開いたウィンドウ(CURVE_INPUT_WINDOW_TICKS)は、発射tick内でボール物理更新が
     // 1回走るぶん既に1減っている(applyKickが先に設定→stepBallPhysicsDetailedが後で減衰)。
     expect(afterKick.ball.curveWindowTicksLeft).toBe(CURVE_INPUT_WINDOW_TICKS - 1);
     expect(afterKick.ball.curveDirection).toBe(Direction8.None);
@@ -255,8 +278,9 @@ describe('simulate — Phase 1/2: dribble + kick integration (controlled player 
   it('カーブ: the input window expires with no curve applied if no direction is pressed in time', () => {
     let state = withPositions(1, { x: 100, y: 100 }, { x: 105, y: 100 });
     state = simulate(state, inputsWithButtons(Direction8.None, { B: true }));
-    let afterKick = simulate(state, inputsWithButtons(Direction8.Right, {}));
-    for (let i = 0; i < CURVE_INPUT_WINDOW_TICKS + 2; i++) {
+    let afterKick = simulate(state, inputsWithButtons(Direction8.Right, {})); // 解放 = ワインドアップ開始
+    // ワインドアップぶん + ウィンドウぶんを無入力で経過させる (発射tickでウィンドウが開く)。
+    for (let i = 0; i < KICK_WINDUP_TICKS + CURVE_INPUT_WINDOW_TICKS + 2; i++) {
       afterKick = simulate(afterKick, inputs(Direction8.None));
     }
     expect(afterKick.ball.curveWindowTicksLeft).toBe(0);
@@ -500,14 +524,18 @@ describe('simulate — Phase 3: offside rule (milestone 5)', () => {
     state = simulate(state, inputsWithButtons(Direction8.None, { B: true })); // キック溜め開始
     expect(controlled(state).kickChargeFrames).toBeGreaterThan(0);
 
-    const offsidePlayerBeforeRelease = state.players[offsideIdx];
-    const next = simulate(state, inputsWithButtons(Direction8.Right, {})); // 解放 -> オフサイド判定
+    // 解放 = ワインドアップ開始。オフサイド判定は「ボールが蹴られた瞬間」= 発射tickに行われる
+    // (競技規則どおり)。発射tickの直前の選手位置を捕まえてから、最後の1tickで発射させる。
+    let s = simulate(state, inputsWithButtons(Direction8.Right, {}));
+    expect(controlled(s).kickChargeFrames).toBe(0);
+    for (let i = 0; i < KICK_WINDUP_TICKS - 1; i++) s = simulate(s, inputs(Direction8.None));
+    const offsidePlayerBeforeFire = s.players[offsideIdx];
+    const next = simulate(s, inputs(Direction8.None)); // 発射tick -> オフサイド判定
 
-    expect(controlled(next).kickChargeFrames).toBe(0);
     expect(toFloat(next.ball.vel.x)).toBe(0);
     expect(toFloat(next.ball.vel.y)).toBe(0);
     expect(toFloat(next.ball.zVel)).toBe(0);
-    expect(next.ball.pos).toEqual(offsidePlayerBeforeRelease?.pos);
+    expect(next.ball.pos).toEqual(offsidePlayerBeforeFire?.pos);
     expect(next.lastTouchTeam).toBe(TeamId.B);
   });
 
@@ -515,7 +543,8 @@ describe('simulate — Phase 3: offside rule (milestone 5)', () => {
     let state = withOffsideSetup(1, false);
 
     state = simulate(state, inputsWithButtons(Direction8.None, { B: true }));
-    const next = simulate(state, inputsWithButtons(Direction8.Right, {}));
+    const released = simulate(state, inputsWithButtons(Direction8.Right, {})); // 解放 = ワインドアップ開始
+    const next = windupFire(released); // 発射tick: オフサイド無効なら通常どおり蹴られる
 
     const ballMoved =
       toFloat(next.ball.vel.x) !== 0 || toFloat(next.ball.vel.y) !== 0 || toFloat(next.ball.zVel) !== 0;

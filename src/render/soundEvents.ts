@@ -1,6 +1,6 @@
 import { distSqFixed, fixedMul, toFixed } from '../core/fixed';
 import type { Fixed } from '../core/types';
-import type { GameState } from '../sim/state';
+import { TacklePhase, type GameState } from '../sim/state';
 import { getHalf, isFulltime } from '../sim/matchClock';
 
 /**
@@ -16,6 +16,13 @@ export enum SoundEventId {
   RestartWhistle = 'restartWhistle',
   /** GKの真のキャッチ (secured) の効果音 (Phase 5)。視認性向上の一環、eventBanner.tsと対。 */
   GkCatch = 'gkCatch',
+  /**
+   * ★24周目サイクル③ (不具合#5)★ スライディング開始の効果音 (芝を滑るスウィッシュ)。
+   * simは以前から正常に発動していたが、描画・音のどこも tacklePhase を読んでおらず
+   * 「スライディングが出ない(ように見える)」と報告されていた。スプライトの倒れ込み表現
+   * (PitchScene) と対で、発動の知覚可能性を作る。
+   */
+  Slide = 'slide',
 }
 
 /** この距離を1tickで超えて動いたら「テレポートされた」とみなす (px、仮値)。
@@ -45,6 +52,15 @@ export function detectSoundEvents(prev: GameState, next: GameState): SoundEventI
 
   if (next.lastEvent?.kind === 'gkCatch' && next.lastEvent.atFrame === next.frame) {
     events.push(SoundEventId.GkCatch);
+  }
+
+  // スライディング開始 (不具合#5): 操作選手の tacklePhase が None → Windup へ遷移した瞬間。
+  {
+    const prevPhase = prev.players[prev.controlledPlayerIndex]?.tacklePhase;
+    const nextPhase = next.players[next.controlledPlayerIndex]?.tacklePhase;
+    if (prevPhase === TacklePhase.None && nextPhase === TacklePhase.Windup) {
+      events.push(SoundEventId.Slide);
+    }
   }
 
   const halfChanged = getHalf(next.frame) !== getHalf(prev.frame);

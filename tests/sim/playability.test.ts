@@ -6,6 +6,7 @@ import { simulate } from '../../src/sim/update';
 import { findTouchPriorityPlayer } from '../../src/sim/ballTouch';
 import {
   KICK_INPUT_BUFFER_TICKS,
+  KICK_WINDUP_TICKS,
   STRONG_KICK_SPEED_FIXED,
   WEAK_KICK_SPEED_FIXED,
 } from '../../src/sim/ballConstants';
@@ -42,6 +43,18 @@ function inputs(direction: Direction8, held: Partial<Record<keyof ButtonState, b
 
 function ballSpeed(state: GameState): number {
   return Math.hypot(toFloat(state.ball.vel.x), toFloat(state.ball.vel.y));
+}
+
+/**
+ * ★ワインドアップ追従 (不具合#4、24周目サイクル③)★
+ * B解放は即時発射ではなく、KICK_WINDUP_TICKS 後に発射される仕様になった。
+ * 「押したら(ワインドアップ後に)蹴れる」を検証し続けるため、解放後にこのぶん進める。
+ * 待ち中の+字入力はカーブとして発射キックに掛かるが、カーブは速度ベクトルの回転
+ * (速さ不変) なので、速度しきい値の検証には影響しない。
+ */
+function windup(state: GameState, inp: ReturnType<typeof inputs> = inputs(Direction8.None)): GameState {
+  for (let i = 0; i < KICK_WINDUP_TICKS; i++) state = simulate(state, inp);
+  return state;
 }
 
 /** 操作選手がボールの touch-priority を持っているか (= キック等が発動できる状態か)。 */
@@ -99,7 +112,8 @@ describe('プレイアビリティ 0: キックが「押した時に必ず出る
     it(`ボールが${dist}px離れていてもBで蹴れる (射程30px以内)`, () => {
       let state = ballAtDistance(dist);
       state = simulate(state, inputs(Direction8.Up, { B: true }));
-      state = simulate(state, inputs(Direction8.Up));
+      state = simulate(state, inputs(Direction8.Up)); // B解放 = ワインドアップ開始
+      state = windup(state); // 静止したまま発射tickまで待つ (射程が動かない条件で「必ず出る」を見る)
       expect(ballSpeed(state), `${dist}pxでBが無反応`).toBeGreaterThan(KICK_FIRED_THRESHOLD);
     });
   }
@@ -145,7 +159,8 @@ describe('プレイアビリティ 0: キックが「押した時に必ず出る
     // 走りながら蹴る (実プレイで最も多い操作)。
     for (let i = 0; i < 20; i++) state = simulate(state, inputs(Direction8.Up));
     state = simulate(state, inputs(Direction8.Up, { B: true }));
-    state = simulate(state, inputs(Direction8.Up)); // 離す = キック
+    state = simulate(state, inputs(Direction8.Up)); // 離す = ワインドアップ開始
+    state = windup(state, inputs(Direction8.Up)); // 実プレイどおり方向は押しっぱなしで発射tickへ
     const kickSpeed = ballSpeed(state);
     expect(kickSpeed, 'そもそもキックが出ていない').toBeGreaterThan(KICK_FIRED_THRESHOLD);
 
@@ -174,7 +189,8 @@ describe('プレイアビリティ 0: キックが「押した時に必ず出る
   it('方向入力なしのBでも「蹴った」と分かる速度が出る', () => {
     let state = humanCarrying();
     state = simulate(state, inputs(Direction8.None, { B: true }));
-    state = simulate(state, inputs(Direction8.None));
+    state = simulate(state, inputs(Direction8.None)); // B解放 = ワインドアップ開始
+    state = windup(state);
     // 旧実装は「転がっただけ」に見える速度だった。方向ありの強キックより弱いのは仕様。
     // テンポ変更追従: 裸の5.5ではなく弱キック定数 (6.2×BALL_TEMPO) からの相対値で見る。
     expect(ballSpeed(state)).toBeGreaterThan(toFloat(WEAK_KICK_SPEED_FIXED) * 0.85);
@@ -282,7 +298,8 @@ describe('プレイアビリティ 2: キックが必ず反応する', () => {
     state = simulate(state, inputs(Direction8.Up, { B: true }));
     state = simulate(state, inputs(Direction8.Up, { B: true }));
     const before = ballSpeed(state);
-    state = simulate(state, inputs(Direction8.Up)); // 離す = キック実行
+    state = simulate(state, inputs(Direction8.Up)); // 離す = ワインドアップ開始
+    state = windup(state, inputs(Direction8.Up)); // KICK_WINDUP_TICKS 後に発射される
     expect(ballSpeed(state), `キック前=${before.toFixed(2)}`).toBeGreaterThan(toFloat(STRONG_KICK_SPEED_FIXED) * 0.5);
   });
 
@@ -294,14 +311,16 @@ describe('プレイアビリティ 2: キックが必ず反応する', () => {
 
     state = simulate(state, inputs(Direction8.Up, { B: true }));
     state = simulate(state, inputs(Direction8.Up, { B: true }));
-    state = simulate(state, inputs(Direction8.Up)); // 離す
+    state = simulate(state, inputs(Direction8.Up)); // 離す = ワインドアップ開始
+    state = windup(state, inputs(Direction8.Up)); // 走り続けたまま発射tickへ
     expect(ballSpeed(state)).toBeGreaterThan(toFloat(STRONG_KICK_SPEED_FIXED) * 0.5);
   });
 
   it('Bの1tickタップ(押した次のtickで離す)でもキックが出る', () => {
     let state = humanCarrying();
     state = simulate(state, inputs(Direction8.Up, { B: true }));
-    state = simulate(state, inputs(Direction8.Up));
+    state = simulate(state, inputs(Direction8.Up)); // 離す = ワインドアップ開始
+    state = windup(state, inputs(Direction8.Up));
     expect(ballSpeed(state)).toBeGreaterThan(toFloat(WEAK_KICK_SPEED_FIXED) * 0.5);
   });
 
@@ -309,8 +328,8 @@ describe('プレイアビリティ 2: キックが必ず反応する', () => {
     const kickWithCharge = (ticks: number) => {
       let s = humanCarrying();
       for (let i = 0; i < ticks; i++) s = simulate(s, inputs(Direction8.Up, { B: true }));
-      s = simulate(s, inputs(Direction8.Up));
-      return s;
+      s = simulate(s, inputs(Direction8.Up)); // 離す = ワインドアップ開始
+      return windup(s); // 発射tickの zVel を比較する
     };
     const short = kickWithCharge(2);
     const long = kickWithCharge(25);
@@ -546,6 +565,9 @@ describe('プレイアビリティ 6: フルマッチで各アクションが実
     // テンポ変更追従: 選手速度が1/5.7になったため、同じ回数のアクションが起きるには
     // 観測時間を伸ばす必要がある (60秒→240秒。実測: kicks=13, tackles=1, steals=21)。
     let possessionTicks = 0; // 今の保持で何tick運んだか (キックのタイミング決定に使う)
+    // ワインドアップ追従 (不具合#4): B解放の即時ではなく KICK_WINDUP_TICKS 後の発射tickで
+    // ボール速度を測る。0以下 = 計測待ちなし。
+    let windupCountdown = 0;
     for (let i = 0; i < 14400; i++) {
       const carrying = humanHasBall(state);
       if (carrying) {
@@ -582,10 +604,17 @@ describe('プレイアビリティ 6: フルマッチで各アクションが実
 
       // 溜めが >0 から 0 に落ちた = このtickでキックが解放された、という機構そのものを数える
       // (ボール速度の推測は、ドリブルタッチ速度と閾値が近くて誤検出するため使わない)。
+      // 発射はワインドアップ (KICK_WINDUP_TICKS) 後なので、速度の計測は発射tickで行う。
+      // 発射tickで速度が出ていない = 空振り/握り潰しとして kicks に数えない (因果は維持)。
       if (chargeBefore > 0 && chargeAfter === 0) {
         kickReleases++;
-        const speed = Math.hypot(toFloat(next.ball.vel.x), toFloat(next.ball.vel.y));
-        if (speed > toFloat(WEAK_KICK_SPEED_FIXED) * 0.9) kicks++;
+        windupCountdown = KICK_WINDUP_TICKS;
+      } else if (windupCountdown > 0) {
+        windupCountdown--;
+        if (windupCountdown === 0) {
+          const speed = Math.hypot(toFloat(next.ball.vel.x), toFloat(next.ball.vel.y));
+          if (speed > toFloat(WEAK_KICK_SPEED_FIXED) * 0.9) kicks++;
+        }
       }
       const humanPhase = next.players[next.controlledPlayerIndex]!.tacklePhase as unknown as number;
       if (humanPhase !== 0 && prevPhase === 0) tackles++;

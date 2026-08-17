@@ -3,7 +3,7 @@ import { toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
 import { Direction8, emptyButtonState, type ButtonState } from '../../src/input/types';
 import { createInitialState, TacklePhase, TeamId, type GameState } from '../../src/sim/state';
 import { simulate } from '../../src/sim/update';
-import { STRONG_KICK_SPEED_FIXED, WEAK_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
+import { KICK_WINDUP_TICKS, STRONG_KICK_SPEED_FIXED, WEAK_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
 
 // テンポ変更 (24周目サイクル①) 追従: 「キック/パスが出た」のしきい値を定数からの相対値に。
 // 強キック基準 (B) と、それより弱くてよいパス/フィード基準 (Y/A/X) の2段。
@@ -90,10 +90,20 @@ function loose(): GameState {
   return { ...base, lastTouchTeam: null, lastTouchPlayerIndex: null };
 }
 
-/** ボタンを1tick押して離し、その後の状態を返す。 */
+/**
+ * ボタンを1tick押して離し、その後の状態を返す。
+ *
+ * B だけはワインドアップ追従 (不具合#4、24周目サイクル③): 解放後 KICK_WINDUP_TICKS の
+ * 発射tickまで進めてから返す。Y/A/X は従来どおり即時発射なので待たない
+ * (待つと摩擦/重力の減衰で速度・zVelのしきい値計測が汚れる)。
+ */
 function press(state: GameState, button: keyof ButtonState, direction = Direction8.Up): GameState {
   const held = simulate(state, inp(direction, { [button]: true }));
-  return simulate(held, inp(direction));
+  let next = simulate(held, inp(direction));
+  if (button === 'B') {
+    for (let i = 0; i < KICK_WINDUP_TICKS; i++) next = simulate(next, inp(direction));
+  }
+  return next;
 }
 
 /**

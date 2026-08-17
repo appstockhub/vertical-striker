@@ -24,9 +24,12 @@ export const CURSOR_HYSTERESIS_MARGIN_SQ_FIXED: Fixed = fixedMul(toFixed(5), toF
 export const CURSOR_SWITCH_DOMINANCE_NUM = 36;
 export const CURSOR_SWITCH_DOMINANCE_DEN = 25;
 
-/** カーソルパスの受け手候補として認める最大距離 (px, 仮値)。 */
-export const PASS_MAX_RANGE_FIXED: Fixed = toFixed(220);
+/** カーソルパスの受け手候補として認める最大距離 (px)。
+ * 24周目サイクル③ (不具合#2) で 220→300: フォーメーションの選手間隔 (150〜250px) を
+ * 確実に覆い、Yに「候補ゼロ」がほぼ発生しないようにする。遠距離は applyAimedPass が
+ * 浮き球で届かせる (kick.ts)。 */
+export const PASS_MAX_RANGE_FIXED: Fixed = toFixed(300);
 export const PASS_MAX_RANGE_SQ_FIXED: Fixed = fixedMul(PASS_MAX_RANGE_FIXED, PASS_MAX_RANGE_FIXED);
 
-/** 前方コーンの半角60°に対応する cos^2(60°) = 0.25 (仮値)。sqrtを使わず dot^2 との比較で判定する。 */
-export const PASS_CONE_COS_THRESHOLD_SQ_FIXED: Fixed = toFixed(0.25);
+// (24周目サイクル③) 前方±60°コーン (PASS_CONE_COS_THRESHOLD_SQ) は廃止した。
+// 「前方半平面を優先し、居なければ最近傍」の2段選抜 (cursor.ts selectPassTarget) に置き換え。

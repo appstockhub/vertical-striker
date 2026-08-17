@@ -41,6 +41,13 @@ export interface PlayerState {
    * 実質サーボに戻ってしまう)。テスト互換のためoptional (省略時は`?? 0`)。
    */
   readonly dribbleTouchCooldown?: number;
+  /**
+   * ★24周目サイクル③ (不具合#1)★ リフティングの受付ウィンドウ (残りtick)。
+   * 「直前の向きと正反対の方向入力」= ターンアクションを検出した時に
+   * LIFT_INPUT_WINDOW_TICKS が設定され、この間のB押下でリフティングが発動する。
+   * テスト互換のため optional (省略時は `?? 0`)。
+   */
+  readonly liftWindowTicksLeft?: number;
 }
 
 export interface BallState {
@@ -146,6 +153,8 @@ export interface GameState {
    * KICK_INPUT_BUFFER_TICKS のコメントも参照。
    */
   readonly pendingKick: PendingKick | null;
+  /** Bキックのワインドアップ (不具合#4、24周目サイクル③)。テスト互換のためoptional。 */
+  readonly windupKick?: WindupKick | null;
   /**
    * リスタート直後の追跡権フェアネス猶予 (Phase 5)。再開してから restartGraceTicksLeft の間、
    * computeChaseRightIndices(teamAI.ts) がこのチームの相手の追跡権をゼロにする。
@@ -247,6 +256,27 @@ export interface SetPieceLock {
    * 旧実装ではドリブルサーボの副作用で偶然再開が成立していた (boundsConstants.ts参照)。
    */
   readonly kickerIndex?: number;
+}
+
+/**
+ * ★24周目サイクル③ (不具合#4)★ Bキックのワインドアップ (モーション) 状態。
+ * B解放で即時発射せず、KICK_WINDUP_TICKS の間「蹴り足を振る」時間を置いてから発射する。
+ * この間の+字入力がカーブになる (続編公式の「キックボタンを押した瞬間に同時に+字」を、
+ * 1tick=1方向入力のアーキテクチャ上「ワインドアップ中の入力」で近似する。従来の
+ * キック後の受付ウィンドウより仕様に忠実)。人間の操作選手のみ対象 (承認済みの非対称、
+ * CPUへの適用は段階4で判断)。
+ */
+export interface WindupKick {
+  /** 残りtick。0になったtickに発射する。 */
+  readonly ticksLeft: number;
+  /** 解放時に確定した照準方向 (シフトキック適用前)。 */
+  readonly direction: Direction8;
+  readonly shiftL: boolean;
+  readonly shiftR: boolean;
+  /** 解放時の溜めtick数 (弾道軸)。 */
+  readonly chargeFrames: number;
+  /** ワインドアップ中に入力されたカーブ方向 (未入力なら None)。 */
+  readonly curveDirection: Direction8;
 }
 
 /** キック入力のバッファ (GameState.pendingKick)。 */

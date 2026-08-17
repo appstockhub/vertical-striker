@@ -3,7 +3,7 @@ import { toFixed, toFloat, distSqFixed, ZERO_FIXED } from '../../src/core/fixed'
 import { Direction8, emptyButtonState } from '../../src/input/types';
 import { createInitialState, TeamId, type GameState } from '../../src/sim/state';
 import { simulate } from '../../src/sim/update';
-import { STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
+import { KICK_WINDUP_TICKS, STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
 import { PLAYER_SPEED_FIXED } from '../../src/sim/constants';
 
 /**
@@ -71,7 +71,8 @@ describe('練習モード: CPUがボールに関与しない', () => {
     );
 
     state = simulate(state, inp(Direction8.Up, { B: true }));
-    state = simulate(state, inp(Direction8.Up));
+    state = simulate(state, inp(Direction8.Up)); // 解放 = ワインドアップ開始 (不具合#4)
+    for (let i = 0; i < KICK_WINDUP_TICKS; i++) state = simulate(state, inp(Direction8.Up)); // 発射tickへ
     expect(Math.hypot(toFloat(state.ball.vel.x), toFloat(state.ball.vel.y)), 'キックが出ない').toBeGreaterThan(
       toFloat(STRONG_KICK_SPEED_FIXED) * 0.8,
     );

@@ -5,7 +5,7 @@ import { createInitialState, TeamId, type GameState } from '../../src/sim/state'
 import { simulate } from '../../src/sim/update';
 import { PITCH_HEIGHT, PITCH_WIDTH } from '../../src/config/pitch';
 import { SET_PIECE_LOCK_MAX_TICKS } from '../../src/sim/boundsConstants';
-import { STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
+import { KICK_WINDUP_TICKS, STRONG_KICK_SPEED_FIXED } from '../../src/sim/ballConstants';
 
 /**
  * ★セットプレーが「実際に再開されるか」のテスト (試合停止バグの再現)★
@@ -134,11 +134,13 @@ describe('セットプレー: 再開チームのキッカーが必ずボール�
     expect(state.setPieceLock?.restartTeam).toBe(TeamId.A);
     expect(distToBall(state, state.controlledPlayerIndex), 'カーソルがキッカーに乗っていない').toBeLessThan(12);
 
-    // Bを溜めて離す = 再開のキック。人間が待たされずに再開できることまで確認する。
+    // Bを溜めて離す = 再開のキック。発射はワインドアップ (KICK_WINDUP_TICKS) 後 (不具合#4)。
+    // 人間がワインドアップぶんの待ちだけで再開できることまで確認する。
     const B = { direction: Direction8.Up, buttons: { ...emptyButtonState(), B: true } };
     state = simulate(state, B);
     state = simulate(state, B);
-    state = simulate(state, { direction: Direction8.Up, buttons: emptyButtonState() });
+    state = simulate(state, { direction: Direction8.Up, buttons: emptyButtonState() }); // 解放
+    for (let i = 0; i < KICK_WINDUP_TICKS; i++) state = simulate(state, NO_INPUT); // 発射tickまで待つ
     const speed = Math.hypot(toFloat(state.ball.vel.x), toFloat(state.ball.vel.y));
     // テンポ変更追従: 強キック 9.0→2.7px/tick。裸の3ではなく定数からの相対値で判定する。
     expect(speed, '人間がセットプレーを蹴れない').toBeGreaterThan(toFloat(STRONG_KICK_SPEED_FIXED) * 0.8);

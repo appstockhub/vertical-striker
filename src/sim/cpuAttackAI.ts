@@ -126,9 +126,19 @@ export function decideCpuAttack(
   const passTarget = selectPassTarget(carrierIndex, players, prevTouchPlayerIndex);
   if (passTarget !== null) {
     const receiver = players[passTarget];
+    // ★24周目サイクル③★ CPUは「前進するパス」しか出さない。selectPassTarget が2段選抜
+    // (常に候補を返す。人間のカーソルパスの要件) になったため、無条件にパスすると
+    // 「候補が常に居る → 毎接触パス → 永久パス回しで前進しない」に退化する
+    // (スイープ実測: 全セルで Bshots=0 に崩壊)。受け手がゴール方向へ40px以上前に
+    // 居る時だけパスし、それ以外はドリブルで運ぶ (旧来の前進行動を保存)。
     if (receiver) {
-      const direction = quantizeToDirection8(vSub(receiver.pos, carrier.pos), CPU_STEER_DEADZONE_SQ);
-      return { action: 'pass', direction, passTargetIndex: passTarget, rngState };
+      const progress = attacksUp
+        ? fixedSub(carrier.pos.y, receiver.pos.y)
+        : fixedSub(receiver.pos.y, carrier.pos.y);
+      if ((progress as number) >= (toFixed(40) as number)) {
+        const direction = quantizeToDirection8(vSub(receiver.pos, carrier.pos), CPU_STEER_DEADZONE_SQ);
+        return { action: 'pass', direction, passTargetIndex: passTarget, rngState };
+      }
     }
   }
 
