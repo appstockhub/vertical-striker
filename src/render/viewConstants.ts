@@ -44,8 +44,19 @@ export const NEAR_DEPTH = 300;
  *
  * 旧値の俯角45°は原作(15〜22°)よりはるかに急で、「地面を見下ろしている」画になっていた。
  * これが「原作に全く見えない」最大の原因。sim は一切変更していない。
+ *
+ * ★24周目: 画面横長化 (config/pitch.ts VIEWPORT_WIDTH 480→1280) に伴う再導出★
+ * この定数は camHeight = (viewportHeight-horizonY)*PITCH_WIDTH/(R*viewportWidth) を介して
+ * 俯角を決める。viewportWidth を変えても俯角(=camHeightで決まる)を維持するには、
+ * R を viewportWidth の変化に反比例させる必要がある (R*viewportWidth = 一定を保つ)。
+ * 480→1280 は2.667倍なので、R も 4.0/2.667 ≈ 1.5 にする。これにより:
+ *   - camHeight・俯角・「ピッチ幅=選手32.7人分」は完全に不変 (視野角の縦方向は無関係)
+ *   - near depth で見えるワールド幅は PITCH_WIDTH/R に比例して増える (120→320px)。
+ *     横長画面いっぱいに、伸縮させずに「より広く」ピッチを見せる、が意図どおりの効果
+ * 実測 (npm run view:metrics) で俯角16.7°・ピッチ幅32.7人分・地平線Y比18.1%が
+ * 変更前と一致することを確認済み。
  */
-export const NEAR_WIDTH_RATIO = 4.0;
+export const NEAR_WIDTH_RATIO = 1.5;
 
 // ============================================================================
 // カメラ追従
