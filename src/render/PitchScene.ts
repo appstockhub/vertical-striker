@@ -68,10 +68,11 @@ import {
   BALL_HEIGHT_LIFT_SCALE,
   BALL_SHADOW_SHRINK_PER_PX,
   FOCUS_SCREEN_Y_FRAC,
+  LOOK_AHEAD_VEL_SMOOTHING,
   PLAYER_SIZE_BOOST,
   RADAR_ALPHA,
 } from './viewConstants';
-import { followCameraWorldX, followFocusWorldY, makeCameraFollowConfig } from './camera';
+import { followCameraWorldX, followFocusWorldY, makeCameraFollowConfig, smoothBallVelocity } from './camera';
 import {
   PITCH_HEIGHT,
   PITCH_WIDTH,
@@ -154,6 +155,8 @@ export class PitchScene extends Phaser.Scene {
   private readonly projection: Projection = createProjection(PROJECTION_CONFIG);
   /** 追従中の注視点 (ワールドY、イージング後)。 */
   private focusWorldY = PITCH_HEIGHT / 2;
+  /** 先読み専用の平滑化ボール速度 (px/tick、camera.ts smoothBallVelocity)。カメラ揺れ対策。 */
+  private smoothedBallVelY = 0;
   /** 現在のカメラのワールドY (focusWorldY から毎フレーム導出する)。 */
   private cameraWorldY = PITCH_HEIGHT / 2 + PROJECTION_CONFIG.nearDepth;
   /** 現在のカメラのワールドX (横追従。俯角を原作に合わせた結果、必要になった)。 */
@@ -865,7 +868,10 @@ export class PitchScene extends Phaser.Scene {
 
   /** 注視点 (ボール) の追従。カメラのワールドYはここから毎フレーム導出する。 */
   private updateCamera(ballWorldY: number, ballVelY: number): void {
-    this.focusWorldY = followFocusWorldY(this.focusWorldY, ballWorldY, ballVelY, CAMERA_FOLLOW_CONFIG);
+    // 先読みには生のボール速度ではなく平滑化した値を使う (ドリブルタッチ周期の
+    // 揺れ対策、camera.ts smoothBallVelocity / viewConstants.ts LOOK_AHEAD_VEL_SMOOTHING)。
+    this.smoothedBallVelY = smoothBallVelocity(this.smoothedBallVelY, ballVelY, LOOK_AHEAD_VEL_SMOOTHING);
+    this.focusWorldY = followFocusWorldY(this.focusWorldY, ballWorldY, this.smoothedBallVelY, CAMERA_FOLLOW_CONFIG);
   }
 
   private renderPlayers(): void {

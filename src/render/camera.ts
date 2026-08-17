@@ -65,6 +65,27 @@ export function followFocusWorldY(
 }
 
 /**
+ * ★24周目・実プレイ報告「カメラが激しく揺れる」への対応★ 先読み(lookAhead)専用の
+ * ボール速度の平滑化 (指数移動平均、位置追従の smoothing とは別系統)。
+ *
+ * 原因: 離散タッチドリブル (サイクル②) はタッチのたびにボール速度を DRIBBLE_TOUCH_SPEED
+ * (1.2px/tick) へ蹴り出し、その後フリクションで急減衰する — ノコギリ波状の速度変化を
+ * 約9〜10tick周期で繰り返す。LOOK_AHEAD_VEL_REF (0.9) はこの離散タッチ化より前の
+ * 「連続サーボ・ドリブル」の平均速度(0.63)を基準に較正されていたため、1.2 > 0.9で
+ * **タッチのたびに先読み量が上限(LOOK_AHEAD_MAX)へサチュレーションし、フリクション減衰と
+ * ともに急落する**を繰り返す。位置追従フィルタ(smoothing=0.12)はこの高周波成分を
+ * 約20%しか減衰できず(周期10tickでの計算上のゲイン)、周期的な「がたつき」として残る。
+ *
+ * 対策: 先読みに使う速度だけを、タッチ周期より十分遅い専用フィルタ(このalpha)で
+ * 平滑化する。キック/パス(摩擦0.968/tickで数十〜100tick超かけて減衰=事実上の定常値)
+ * には十分追従しつつ、ドリブルタッチの単発スパイクは大きく減衰させる
+ * (詳細な導出は LOOK_AHEAD_VEL_SMOOTHING のコメント参照)。
+ */
+export function smoothBallVelocity(prevSmoothed: number, rawVelY: number, alpha: number): number {
+  return prevSmoothed + (rawVelY - prevSmoothed) * alpha;
+}
+
+/**
  * カメラのワールドXを1フレーム進める (横追従)。
  *
  * カメラ俯角を原作に合わせた結果、ピッチ全幅が画面に入らなくなったため必要になった

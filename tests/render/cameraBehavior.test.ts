@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { desiredFocusWorldY, followFocusWorldY, makeCameraFollowConfig } from '../../src/render/camera';
+import { desiredFocusWorldY, followFocusWorldY, makeCameraFollowConfig, smoothBallVelocity } from '../../src/render/camera';
 import { createProjection, DEFAULT_PROJECTION_CONFIG } from '../../src/render/projection';
 import { PITCH_HEIGHT, PITCH_WIDTH, VIEWPORT_HEIGHT } from '../../src/config/pitch';
-import { BALL_HEIGHT_LIFT_SCALE, FOCUS_SCREEN_Y_FRAC } from '../../src/render/viewConstants';
+import { BALL_HEIGHT_LIFT_SCALE, FOCUS_SCREEN_Y_FRAC, LOOK_AHEAD_VEL_SMOOTHING } from '../../src/render/viewConstants';
 import { GRAVITY_FIXED, KICK_Z_VEL_MAX_FIXED } from '../../src/sim/ballConstants';
 import { toFloat } from '../../src/core/fixed';
 import { PENALTY_SPOT_DEPTH } from '../../src/render/pitchGeometry';
@@ -116,6 +116,40 @@ describe('camera behavior (段階1)', () => {
     expect(worstRise).toBeGreaterThanOrEqual(VIEWPORT_HEIGHT * 0.08);
     // 強調しすぎて地平線より上 (スタンドの中) へ消えないこと。
     expect(worstTop).toBeGreaterThan(DEFAULT_PROJECTION_CONFIG.horizonY);
+  });
+
+  it('6. ★24周目・実プレイ報告対応★ ドリブルタッチ周期でカメラが揺れない', () => {
+    // 離散タッチドリブル (sim/dribble.ts) の速度パターンを模す: タッチ(1.2px/tick)→
+    // フリクション0.85/tickで急減衰→静止、を9tick周期で繰り返す (DRIBBLE_TOUCH_COOLDOWN_TICKS)。
+    // LOOK_AHEAD_VEL_REF(0.9) < タッチ速度(1.2) のため、平滑化なしでは毎タッチで先読みが
+    // 上限へサチュレーション→急落を繰り返し、周期的な「がたつき」として知覚される
+    // (ユーザー実プレイ報告)。smoothBallVelocity による専用平滑化で解消したことを固定する。
+    const velAt = (tick: number): number => {
+      const phase = tick % 9;
+      if (phase === 0) return -1.2;
+      if (phase === 1) return -1.2 * 0.85;
+      if (phase === 2) return -1.2 * 0.85 * 0.85;
+      return 0;
+    };
+    let ballY = PITCH_HEIGHT / 2;
+    let focus = ballY;
+    let smoothedVel = 0;
+    let maxStep = 0;
+    let prevScreen = ballScreenY(focus, ballY);
+    for (let t = 0; t < 200; t++) {
+      const vel = velAt(t);
+      ballY += vel;
+      smoothedVel = smoothBallVelocity(smoothedVel, vel, LOOK_AHEAD_VEL_SMOOTHING);
+      focus = followFocusWorldY(focus, ballY, smoothedVel, cfg);
+      const screen = ballScreenY(focus, ballY);
+      maxStep = Math.max(maxStep, Math.abs(screen - prevScreen));
+      prevScreen = screen;
+    }
+    console.log(`  ドリブル周期の揺れ: 1tickあたり最大 ${maxStep.toFixed(2)}px (${((maxStep / VIEWPORT_HEIGHT) * 100).toFixed(2)}%)`);
+    // 実測: 平滑化前 5.90px(0.82%) → 平滑化後 0.96px(0.13%)。既存の「急な方向転換」ゲート
+    // (2%、極端な毎tick反転ケース向け)より遥かに厳しい0.3%を、より頻発するドリブルの
+    // 常設ゲートとする。
+    expect(maxStep).toBeLessThan(VIEWPORT_HEIGHT * 0.003);
   });
 
   it('5. セットプレー: キッカーとゴールが同時に見える', () => {
