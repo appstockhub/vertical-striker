@@ -128,6 +128,8 @@ export interface MatchStats {
   pattern: HumanPattern;
   seed: number;
   scriptSeed: number;
+  /** 24周目-6: criterion 5 の難易度別フェンスで参照する。 */
+  difficulty: Difficulty;
   ticks: number;
   finalScore: readonly [number, number];
   teams: [TeamMatchStats, TeamMatchStats];
@@ -1039,6 +1041,7 @@ export function runSimulatedMatch(opts: RunMatchOptions): MatchStats {
     pattern: opts.pattern,
     seed: opts.seed,
     scriptSeed,
+    difficulty: opts.difficulty ?? 'hard',
     ticks,
     finalScore: state.score,
     teams: [teamStats(TeamId.A), teamStats(TeamId.B)],
