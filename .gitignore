@@ -69,3 +69,10 @@ __pycache__/
 *.bs
 roms/
 scratchpad/emu/
+
+# 原作の公式説明書PDF等の参照資料。
+# ★著作物であり、public リポジトリへのコミット = 配布に当たるため絶対にコミットしない★
+# (CLAUDE.md 素材ポリシー / docs/rom-capture-policy.md 3章クリーンルーム原則と同じ趣旨。
+#  仕様の読み取り結果〔挙動と数値〕は CLAUDE.md に文章として記録済みなので、
+#  PDF 自体はローカル参照用に留める)
+*.pdf
