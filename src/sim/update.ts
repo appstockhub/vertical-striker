@@ -29,6 +29,7 @@ import {
   KICK_INPUT_BUFFER_TICKS,
   KICK_WINDUP_TICKS,
   LIFT_INPUT_WINDOW_TICKS,
+  KICK_MAX_CHARGE_FRAMES,
   KICK_MIN_CHARGE_FRAMES,
   KICK_REACH_FIXED,
   LIFT_Z_VEL_FIXED,
@@ -803,7 +804,15 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         : attackingIsUpward(kicker.team, half)
           ? Direction8.Up
           : Direction8.Down;
-      ball = applyKick(ball, kicker, KICK_MIN_CHARGE_FRAMES, direction);
+      // ★台帳L-08 (24周目-6)★ CPUのゴールキック / GKの配球は高い弾道の浮き球にする。
+      // 原作 (vf672-702) のゴールキックはハーフウェー付近まで高く飛ぶ。旧実装は
+      // 最小溜め (KICK_MIN_CHARGE_FRAMES) のグラウンダーで、CPU試合9000tickで浮き球が
+      // 一度も発生しなかった (実測)。最大溜め相当にすると applyKick の弾道軸
+      // (KICK_Z_VEL_MAX) がそのまま高弾道を作る。方向は攻撃方向 (前方の味方選定は従来どおり)。
+      // スローインは applyThrowInRelease が別途投げ込み弾道へ変換するので、ここは
+      // ゴールキックとGK配球だけを対象にする (コーナーは方向精度優先でグラウンダー維持)。
+      const lofted = setPieceLock.kind === 'goalKick' || setPieceLock.kind === 'gkHold';
+      ball = applyKick(ball, kicker, lofted ? KICK_MAX_CHARGE_FRAMES : KICK_MIN_CHARGE_FRAMES, direction);
       lastTouchTeam = kicker.team;
     }
   }
