@@ -71,6 +71,7 @@ import {
   RADAR_ALPHA,
 } from './viewConstants';
 import { computeBallVisual } from './ballVisual';
+import { computeGkPose } from './gkPose';
 import { followCameraWorldX, followFocusWorldY, makeCameraFollowConfig, smoothBallVelocity } from './camera';
 import {
   PITCH_HEIGHT,
@@ -969,7 +970,25 @@ export class PitchScene extends Phaser.Scene {
           : player.tacklePhase === TacklePhase.Windup || player.tacklePhase === TacklePhase.Recovery
             ? 34
             : 0;
-      sprite.setAngle(slideSign * slideAngle);
+
+      // ★GKのセーブポーズ (台帳L-05、24周目-6)★ パンチング(gkPunch)の瞬間から
+      // 水平ダイブ→倒れ込み維持→起き上がり、を状態の純関数 (render/gkPose.ts) で表現する。
+      // lastEvent 基準なのでリプレイでも同じ見え方になる。倒す向きはボールが来た側。
+      let gkAngle = 0;
+      const ev = this.state.lastEvent;
+      if (
+        player.isGoalkeeper &&
+        ev &&
+        (ev.kind === 'gkPunch' || ev.kind === 'gkCatch') &&
+        ev.team === player.team
+      ) {
+        const ballWorld = vecToPx(this.state.ball.pos);
+        const tiltSign: 1 | -1 = ballWorld.x >= world.x ? 1 : -1;
+        const pose = computeGkPose(this.state.frame - ev.atFrame, ev.kind, tiltSign);
+        if (pose.active) gkAngle = pose.angle;
+      }
+
+      sprite.setAngle(slideAngle !== 0 ? slideSign * slideAngle : gkAngle);
     });
   }
 
@@ -1000,6 +1019,26 @@ export class PitchScene extends Phaser.Scene {
           this.ballMain.setScale(kp.scale);
           this.ballMain.setDepth(kw.y + 0.5);
           this.ballShadow.setVisible(false); // 影は投げ手の接地影に任せる
+          return;
+        }
+      }
+    }
+
+    // ★GK保持中の「抱えている」描画 (台帳L-05/L-13、24周目-6)★ gkHoldロック中は
+    // ボールをGKの胸の高さに描く。旧実装はGKの足元 (=スプライトの裏) に埋まっており、
+    // キャッチしたことが画面から読み取れなかった。simのボール位置は不変 (描画のみ)。
+    if (lock && lock.kind === 'gkHold') {
+      const holder = this.state.players.find((pl) => pl.isGoalkeeper && pl.team === lock.restartTeam);
+      if (holder) {
+        const hw = vecToPx(holder.pos);
+        const hp = this.projection.project(hw.x, hw.y, this.cameraWorldY, this.cameraWorldX);
+        if (hp.visible) {
+          const figureHeight = PLAYER_SPRITE_FIGURE_HEIGHT * hp.scale * PLAYER_SIZE_BOOST;
+          this.ballMain.setVisible(true);
+          this.ballMain.setPosition(hp.x, hp.y - figureHeight * 0.55);
+          this.ballMain.setScale(hp.scale);
+          this.ballMain.setDepth(hw.y + 0.5);
+          this.ballShadow.setVisible(false);
           return;
         }
       }

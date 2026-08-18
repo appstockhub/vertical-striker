@@ -19,6 +19,7 @@ const KIND_LABEL: Record<NotableEventKind, string> = {
   goalKick: 'ゴールキック',
   corner: 'コーナーキック',
   gkCatch: 'キャッチ！',
+  gkPunch: 'パンチング！',
   foul: 'ファウル！ フリーキック',
   penalty: 'ペナルティキック！',
 };

@@ -159,8 +159,11 @@ describe('applySave', () => {
     const incoming = makeBall(90, 1770, 3, 8); // 自陣ゴール(大きいy側)に向かっている
     const next = applySave(incoming, gk, 'deflected', 1);
     expect(toFloat(next.vel.y)).toBeLessThan(0);
-    expect(Math.abs(toFloat(next.vel.y))).toBeCloseTo(8, 1); // 大きさは維持
-    expect(next.vel.x).toBe(incoming.vel.x); // x速度は維持
+    // ★24周目-6 (台帳L-05)★ 旧仕様「大きさは維持」を撤回: 原作のパンチはこぼれ球の
+    // 詰め合いを作る (強シュートがそのままの速度で戻ると誰も追いつけない)。
+    // 水平は0.6へ減衰し、上向きのzVelで浮かせる (gkPunch.test.ts が正本のゲート)。
+    expect(Math.abs(toFloat(next.vel.y))).toBeCloseTo(8 * 0.6, 1);
+    expect(toFloat(next.zVel)).toBeGreaterThan(0); // 浮いたこぼれ球
   });
 
   it('deflected: Team B goalkeeper forces the ball toward positive y', () => {

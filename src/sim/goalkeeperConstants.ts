@@ -62,6 +62,16 @@ export const PUNCH_RANGE_SQ_FIXED: Fixed = fixedMul(PUNCH_RANGE_FIXED, PUNCH_RAN
 export const GK_SAVE_RANGE_SQ_FIXED: Fixed = PUNCH_RANGE_SQ_FIXED;
 
 /**
+ * ★24周目-6 (台帳L-05)★ パンチング(deflected)のこぼれ球パラメータ。
+ * 原作 (t=144.2-145.6) はパンチしたボールが前方へ浮いて飛び、詰め合いが発生する。
+ * - 水平減衰 0.6: 強シュート(2.7px/tick)を弾くと 1.62px/tick で前方へ。滞空48tick で
+ *   約78px 先へ落ちる = ペナルティエリアの外縁付近 (詰めるか押し返すかの攻防の距離)
+ * - 垂直初速 2.5×BALL_TEMPO: 頂点9px・滞空0.8秒 (スローインの放物線と同じ規約)
+ */
+export const PUNCH_DEFLECT_DAMPING_FIXED: Fixed = toFixed(0.6);
+export const PUNCH_POP_Z_VEL_FIXED: Fixed = toFixed(2.5 * BALL_TEMPO);
+
+/**
  * セーブ文脈が発動する最低ボール速度 (px/tick, 仮値)。これ以下の遅い/静止したボールが
  * GKの足元にある時は通常のキック文脈のままにする。
  *

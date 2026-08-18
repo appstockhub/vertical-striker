@@ -11,6 +11,8 @@ import {
   GK_COVERAGE_RADIUS_FIXED,
   GK_SAVE_RANGE_SQ_FIXED,
   GOAL_CENTER_X_FIXED,
+  PUNCH_DEFLECT_DAMPING_FIXED,
+  PUNCH_POP_Z_VEL_FIXED,
   PUNCH_RANGE_SQ_FIXED,
 } from './goalkeeperConstants';
 
@@ -142,8 +144,14 @@ export function resolveSaveOutcome(
 /**
  * セーブの結果をボールに適用する。
  * secured: キーパーの位置で確保 (速度0、地面に静止)。
- * deflected: 自陣ゴールから遠ざける向きへy速度の符号を強制する (大きさは維持)。
+ * deflected: 自陣ゴールから遠ざける向きへy速度の符号を強制し、★浮き球のこぼれ球★にする。
  *   RNGは使わず、符号を強制するだけの決定論的な跳ね返り。x速度は維持する。
+ *
+ * ★24周目-6 (台帳L-05)★ 旧実装のdeflectedは「地上のままy符号反転」で、見た目は
+ * 「ボールが勝手に反転した」ようにしか見えず、キャッチと弾きの区別が付かなかった。
+ * 原作 (t=144.2-145.6) のパンチングは弾いたボールが前方へ浮いて飛び、こぼれ球の
+ * 詰め合いが発生する。水平速度を減衰させつつ (強シュートがそのままの速度で戻ると
+ * 誰も追いつけない)、上向きの垂直速度で「弾いた」ことを見せる。
  */
 export function applySave(
   ball: BallState,
@@ -157,10 +165,16 @@ export function applySave(
     return { pos: goalkeeper.pos, vel: vZero(), height: ZERO_FIXED, zVel: ZERO_FIXED };
   }
 
-  const magnitude = Math.abs(ball.vel.y as number);
+  const magnitude = Math.abs(fixedMul(ball.vel.y, PUNCH_DEFLECT_DAMPING_FIXED) as number);
   // 北(y=0側)を守るチームは自陣から遠ざけるには+y、南を守るチームは-y。
   const sign = teamDefendsNorth(goalkeeper.team, half) ? 1 : -1;
   const deflectedVelY = (sign * magnitude) as Fixed;
+  const deflectedVelX = fixedMul(ball.vel.x, PUNCH_DEFLECT_DAMPING_FIXED);
 
-  return { ...ball, vel: { x: ball.vel.x, y: deflectedVelY } };
+  return {
+    ...ball,
+    vel: { x: deflectedVelX, y: deflectedVelY },
+    height: ZERO_FIXED,
+    zVel: PUNCH_POP_Z_VEL_FIXED,
+  };
 }

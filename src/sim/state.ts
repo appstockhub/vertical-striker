@@ -218,8 +218,10 @@ export interface GameState {
   readonly pendingOffside: { readonly team: TeamId; readonly indices: readonly number[] } | null;
 }
 
-/** GameState.lastEvent の種別。goalはscoreの変化で既に検出可能なため対象外。 */
-export type NotableEventKind = 'throwIn' | 'goalKick' | 'corner' | 'gkCatch' | 'foul' | 'penalty';
+/** GameState.lastEvent の種別。goalはscoreの変化で既に検出可能なため対象外。
+ * gkPunch は24周目-6 (台帳L-05): キャッチと弾きが見分けられない問題への対応で、
+ * パンチング(deflected)も知覚可能イベントとして記録する。 */
+export type NotableEventKind = 'throwIn' | 'goalKick' | 'corner' | 'gkCatch' | 'gkPunch' | 'foul' | 'penalty';
 
 export interface NotableEvent {
   readonly kind: NotableEventKind;

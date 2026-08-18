@@ -23,6 +23,8 @@ export enum SoundEventId {
    * (PitchScene) と対で、発動の知覚可能性を作る。
    */
   Slide = 'slide',
+  /** ★24周目-6 (台帳L-05)★ GKのパンチング (deflected)。キャッチと弾きの聴覚的区別。 */
+  GkPunch = 'gkPunch',
 }
 
 /** この距離を1tickで超えて動いたら「テレポートされた」とみなす (px、仮値)。
@@ -52,6 +54,9 @@ export function detectSoundEvents(prev: GameState, next: GameState): SoundEventI
 
   if (next.lastEvent?.kind === 'gkCatch' && next.lastEvent.atFrame === next.frame) {
     events.push(SoundEventId.GkCatch);
+  }
+  if (next.lastEvent?.kind === 'gkPunch' && next.lastEvent.atFrame === next.frame) {
+    events.push(SoundEventId.GkPunch);
   }
 
   // スライディング開始 (不具合#5): 操作選手の tacklePhase が None → Windup へ遷移した瞬間。

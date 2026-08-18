@@ -755,11 +755,14 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       ball = applySave(ball, gk, outcome, half);
       lastTouchTeam = gk.team;
       gkSavedThisTick = true;
-      // secured (真のキャッチ) のみ知覚可能イベントとして記録する。これにより
-      // CPU/非操作GKのキャッチも人間の目に見えるようになる (視認性向上、実プレイ報告への対応)。
+      // secured (真のキャッチ) / deflected (パンチング) をどちらも知覚可能イベントとして
+      // 記録する (台帳L-05: キャッチと弾きが見分けられない問題。イベントは描画のGKポーズ・
+      // バナー・音の共通トリガーになる)。
       if (outcome === 'secured') {
         lastEvent = { kind: 'gkCatch', team: gk.team, atFrame: nextFrame };
         setPieceLock = createGoalkeeperHoldLock(gk.team, ball.pos);
+      } else {
+        lastEvent = { kind: 'gkPunch', team: gk.team, atFrame: nextFrame };
       }
     }
   }
@@ -876,15 +879,21 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       const outcome = resolveSaveOutcome(controlledPlayer, ball, 'catch');
       ball = applySave(ball, controlledPlayer, outcome, half);
       if (outcome !== 'missed') lastTouchTeam = controlledPlayer.team;
-      // secured (真のキャッチ) のみ知覚可能イベントとして記録する (視認性向上、実プレイ報告への対応)。
+      // secured/deflected をどちらもイベント記録する (台帳L-05。速すぎるボールへの
+      // キャッチ試行は弾く = パンチングと同じ扱い、なのでgkPunchとして見せる)。
       if (outcome === 'secured') {
         lastEvent = { kind: 'gkCatch', team: controlledPlayer.team, atFrame: nextFrame };
         setPieceLock = createGoalkeeperHoldLock(controlledPlayer.team, ball.pos);
+      } else if (outcome === 'deflected') {
+        lastEvent = { kind: 'gkPunch', team: controlledPlayer.team, atFrame: nextFrame };
       }
     } else if (bEdge) {
       const outcome = resolveSaveOutcome(controlledPlayer, ball, 'punch');
       ball = applySave(ball, controlledPlayer, outcome, half);
       if (outcome !== 'missed') lastTouchTeam = controlledPlayer.team;
+      if (outcome === 'deflected') {
+        lastEvent = { kind: 'gkPunch', team: controlledPlayer.team, atFrame: nextFrame };
+      }
     }
   } else {
     if (cursor.passTriggered && cursor.passTargetIndex !== null && controlledPlayer) {

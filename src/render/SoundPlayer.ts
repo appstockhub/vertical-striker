@@ -30,6 +30,7 @@ const MIN_INTERVAL_MS: Readonly<Record<SoundEventId, number>> = {
   [SoundEventId.RestartWhistle]: 250,
   [SoundEventId.GkCatch]: 120,
   [SoundEventId.Slide]: 250,
+  [SoundEventId.GkPunch]: 120,
 };
 
 type Ctx = AudioContext;
@@ -87,6 +88,11 @@ export class SoundPlayer {
         break;
       case SoundEventId.GkCatch:
         this.catchThud(ctx, master);
+        break;
+      case SoundEventId.GkPunch:
+        // パンチはキャッチより硬い打撃音として、キック音を流用する (台帳L-05:
+        // キャッチ(こもったthud)と弾き(鋭い打撃)の聴覚的区別が目的で、専用音源は不要)。
+        this.kick(ctx, master);
         break;
       case SoundEventId.RestartWhistle:
         this.whistle(ctx, master, 0.16);
