@@ -1092,8 +1092,9 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
          * あわせて発動条件から「相手保持者への背後コーン判定」を外した。旧実装は
          * checkTackleEligibility を発動条件にしていたため、条件を満たさない限り
          * **押しても一切何も起きない**(足を出す動作すら出ない)。原作はいつでも滑れる。
-         * 奪えるかどうかは従来どおり checkTackleSuccess (背後+間合い) が決めるので、
-         * 「読み勝ちで奪える」設計は変わらない。空振りのリスク(Recovery 20frame)と
+         * 奪えるかどうかは checkTackleSuccess が決める (★24周目-6 台帳L-06で
+         * 「背後+間合い」→「スライド中にボールへ足が届いたか」のボール基準へ変更。
+         * 背後からの読み勝ちは部分集合として維持)。空振りのリスク(Recovery 20frame)と
          * ファウルのリスクが、乱発への抑止として働く。
          */
         const slideEdge =

@@ -531,7 +531,7 @@ CRITIC.md原則8として明文化した。ただし実際に測定した結果�
 2. **並置比較**: 場面ごとに30fpsストリップ/矩形拡大で原作を精査し、自作の実測・コード・
    キャプチャと5観点 (物体/挙動/カメラ/演出/時間) で対比 (台帳2節)。
    ツール: `scratchpad/{contact_sheet,scene_strip,zoom_strip}.py`
-3. **台帳**: `docs/visual-behavior-audit.md` L-01〜L-16 (ユーザー7件を含む高8件/中6件/低2件)
+3. **台帳**: `docs/visual-behavior-audit.md` L-01〜L-16 (ユーザー7件を含む高7件〔L-07は欠番〕/中6件/低2件)
 4. **CRITIC.md 原則10** + 批評役の判定項目に台帳チェック (並置比較の検収) を組込
 
 ### 修正 (コミット順)
@@ -567,3 +567,18 @@ CRITIC.md原則8として明文化した。ただし実際に測定した結果�
 全598テストgreen (+c6 expected fail) / determinism OK / build OK。
 実機キャプチャ8点: audit-before-midfield (BEFORE) / after1-midfield / after2-airball /
 after3-throwhold・throwflight / after4-gkcatch・gkpunch / after5-charge / after6-dribble-strip。
+
+### 批評役判定 (24周目-6)
+
+**PASS** (auditorサブエージェント、利用制限による中断を挟んで完遂)。批評役が自分で実行した
+確認: 全598テストgreen+c6 expected fail / determinism OK / view:metrics (俯角16.7°・
+可視幅13.4人分・選手7.5%幅) の主張一致 / キャプチャ9点の目視 / 新設ゲート6ファイルの実在と
+内容照合 / **フェンス調整2件の分布主張を独立の抜き取りスイープ (各セル6シード) で再現**
+(c5: Bshots 1〜4で旧水準5未満、B5: 0.21〜0.47で旧水準0.7を満たすシードなし)。
+原則10 (台帳チェック) 違反なし — L-08のオープンプレー未対応はL-16(中)として正直に分離済み。
+
+軽微な所見3件 (Low、PASS を妨げない):
+1. update.ts:1095 のコメント乖離 → **同日修正済み**
+2. autonomous-log の「高8件」表記 (実数は高7行・L-07欠番) → **同日修正済み**
+3. スイープ生データの保全 (最後の1セル分しか残っていない) → 今後は sweep-<cell>.txt で
+   セルごとに保全する運用を推奨 (次周期から適用)
