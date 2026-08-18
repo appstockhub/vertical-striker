@@ -58,3 +58,14 @@ scratchpad/tracked/
 
 # Python分析ツールのキャッシュ
 __pycache__/
+
+# ★24周目-7: エミュレータ・イン・ザ・ループ・パリティハーネス★
+# ROM・吸い出しデータ・エミュレータ関連は絶対にコミットしない
+# (docs/rom-capture-policy.md 4節。自己所有カセットの私的複製の範囲を守る)
+*.sfc
+*.smc
+*.srm
+*.bk2
+*.bs
+roms/
+scratchpad/emu/
