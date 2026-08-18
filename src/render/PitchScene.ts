@@ -67,6 +67,7 @@ import {
   FOCUS_SCREEN_Y_FRAC,
   LOOK_AHEAD_VEL_SMOOTHING,
   PLAYER_SIZE_BOOST,
+  PLAYER_SPRITE_FIGURE_HEIGHT,
   RADAR_ALPHA,
 } from './viewConstants';
 import { computeBallVisual } from './ballVisual';
@@ -426,6 +427,10 @@ export class PitchScene extends Phaser.Scene {
        */
       renderAt: (focusWorldY: number) => {
         this.focusWorldY = focusWorldY;
+        // 検証キャプチャの再現性のため、横追従もイージング済みの定常位置へスナップする
+        // (通常レンダーのイージングを1フレームだけでは反映できないため)。
+        const ballPx = vecToPx(this.state.ball.pos);
+        this.cameraWorldX = followCameraWorldX(ballPx.x, ballPx.x, PITCH_WIDTH);
         this.render(16.7, true);
         this.game.renderer.preRender();
         // カメラごとに willRender() で絞る。子オブジェクトを丸ごと渡すと Camera.ignore()
@@ -976,6 +981,28 @@ export class PitchScene extends Phaser.Scene {
       this.ballMain.setVisible(false);
       this.ballShadow.setVisible(false);
       return;
+    }
+
+    // ★台帳L-04 (スローインの頭上保持)★ 原作 (vf2070-2082) は投げ手がボールを頭上に
+    // 掲げて静止し、それが「これはスローインだ」と分かる最大の視覚合図になっている。
+    // スローインの再開ロック中は、ボールをキッカーの頭上に描く (simのボール位置は
+    // 再開スポットのまま — これは描画だけの演出で、決定論には一切影響しない)。
+    const lock = this.state.setPieceLock;
+    if (lock && lock.kind === 'throwIn' && lock.kickerIndex !== undefined) {
+      const kicker = this.state.players[lock.kickerIndex];
+      if (kicker) {
+        const kw = vecToPx(kicker.pos);
+        const kp = this.projection.project(kw.x, kw.y, this.cameraWorldY, this.cameraWorldX);
+        if (kp.visible) {
+          const figureHeight = PLAYER_SPRITE_FIGURE_HEIGHT * kp.scale * PLAYER_SIZE_BOOST;
+          this.ballMain.setVisible(true);
+          this.ballMain.setPosition(kp.x, kp.y - figureHeight - 6 * kp.scale);
+          this.ballMain.setScale(kp.scale);
+          this.ballMain.setDepth(kw.y + 0.5);
+          this.ballShadow.setVisible(false); // 影は投げ手の接地影に任せる
+          return;
+        }
+      }
     }
 
     // 影は地面、本体は高さぶんだけ画面上へ持ち上げる (持ち上げ量も遠近スケールに従う)。

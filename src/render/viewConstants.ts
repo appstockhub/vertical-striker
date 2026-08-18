@@ -134,9 +134,16 @@ export const LOOK_AHEAD_VEL_SMOOTHING = 0.04;
  *
  * 0.15〜0.85 にクランプすると、ボールが x=0 の隅にいても camX=72 で
  * ボールとの差は72px、可視半幅は約98pxなので画面内に収まる。
+ *
+ * ★24周目-6 (台帳L-04の並置比較で発覚) で 0.15/0.85 → 0.02/0.98★
+ * 原作のスローイン場面 (vf1995-2112) はタッチライン際でもボールをほぼ画面中央に置き、
+ * ライン外の土のランオフが画面の約4割を占める。旧クランプ0.15ではライン際のボール/
+ * 投げ手が画面端 (X比13%) に張り付き、原作の框と食い違った。ランオフの芝は
+ * ライン外±2800pxまで描画済み (pitchPerspective.ts) なので、カメラがラインを
+ * 越えて寄っても「虚無」は見えない。
  */
-export const CAMERA_X_MIN_FRAC = 0.15;
-export const CAMERA_X_MAX_FRAC = 0.85;
+export const CAMERA_X_MIN_FRAC = 0.02;
+export const CAMERA_X_MAX_FRAC = 0.98;
 /** 横追従のイージング係数。縦(0.12)よりゆっくりにして、左右の揺れを抑える。 */
 export const CAMERA_X_SMOOTHING = 0.08;
 

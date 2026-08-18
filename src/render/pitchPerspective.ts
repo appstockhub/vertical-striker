@@ -174,7 +174,13 @@ function drawStripeBands(
   familyB: TurfFamily,
 ): void {
   const { g, proj, camY } = ctx;
-  const nearest = Math.min(worldNearY, camY - proj.config.minDepth);
+  // ★24周目-6★ minDepth「ちょうど」までクリップすると、投影側の可視判定
+  // (depth <= minDepth で不可視) と衝突し、最前帯の near エッジが不可視 →
+  // `!nearLeft.visible` で**最前帯が丸ごとスキップ**される。旧ズーム (nearDepth=300) では
+  // 脱落帯が常に画面外だったため無害だったが、L-01のズームイン (nearDepth=112.5) で
+  // 画面下端に黒帯として露出した (カメラYと帯グリッドの位相次第で出たり出なかったりする)。
+  // 1px の余裕で depth > minDepth を保証する。
+  const nearest = Math.min(worldNearY, camY - proj.config.minDepth - 1);
   const farthest = Math.max(worldFarY, camY - MAX_DRAW_DEPTH);
   if (nearest <= farthest) return;
 

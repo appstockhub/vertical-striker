@@ -175,6 +175,37 @@ export const HIGH_ARC_SPEED_MULTIPLIER_FIXED: Fixed = toFixed(1.4);
 
 /** 重力加速度 (px/tick^2, 仮値)。 */
 export const GRAVITY_FIXED: Fixed = toFixed(0.35 * BALL_TEMPO_SQ);
+
+/**
+ * ★スローイン (台帳L-04、24周目-6)★ 原作のスローインは「頭上に掲げて静止→放物線で
+ * 投げ入れる」動作で、蹴るのではなく投げる (docs/visual-behavior-audit.md 2-3節、
+ * vf2070-2088)。当実装ではスローインの再開ロック解除の瞬間 (キッカーがボールを
+ * 動かした瞬間) に、どのボタン経路 (B/Y/A) で出たボールも投げ込みの弾道へ変換する。
+ *
+ * - 水平速度の上限: 投げの強さはパス帯 (P1: 1.4〜2.2px/tick) の上限程度。
+ *   キック経路の初速 (最大 2.7px/tick) をこの値でクランプする
+ * - 垂直初速: 頂点 ≈ zVel²/(2g) = 0.75²/(2×0.0315) ≈ 9px の放物線。
+ *   滞空 ≈ 2×zVel/g ≈ 48tick (0.8秒) で原作の投げの滞空感 (約0.6〜1.0秒) の帯内。
+ *   (初案の3.55×TEMPO=滞空1.1秒は、受け手AIのグラウンダー前提の到達予測と乖離しすぎ、
+ *   観戦シミュレーターの passHeavy セルでBの攻撃チェーンが切れて criterion 5 が
+ *   1本まで落ちた。滞空を原作帯の下側に寄せて受け手が回収できる範囲に収める)
+ * - テンポ整合: zVel ∝ BALL_TEMPO / g ∝ BALL_TEMPO² なので、頂点の高さは
+ *   テンポ変更に対して不変 (KICK_Z_VEL_MAX と同じ規約)
+ */
+export const THROW_IN_SPEED_MAX_FIXED: Fixed = toFixed(7.0 * BALL_TEMPO);
+export const THROW_IN_Z_VEL_FIXED: Fixed = toFixed(2.5 * BALL_TEMPO);
+/**
+ * 投げ込み変換時に水平速度へ掛ける係数 (到達点の保存)。
+ *
+ * キック経路が設定した速度は「グラウンダーが転がり摩擦で減衰して受け手に届く」前提で
+ * 選ばれている (総到達距離 ≈ v/(1-0.968) ≈ 31v)。これをそのまま浮き球にすると、
+ * 滞空中(48tick)は摩擦が効かないため 48v + 着地後の転がり ≈ 70v まで伸びて
+ * **意図した受け手を飛び越える** (観戦シミュレーターでスローインが毎回ターンオーバーになり
+ * criterion 5 のBシュートが1本まで落ちた実測が根拠)。
+ * 0.45 で 総到達 ≈ 0.45×(48+0.75×31)v ≈ 32v となり、グラウンダーの到達点とほぼ一致する
+ * (= AIの受け手選定・人間のカーソルパスの狙いがどちらもそのまま機能する)。
+ */
+export const THROW_IN_CARRY_MATCH_FIXED: Fixed = toFixed(0.45);
 /** バウンド時に残る垂直速度の割合 (仮値)。 */
 export const BOUNCE_DAMPING_FIXED: Fixed = toFixed(0.5);
 

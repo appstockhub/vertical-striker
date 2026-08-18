@@ -36,7 +36,7 @@ import {
 } from './ballConstants';
 import { applyDribbleTouch, computeKickDribbleState, isInDribbleContact } from './dribble';
 import { applyAimedPass, applyKick, applyLongFeed, updateKickCharge } from './kick';
-import { clampToPitchBounds, stepBallPhysicsDetailed } from './ballPhysics';
+import { applyThrowInRelease, clampToPitchBounds, stepBallPhysicsDetailed } from './ballPhysics';
 import { findTouchPriorityPlayer } from './ballTouch';
 import { computeChaseRightIndices, computeNonControlledDirection } from './teamAI';
 import { computeMarkAssignments } from './marking';
@@ -1344,6 +1344,12 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       ball.pos.x !== setPieceLock.pos.x ||
       ball.pos.y !== setPieceLock.pos.y)
   ) {
+    // ★台帳L-04 (24周目-6)★ スローインは蹴るのではなく投げる。再開ロックが解除される
+    // この瞬間 (キッカーがボールを動かした瞬間) が全ボタン経路 (B/Y/A) の合流点なので、
+    // ここで一度だけ投げ込みの弾道 (速度クランプ + 放物線) へ変換する。
+    if (setPieceLock.kind === 'throwIn') {
+      ball = applyThrowInRelease(ball);
+    }
     setPieceLock = null;
   }
 

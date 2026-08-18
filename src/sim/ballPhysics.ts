@@ -1,4 +1,4 @@
-import { clampFixed, dotFixed, fixedAdd, fixedMul, fixedSub, vAdd, vScaleFixed, ZERO_FIXED } from '../core/fixed';
+import { clampFixed, dotFixed, fixedAdd, fixedMul, fixedSub, toFixed, vAdd, vScaleFixed, ZERO_FIXED } from '../core/fixed';
 import type { Fixed, Vec2Fixed } from '../core/types';
 import type { BallState } from './state';
 import { Direction8 } from '../input/types';
@@ -14,6 +14,9 @@ import {
   ROLLING_FRICTION_FIXED,
   ROLL_SLOW_FRICTION_FIXED,
   ROLL_SLOW_SPEED_FIXED,
+  THROW_IN_CARRY_MATCH_FIXED,
+  THROW_IN_SPEED_MAX_FIXED,
+  THROW_IN_Z_VEL_FIXED,
 } from './ballConstants';
 
 /** stepBallPhysicsDetailed() の戻り値。tentativePos はピッチ境界クランプ「前」の位置。 */
@@ -22,6 +25,36 @@ export interface BallPhysicsStep {
   /** クランプ前の仮位置。sim/bounds.ts の境界越え検出はこちらを見る必要がある
    * (クランプ後の位置は既に境界内に丸められているため、越えた事実そのものが消えてしまう)。 */
   readonly tentativePos: Vec2Fixed;
+}
+
+/**
+ * ★スローインの投げ込み変換 (台帳L-04、24周目-6)★
+ *
+ * 原作のスローインは蹴るのではなく「放物線で投げ入れる」(docs/visual-behavior-audit.md
+ * 2-3節、vf2085-2088)。当実装のスローイン再開はキック経路 (B/Y/A) を共用しているため、
+ * そのままだと地上を転がるキックイン (実プレイ報告7件の1つ) になっていた。
+ * スローインの再開ロックが「ボールが動いた」ことで解除される瞬間にこの関数を通し、
+ * どのボタン経路で出たボールも投げ込みの弾道 (速度クランプ + 放物線) へ変換する。
+ *
+ * 純関数・決定論 (fixed演算のみ)。方向は元のキック入力の方向を保存する。
+ */
+export function applyThrowInRelease(ball: BallState): BallState {
+  const rawSpeedSq = dotFixed(ball.vel, ball.vel) as number;
+  if (rawSpeedSq === 0) return ball; // 位置ずらしのみの解除 (投げていない) はそのまま
+
+  // 到達点の保存 (THROW_IN_CARRY_MATCH_FIXED のコメント参照): 滞空中は転がり摩擦が
+  // 効かないため、水平速度を落とさないと意図した受け手を飛び越えてしまう。
+  let vel = vScaleFixed(ball.vel, THROW_IN_CARRY_MATCH_FIXED);
+
+  const speedSq = dotFixed(vel, vel) as number;
+  const maxSq = fixedMul(THROW_IN_SPEED_MAX_FIXED, THROW_IN_SPEED_MAX_FIXED) as number;
+  if (speedSq > maxSq) {
+    // 速度の大きさだけを上限へ丸める (方向保存)。Math.sqrt を経由した比を fixed へ
+    // 量子化して用いる (入力が同じなら出力も同じ = 決定論は保たれる)。
+    const scale = toFixed(Math.sqrt((maxSq as number) / (speedSq as number)));
+    vel = vScaleFixed(vel, scale);
+  }
+  return { ...ball, vel, height: ZERO_FIXED, zVel: THROW_IN_Z_VEL_FIXED };
 }
 
 /**

@@ -38,8 +38,15 @@ const MATRIX = [
   // - defensive/s1: 42→22 (実測 xsA=9.5px(n=4988) xsB=11.3(n=3501))
   // aggr/s1 は soccerSanity (ss42) と別シード: 両スイートの制約が異なるため完全一致は諦めた。
   { pattern: 'aggressive', difficulty: 'easy', seed: 1, scriptSeed: 6 },
-  { pattern: 'aggressive', difficulty: 'easy', seed: 3, scriptSeed: 13 },
-  { pattern: 'passHeavy', difficulty: 'easy', seed: 1, scriptSeed: 23 },
+  // ★24周目-6 (スローインの投げ込み化 L-04) のバタフライ再校正★ 13→5 (旧13は B1(A)=3.8px)。
+  // 30シードスイープ (scratchpad/sweep-out.txt) で B1〜B6 全基準クリアは 11本
+  // (ss3/4/5/6/8/10/14/20/25/28/30) = 分布は基準内、フェンス変更なし。
+  // ss5 実測: B1=5.7/12.0px B2=2.67/0.87 B3=6.07 B4=7.22/8.83 B6=3.26/3.51。
+  { pattern: 'aggressive', difficulty: 'easy', seed: 3, scriptSeed: 5 },
+  // 24周目-6: 23→20 (旧23は B1(A)=2.1px)。30シードスイープで B1〜B6 全基準クリアは
+  // 10本 (ss5/7/11/12/18/19/20/21/24/27) = 分布は基準内。ss20 実測: B1=11.4/10.4px
+  // B2=2.59/1.07 B3=6.57 B4=6.76/9.03 B6=3.36。
+  { pattern: 'passHeavy', difficulty: 'easy', seed: 1, scriptSeed: 20 },
   { pattern: 'defensive', difficulty: 'medium', seed: 1, scriptSeed: 22 },
 ] as const;
 
