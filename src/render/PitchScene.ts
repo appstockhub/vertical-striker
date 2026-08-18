@@ -64,14 +64,12 @@ import { SoundPlayer } from './SoundPlayer';
 import { MusicPlayer, type MusicTrack } from './MusicPlayer';
 import { getHalf, isFulltime } from '../sim/matchClock';
 import {
-  BALL_HEIGHT_GROW_PER_PX,
-  BALL_HEIGHT_LIFT_SCALE,
-  BALL_SHADOW_SHRINK_PER_PX,
   FOCUS_SCREEN_Y_FRAC,
   LOOK_AHEAD_VEL_SMOOTHING,
   PLAYER_SIZE_BOOST,
   RADAR_ALPHA,
 } from './viewConstants';
+import { computeBallVisual } from './ballVisual';
 import { followCameraWorldX, followFocusWorldY, makeCameraFollowConfig, smoothBallVelocity } from './camera';
 import {
   PITCH_HEIGHT,
@@ -104,7 +102,14 @@ const PROJECTION_CONFIG = DEFAULT_PROJECTION_CONFIG;
 const FOCUS_SCREEN_Y = VIEWPORT_HEIGHT * FOCUS_SCREEN_Y_FRAC;
 const CAMERA_FOLLOW_CONFIG = makeCameraFollowConfig(PITCH_HEIGHT);
 
-const BALL_RADIUS_PX = 8;
+/**
+ * ボールテクスチャの半径 (near位置=p.scale=1 での画面px)。
+ * ★24周目-6 (台帳L-02) で 8 → 20★ 原作のボールは選手身長の約1/4 (SNES実測でボール
+ * 6〜8ドット vs 選手26ドット)。選手の較正 (PLAYER_SIZE_BOOST=3.73、身長156.7px@near)
+ * に合わせると、ボール直径は near で約40px = 半径20 が幾何学的に正しい。
+ * 旧値8はボールが画面上約10px (選手の1/10) しかなく「点」にしか見えなかった。
+ */
+const BALL_RADIUS_PX = 20;
 /** 選手の歩行アニメ切替間隔 (tick数)。 */
 const WALK_ANIM_TICKS_PER_FRAME = 6;
 /** キック解放時のインパクト表示の持続時間 (ms、実フレーム時間ベース。描画専用)。 */
@@ -400,6 +405,18 @@ export class PitchScene extends Phaser.Scene {
        * 23周目に追加。スプライトの造形を「試合の1コマを切り出して拡大する」のではなく、
        * 8方向×4フレームを一覧にして直接検証するために要る (人体比率・走行モーションの確認)。
        */
+      /** 描画検証用: ボール影の実表示状態 (位置/スケール/アルファ/深度)。台帳L-02の検証で追加。 */
+      getBallShadowInfo: () => ({
+        x: this.ballShadow.x,
+        y: this.ballShadow.y,
+        scaleX: this.ballShadow.scaleX,
+        w: this.ballShadow.width,
+        h: this.ballShadow.height,
+        alpha: this.ballShadow.alpha,
+        fillAlpha: (this.ballShadow as unknown as { fillAlpha: number }).fillAlpha,
+        depth: this.ballShadow.depth,
+        visible: this.ballShadow.visible,
+      }),
       getTextureImage: (key: string): CanvasImageSource | null =>
         this.textures.exists(key) ? (this.textures.get(key).getSourceImage() as CanvasImageSource) : null,
       /**
@@ -489,7 +506,14 @@ export class PitchScene extends Phaser.Scene {
   }
 
   private buildEntities(): void {
-    this.ballShadow = this.add.ellipse(0, 0, 16, 7, 0x000000, 0.35);
+    // ★台帳L-02★ ボールの接地影。原作 (vf1876-1904) は浮遊中も濃い楕円影が地面に
+    // 常時表示され、高さの主要な手がかりになっている。ボール直径(40px@near)より
+    // ひと回り大きい楕円にする。
+    // ★fillAlpha は 1.0 にすること★ Phaser の Shape は fillAlpha × GameObject.alpha の
+    // 積が実効不透明度になる。旧実装はコンストラクタ0.35 × setAlpha(0.35×縮小率) の
+    // 二重掛けで実効 0.04〜0.12 となり、地上球でも影がほぼ見えなかった
+    // (「ボールに影がない」報告の一因)。不透明度の制御は setAlpha 側だけで行う。
+    this.ballShadow = this.add.ellipse(0, 0, 46, 18, 0x000000, 1.0);
 
     for (const player of this.state.players) {
       // 接地影 → 本体 → 背番号 の順に作る (depthは毎フレーム設定する)。
@@ -957,18 +981,21 @@ export class PitchScene extends Phaser.Scene {
     // 影は地面、本体は高さぶんだけ画面上へ持ち上げる (持ち上げ量も遠近スケールに従う)。
     // 係数は render/viewConstants.ts (段階1で「浮いて見えない」を解消するため強調した)。
     const heightPx = toFloat(this.state.ball.height);
+    // ★台帳L-02の訂正★ 旧実装は高さに応じて影を縮小+透明化しており、浮き球ほど
+    // 影が消える = 原作と正反対だった (原作 vf1876-1904 は浮遊中も濃い影が地面に
+    // 常時追従し、影とボールの離れ具合が高さを表す)。計算は render/ballVisual.ts の
+    // 純関数に抽出し、tests/render/ballVisual.test.ts が恒久ゲートとして守る。
+    const visual = computeBallVisual(heightPx, p.scale);
     this.ballShadow.setVisible(true);
-    this.ballShadow.setPosition(p.x, p.y);
-    // 高く浮くほど影は小さく薄くする (高さの最も分かりやすい手がかり)。
-    const shadowShrink = 1 / (1 + heightPx * BALL_SHADOW_SHRINK_PER_PX);
-    this.ballShadow.setScale(p.scale * shadowShrink);
-    this.ballShadow.setAlpha(0.35 * shadowShrink);
+    this.ballShadow.setPosition(p.x, p.y + visual.shadowOffsetY);
+    this.ballShadow.setScale(visual.shadowScale);
+    this.ballShadow.setAlpha(visual.shadowAlpha);
     this.ballShadow.setDepth(ballPx.y - 0.4);
 
     this.ballMain.setVisible(true);
-    this.ballMain.setPosition(p.x, p.y - heightPx * p.scale * BALL_HEIGHT_LIFT_SCALE);
+    this.ballMain.setPosition(p.x, p.y - visual.liftPx);
     // 高いボールほど大きく描く (カメラに近づくため)。
-    this.ballMain.setScale(p.scale * (1 + heightPx * BALL_HEIGHT_GROW_PER_PX));
+    this.ballMain.setScale(visual.bodyScale);
     this.ballMain.setDepth(ballPx.y + 0.5);
 
     const speedPx = Math.hypot(toFloat(this.state.ball.vel.x), toFloat(this.state.ball.vel.y));
