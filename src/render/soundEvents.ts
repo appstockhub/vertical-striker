@@ -25,6 +25,8 @@ export enum SoundEventId {
   Slide = 'slide',
   /** ★24周目-6 (台帳L-05)★ GKのパンチング (deflected)。キャッチと弾きの聴覚的区別。 */
   GkPunch = 'gkPunch',
+  /** ★24周目-6 (台帳L-06)★ ショルダーチャージ (人間/CPU共通)。スライドとの聴覚的区別。 */
+  Charge = 'charge',
 }
 
 /** この距離を1tickで超えて動いたら「テレポートされた」とみなす (px、仮値)。
@@ -65,6 +67,18 @@ export function detectSoundEvents(prev: GameState, next: GameState): SoundEventI
     const nextPhase = next.players[next.controlledPlayerIndex]?.tacklePhase;
     if (prevPhase === TacklePhase.None && nextPhase === TacklePhase.Windup) {
       events.push(SoundEventId.Slide);
+    }
+  }
+
+  // ショルダーチャージ (台帳L-06): 任意の選手が None → ChargeRecovery へ遷移した瞬間
+  // (人間もCPUも同じ経路で鳴る)。
+  for (let i = 0; i < next.players.length; i++) {
+    if (
+      prev.players[i]?.tacklePhase === TacklePhase.None &&
+      next.players[i]?.tacklePhase === TacklePhase.ChargeRecovery
+    ) {
+      events.push(SoundEventId.Charge);
+      break;
     }
   }
 

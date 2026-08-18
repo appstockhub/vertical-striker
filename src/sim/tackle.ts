@@ -67,16 +67,26 @@ export function checkTackleEligibility(
 }
 
 /**
- * Active中の成功判定 (毎tick再評価)。発動時とは異なり、この時点の touch-priority 保持者に
- * 対して条件が成立しているかを確認する (相手が動いて条件を外れたら失敗)。
+ * Active中の成功判定 (毎tick再評価)。
+ *
+ * ★24周目-6 (台帳L-06「奪えない」の主因修正)★ 成功条件を「スライド中にボールへ足が
+ * 届いたか」(ボール基準) に変更した。旧実装は発動条件の名残である背後コーン判定
+ * (isBehindInSameDirection) を成功条件にも使っており、**横・正面からのスライドは
+ * ボールに重なっていても絶対に奪えなかった**。原作はボールに触れれば奪える
+ * (ボールを奪えないまま相手競技者に接触したときだけファウル — sim/foul.ts と対)。
+ * CLAUDE.mdの「背後からの読み勝ちタックル」はこの条件の部分集合としてそのまま成立する。
+ * 相手キャリアの存在は引き続き要求する (味方が保持しているボールへのスライドで
+ * 「奪う」処理が走るのを防ぐ。ルーズボールへのスライドは通常のtouch-priorityが担う)。
  */
 export function checkTackleSuccess(
   tackler: PlayerState,
   players: readonly PlayerState[],
   touchPriorityIndex: number | null,
+  ball: BallState,
 ): boolean {
   const carrier = resolveOpposingCarrier(tackler, players, touchPriorityIndex);
-  return carrier !== null && isBehindInSameDirection(tackler, carrier);
+  if (carrier === null) return false;
+  return (distSqFixed(tackler.pos, ball.pos) as number) <= (TACKLE_RANGE_SQ_FIXED as number);
 }
 
 /**
@@ -144,10 +154,10 @@ export function advanceTacklePhase(
       : { tacklePhase: TacklePhase.Active, tackleFrames: remaining, tackleDirection: player.tackleDirection };
   }
 
-  // Recovery
+  // Recovery / ChargeRecovery (どちらも残りフレームを数えてNoneへ戻るだけ)
   return remaining <= 0
     ? { tacklePhase: TacklePhase.None, tackleFrames: 0, tackleDirection: Direction8.None }
-    : { tacklePhase: TacklePhase.Recovery, tackleFrames: remaining, tackleDirection: player.tackleDirection };
+    : { tacklePhase: player.tacklePhase, tackleFrames: remaining, tackleDirection: player.tackleDirection };
 }
 
 /** 成功時のボール奪取。applyDribbleTouchと同じ「上書き」方式でタックル方向にボールを奪う。ファールは無い。 */
@@ -161,7 +171,7 @@ export interface TackleMovementOverride {
   readonly speed: Fixed | undefined;
 }
 
-/** タックル中の移動速度上書き。Windup=停止、Active=tackleDirectionへスライド、Recovery=鈍足、None=undefined(通常通り)。 */
+/** タックル中の移動速度上書き。Windup=停止、Active=tackleDirectionへスライド、Recovery/ChargeRecovery=鈍足、None=undefined(通常通り)。 */
 export function getTackleMovementOverride(
   tacklePhase: TacklePhase,
   tackleDirection: Direction8,
@@ -172,6 +182,7 @@ export function getTackleMovementOverride(
     case TacklePhase.Active:
       return { direction: tackleDirection, speed: TACKLE_SLIDE_SPEED_FIXED };
     case TacklePhase.Recovery:
+    case TacklePhase.ChargeRecovery:
       return { direction: undefined, speed: TACKLE_RECOVERY_SPEED_FIXED };
     case TacklePhase.None:
     default:

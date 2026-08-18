@@ -716,6 +716,9 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
   // セットプレー再開時、キッカーを攻撃方向へ向かせる (実装ギャップ1、最優先)。
   // boundaryEvent発生時にのみ設定し、players.map内で該当選手のfacingを上書きする。
   let restartKickerOverride: SetPieceKickerOverride | null = null;
+  // ★台帳L-06★ CPUのショルダーチャージ発動者 (このtick)。players.mapでChargeRecoveryを付ける。
+  let cpuChargerIndex: number | null = null;
+  let cpuChargeDirection: Direction8 = Direction8.None;
   // 蹴り出しドリブル(続編仕様①②)。保持者(touch-priority)のみが対象で、他の選手は
   // players.map内で強制的にfalseへリセットする(過去に保持していた時の値が残らないように)。
   let kickDribbleCarrier: { index: number; active: boolean } | null = null;
@@ -1092,7 +1095,7 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         tackleAdvance = advanceTacklePhase(controlledPlayer, wantsTackle, slideDirection);
 
         if (tackleAdvance.tacklePhase === TacklePhase.Active && !challengeBlockedByLock) {
-          if (checkTackleSuccess(controlledPlayer, state.players, touchPriorityIndex)) {
+          if (checkTackleSuccess(controlledPlayer, state.players, touchPriorityIndex, ball)) {
             ball = applyTackleWin(ball, tackleAdvance.tackleDirection);
             lastTouchTeam = controlledPlayer.team;
             tackleWonBall = true;
@@ -1121,8 +1124,9 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
             inputs.direction !== Direction8.None ? inputs.direction : controlledPlayer.facing;
           ball = applyShoulderCharge(ball, chargeDirection);
           lastTouchTeam = controlledPlayer.team;
+          // ★台帳L-06★ チャージ専用フェーズ (描画がスライディングと見分けるため)。
           tackleAdvance = {
-            tacklePhase: TacklePhase.Recovery,
+            tacklePhase: TacklePhase.ChargeRecovery,
             tackleFrames: CHARGE_RECOVERY_FRAMES,
             tackleDirection: chargeDirection,
           };
@@ -1193,6 +1197,9 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
         ball = applyShoulderCharge(ball, defense.direction);
         lastTouchTeam = charger.team;
         lastTouchPlayerIndex = defense.chargerIndex;
+        // ★台帳L-06★ CPUのチャージにも見た目 (ChargeRecoveryフェーズ) を付ける。
+        cpuChargerIndex = defense.chargerIndex;
+        cpuChargeDirection = defense.direction;
       }
     }
   }
@@ -1435,7 +1442,30 @@ export function simulate(state: GameState, inputs: Inputs): GameState {
       moved = { ...moved, pos: restartKickerOverride.pos, vel: vZero(), facing: restartKickerOverride.facing };
     }
 
-    if (index !== controlledPlayerIndex) return moved;
+    if (index !== controlledPlayerIndex) {
+      // ★台帳L-06★ 非操作選手のタックル/チャージフェーズ管理。
+      // (a) CPUチャージ発動者にChargeRecoveryを付ける (見た目の体当たり表現)
+      // (b) 既存フェーズを毎tick減衰させる (旧実装は非操作選手のフェーズを一切進めて
+      //     おらず、もし付いたら永久に残る構造だった — 人間限定だったため無害だっただけ)
+      if (index === cpuChargerIndex) {
+        return {
+          ...moved,
+          tacklePhase: TacklePhase.ChargeRecovery,
+          tackleFrames: CHARGE_RECOVERY_FRAMES,
+          tackleDirection: cpuChargeDirection,
+        };
+      }
+      if (player.tacklePhase !== TacklePhase.None) {
+        const adv = advanceTacklePhase(player, false, Direction8.None);
+        return {
+          ...moved,
+          tacklePhase: adv.tacklePhase,
+          tackleFrames: adv.tackleFrames,
+          tackleDirection: adv.tackleDirection,
+        };
+      }
+      return moved;
+    }
     // リフティング受付ウィンドウ (不具合#1、24周目サイクル③): 反転入力を検出したtickに開き、
     // 以後毎tick減衰する。判定は移動前のfacing (player.facing) に対して行う。
     const nextLiftWindow = isOppositeDirection8(playerInputs.direction, player.facing)

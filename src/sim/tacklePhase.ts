@@ -12,4 +12,11 @@ export enum TacklePhase {
   Windup = 'Windup',
   Active = 'Active',
   Recovery = 'Recovery',
+  /**
+   * ★24周目-6 (台帳L-06)★ ショルダーチャージ後の隙。移動上の扱いは Recovery と同じだが、
+   * 描画がスライディング(横倒れ)とチャージ(体を寄せる)を見分けるために独立させた。
+   * 旧実装はチャージ後も Recovery を使い回しており、画面上はスライディングの
+   * 倒れ込み(34°)が一瞬出るだけ = 「チャージの見た目が無い」報告の一因。
+   */
+  ChargeRecovery = 'ChargeRecovery',
 }

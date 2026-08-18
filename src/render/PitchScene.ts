@@ -964,12 +964,17 @@ export class PitchScene extends Phaser.Scene {
         player.tackleDirection === Direction8.DownLeft
           ? -1
           : 1;
+      // ★台帳L-06★ スライディング(横倒れ82°)とショルダーチャージ(体を寄せる22°)を
+      // 見分けられる別ポーズにする。原作: スライド=横倒れ滑走(vf3788-3806)、
+      // チャージ=並走して体を寄せ合う(vf279-303、転倒しない)。
       const slideAngle =
         player.tacklePhase === TacklePhase.Active
           ? 82
           : player.tacklePhase === TacklePhase.Windup || player.tacklePhase === TacklePhase.Recovery
             ? 34
-            : 0;
+            : player.tacklePhase === TacklePhase.ChargeRecovery
+              ? 22
+              : 0;
 
       // ★GKのセーブポーズ (台帳L-05、24周目-6)★ パンチング(gkPunch)の瞬間から
       // 水平ダイブ→倒れ込み維持→起き上がり、を状態の純関数 (render/gkPose.ts) で表現する。

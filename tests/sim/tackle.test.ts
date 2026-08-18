@@ -152,17 +152,35 @@ describe('advanceTacklePhase', () => {
 });
 
 describe('checkTackleSuccess', () => {
-  it('re-evaluates against the current carrier position (fails if they moved out of the cone)', () => {
+  // ★24周目-6 (台帳L-06)★ 成功条件を「ボールに足が届いたか」(ボール基準) へ変更。
+  // 旧仕様の背後コーン要求は「横・正面からは重なっていても奪えない」の主因だった。
+  it('fails when the ball has been carried out of reach', () => {
     const tackler = makePlayer(0, 10, TeamId.A);
-    // carrier が離れた位置に移動し、もう間合いに無い
     const movedCarrier = makePlayer(0, 500, TeamId.B, { facing: Direction8.Up });
-    expect(checkTackleSuccess(tackler, [movedCarrier, tackler], 0)).toBe(false);
+    const farBall = makeBall(0, 500);
+    expect(checkTackleSuccess(tackler, [movedCarrier, tackler], 0, farBall)).toBe(false);
   });
 
-  it('succeeds when the geometry still holds', () => {
+  it('succeeds when the ball is within slide reach', () => {
     const carrier = makePlayer(0, 0, TeamId.B, { facing: Direction8.Up });
     const tackler = makePlayer(0, 10, TeamId.A);
-    expect(checkTackleSuccess(tackler, [carrier, tackler], 0)).toBe(true);
+    const nearBall = makeBall(0, 2);
+    expect(checkTackleSuccess(tackler, [carrier, tackler], 0, nearBall)).toBe(true);
+  });
+
+  it('succeeds from the SIDE too (実プレイ報告「奪えない」の再発防止)', () => {
+    // carrier は上向き、tackler は真横 — 旧仕様(背後コーン)では絶対に成立しなかった形
+    const carrier = makePlayer(0, 0, TeamId.B, { facing: Direction8.Up });
+    const tackler = makePlayer(20, 0, TeamId.A);
+    const nearBall = makeBall(5, 0);
+    expect(checkTackleSuccess(tackler, [carrier, tackler], 0, nearBall)).toBe(true);
+  });
+
+  it('fails when no opposing carrier holds touch-priority (味方のボールは奪わない)', () => {
+    const mate = makePlayer(0, 0, TeamId.A, { facing: Direction8.Up });
+    const tackler = makePlayer(0, 10, TeamId.A);
+    const nearBall = makeBall(0, 2);
+    expect(checkTackleSuccess(tackler, [mate, tackler], 0, nearBall)).toBe(false);
   });
 });
 

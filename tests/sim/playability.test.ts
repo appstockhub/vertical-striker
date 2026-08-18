@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { distSqFixed, toFixed, toFloat, ZERO_FIXED } from '../../src/core/fixed';
 import { Direction8, emptyButtonState, type ButtonState } from '../../src/input/types';
-import { createInitialState, TeamId, type GameState } from '../../src/sim/state';
+import { createInitialState, TacklePhase, TeamId, type GameState } from '../../src/sim/state';
 import { simulate } from '../../src/sim/update';
 import { findTouchPriorityPlayer } from '../../src/sim/ballTouch';
 import {
@@ -484,6 +484,57 @@ describe('プレイアビリティ 3: 守備アクション (スライディン�
       if (state.lastTouchTeam !== before) changed = true;
     }
     expect(changed, 'Bを押してもショルダーチャージが起きない (ボール保持が変わらない)').toBe(true);
+  });
+
+  /** ★台帳L-06 (24周目-6)★ 相手の「横」に並んだ状況 (実プレイで最も多い奪取の形)。 */
+  function humanBesideOpponent(gapPx: number): GameState {
+    const base = createInitialState(1, { difficulty: 'easy', offsideEnabled: false });
+    const opponent = TeamId.B * 11 + 9;
+    const human = TeamId.A * 11 + 5;
+    const oppPos = { x: toFixed(240), y: toFixed(1000) };
+    const humanPos = { x: toFixed(240 - gapPx), y: toFixed(1000) }; // 真横 (左側)
+    return {
+      ...base,
+      controlledPlayerIndex: human,
+      ball: { ...base.ball, pos: oppPos, vel: { x: ZERO_FIXED, y: ZERO_FIXED }, height: ZERO_FIXED, zVel: ZERO_FIXED },
+      players: base.players.map((p, i) => {
+        if (i === opponent) return { ...p, pos: oppPos, facing: Direction8.Down };
+        if (i === human) return { ...p, pos: humanPos, facing: Direction8.Right };
+        const far = { x: toFixed(20 + (i % 5) * 30), y: toFixed(i < 11 ? 1750 : 100) };
+        return { ...p, pos: far };
+      }),
+      lastTouchTeam: TeamId.B,
+      lastTouchPlayerIndex: opponent,
+      setPieceLock: null,
+    };
+  }
+
+  it('★台帳L-06 (実プレイ報告「奪えない」)★ 横からのスライディングでもボールを奪える', () => {
+    // 旧実装は成功条件に「背後コーン」を要求しており、横からはボールに重なっても
+    // 絶対に奪えなかった。原作はボールに足が届けば奪える (奪えず人に当たればファウル)。
+    let state = humanBesideOpponent(30);
+    state = simulate(state, inputs(Direction8.Right, { A: true }));
+    expect(state.players[state.controlledPlayerIndex]!.tacklePhase, 'スライディング自体が出ない').not.toBe(
+      TacklePhase.None,
+    );
+    let won = false;
+    for (let i = 0; i < runTicks(30) && !won; i++) {
+      state = simulate(state, inputs(Direction8.Right));
+      if (state.lastTouchTeam === TeamId.A) won = true;
+    }
+    expect(won, '横からのスライディングでボールを奪えない (背後限定のまま)').toBe(true);
+  });
+
+  it('★台帳L-06★ チャージは専用フェーズ (ChargeRecovery) になる = スライドと見た目が別', () => {
+    let state = humanChasingOpponent(26);
+    let sawChargePhase = false;
+    for (let i = 0; i < 20 && !sawChargePhase; i++) {
+      state = simulate(state, inputs(Direction8.Down, { B: true }));
+      if (state.players[state.controlledPlayerIndex]!.tacklePhase === TacklePhase.ChargeRecovery) {
+        sawChargePhase = true;
+      }
+    }
+    expect(sawChargePhase, 'チャージがChargeRecoveryフェーズにならない (描画で区別できない)').toBe(true);
   });
 });
 
